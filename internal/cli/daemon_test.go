@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf16"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
@@ -277,8 +278,13 @@ func TestDaemonInstallPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), platform.LaunchAgentLabel) {
-		t.Errorf("registration file lacks the label:\n%s", data)
+	content := string(data)
+	if runtime.GOOS == "windows" {
+		// The task XML is UTF-16 (schtasks /Create /XML requires it).
+		content = decodeUTF16LE(t, data)
+	}
+	if !strings.Contains(content, platform.LaunchAgentLabel) {
+		t.Errorf("registration file lacks the label:\n%s", content)
 	}
 
 	code, stdout, _ = runCLI(t, "daemon", "install", "--prefix", prefix, "--wtd", stub)
@@ -422,4 +428,22 @@ func TestDaemonVerbUsage(t *testing.T) {
 		t.Errorf("help lacks the daemon verbs:\n%s", stdout)
 	}
 	_ = code
+}
+
+// decodeUTF16LE decodes a UTF-16LE byte slice (BOM stripped) — the
+// encoding schtasks requires for task XML, which the shared daemon tests
+// read on the Windows job.
+func decodeUTF16LE(t *testing.T, data []byte) string {
+	t.Helper()
+	if len(data)%2 != 0 {
+		t.Fatalf("UTF-16 data has an odd length: %d", len(data))
+	}
+	u := make([]uint16, len(data)/2)
+	for i := range u {
+		u[i] = uint16(data[2*i]) | uint16(data[2*i+1])<<8
+	}
+	if len(u) > 0 && u[0] == 0xFEFF {
+		u = u[1:]
+	}
+	return string(utf16.Decode(u))
 }

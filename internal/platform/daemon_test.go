@@ -265,10 +265,12 @@ func TestSupervisorRunningUnderPrefixIsFalse(t *testing.T) {
 	}
 }
 
-// TestEnsurePrivateDir: 0700 and writable, with the refusal naming the path
-// when the root cannot be created (02-coordination.md §14: a clear error
-// naming the path and the ownership problem, not a rename failure at the
-// end of a long operation).
+// TestEnsurePrivateDir: 0700 and writable on unix (on Windows the ACL is
+// the permission model and is asserted in TestEnsurePrivateDirWindowsACL),
+// with the refusal naming the path when the root cannot be created
+// (02-coordination.md §14: a clear error naming the path and the
+// ownership problem, not a rename failure at the end of a long
+// operation).
 func TestEnsurePrivateDir(t *testing.T) {
 	dir := filepath.Join(tempDir(t), "wt-home")
 	if err := EnsurePrivateDir(dir); err != nil {
@@ -278,7 +280,7 @@ func TestEnsurePrivateDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o700 {
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o700 {
 		t.Errorf("store dir mode = %v, want 0700", fi.Mode().Perm())
 	}
 	// A file where a directory must be cannot become a store root; the error

@@ -296,7 +296,10 @@ type ReapAction struct {
 	Port    int    `json:"port"`
 	Signal  string `json:"signal"`
 	// Err reports a signal that failed — the process may have exited during
-	// the three-second wait, or the signal could not be delivered.
+	// the wait, or the signal could not be delivered — and, on a KILL that
+	// ran, carries the escalation note stating that the graceful step did
+	// not stop the process (the Windows half of 08-platform.md §4.3: the
+	// reaper reports which of the two paths it took).
 	Err string `json:"err,omitempty"`
 }
 

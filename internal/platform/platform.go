@@ -28,36 +28,20 @@ import (
 // yet-created file inside the tree resolves to the same form as the tree
 // itself. Without this the containment test could never approve a first
 // write.
+//
+// The per-OS resolver is realPath (realpath_unix.go for symlink resolution,
+// realpath_windows.go for GetFinalPathNameByHandleW), and canonical applies
+// the platform's canonical form on top.
 func RealPath(path string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return "", fmt.Errorf("resolving %s: %w", path, err)
 	}
-	resolved, err := filepath.EvalSymlinks(abs)
-	if err == nil {
-		return canonical(resolved), nil
+	resolved, err := realPath(abs)
+	if err != nil {
+		return "", err
 	}
-	// Walk up to the nearest existing ancestor and re-join the missing tail.
-	// EvalSymlinks of that ancestor gives the tail a resolved base to sit on,
-	// so a new file under a symlinked directory resolves correctly too.
-	tail := []string{}
-	cur := abs
-	for {
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			return "", fmt.Errorf("resolving %s: no existing ancestor: %w", path, err)
-		}
-		tail = append([]string{filepath.Base(cur)}, tail...)
-		cur = parent
-		resolved, rerr := filepath.EvalSymlinks(cur)
-		if rerr != nil {
-			continue
-		}
-		for _, seg := range tail {
-			resolved = filepath.Join(resolved, seg)
-		}
-		return canonical(resolved), nil
-	}
+	return canonical(resolved), nil
 }
 
 // canonical applies the platform's path canonicalisation on top of symlink

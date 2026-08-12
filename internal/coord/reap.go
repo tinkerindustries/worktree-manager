@@ -180,40 +180,49 @@ func classifyAndSignal(holders []platform.Holder, allowlist []string, dryRun boo
 	return reported, actions
 }
 
-// signalEscalation runs B7.1's sequence against one holder: SIGTERM, wait
-// about three seconds, then SIGKILL if it is still alive. The actions
-// report which step ran and whether it failed (a pid that exited during
-// the wait is a success, reported as such).
+// signalEscalation runs B7.1's sequence against one holder: the graceful
+// signal, wait about three seconds, then the force kill if it is still
+// alive. The actions report which path it took and why: a TERM action
+// naming the graceful step, then either a KILL action stating that no
+// escalation was needed, or one stating that the escalation happened.
+// The distinction is the point on Windows (08-platform.md §4.3): taskkill
+// without /F posts a close message that console applications do not
+// receive and GUI applications may ignore, so the escalation to taskkill
+// /F must be reported, never silently equated with a graceful stop — that
+// equivalence would hide a teardown that killed a desktop process without
+// letting it release its lease. A failed graceful signal does not abort
+// the sequence: on Windows the failure is the common case, not the
+// process being gone, and the escalation still has to run.
 func signalEscalation(hld platform.Holder) []protocol.ReapAction {
-	var actions []protocol.ReapAction
-	if err := platform.SignalTerm(hld.PID); err != nil {
-		actions = append(actions, protocol.ReapAction{
-			PID: hld.PID, Command: hld.Command, Port: hld.Port,
-			Signal: "TERM", Err: err.Error(),
-		})
-		return actions
-	}
-	actions = append(actions, protocol.ReapAction{
+	termErr := platform.SignalTerm(hld.PID)
+	termAction := protocol.ReapAction{
 		PID: hld.PID, Command: hld.Command, Port: hld.Port, Signal: "TERM",
-	})
+	}
+	if termErr != nil {
+		termAction.Err = termErr.Error()
+	}
+	actions := []protocol.ReapAction{termAction}
 	time.Sleep(reapGraceWait)
 	if !platform.Alive(hld.PID) {
 		actions = append(actions, protocol.ReapAction{
 			PID: hld.PID, Command: hld.Command, Port: hld.Port,
-			Signal: "KILL", Err: "process exited during the three-second wait; no escalation needed",
+			Signal: "KILL", Err: "no escalation needed: the process exited during the wait after the graceful signal",
 		})
 		return actions
 	}
-	if err := platform.SignalKill(hld.PID); err != nil {
-		actions = append(actions, protocol.ReapAction{
-			PID: hld.PID, Command: hld.Command, Port: hld.Port,
-			Signal: "KILL", Err: err.Error(),
-		})
-		return actions
-	}
-	actions = append(actions, protocol.ReapAction{
+	killAction := protocol.ReapAction{
 		PID: hld.PID, Command: hld.Command, Port: hld.Port, Signal: "KILL",
-	})
+	}
+	if killErr := platform.SignalKill(hld.PID); killErr != nil {
+		killAction.Err = killErr.Error()
+	} else {
+		// The escalation must be stated, never implied: on Windows this
+		// action IS taskkill /F, and reporting it as a graceful stop
+		// would hide the very situation the reaper exists to prevent
+		// (08-platform.md §4.3).
+		killAction.Err = "escalated to the force kill: the graceful signal (SIGTERM on unix, taskkill without /F on Windows) did not stop the process within the wait"
+	}
+	actions = append(actions, killAction)
 	return actions
 }
 
