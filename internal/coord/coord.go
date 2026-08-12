@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
+	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
@@ -79,6 +80,11 @@ type Handler struct {
 	// Docker is the docker seam the teardown path runs against. Nil means
 	// the real CLI runner (driver.NewDocker) is used; tests install fakes.
 	Docker driver.Docker
+
+	// Machine is the VM runner seam the machine driver runs against. Nil
+	// means the platform's real runner (platform.Machine) is used; tests
+	// install fakes.
+	Machine platform.MachineRunner
 
 	// ReapBinaries is the reaper's allowlist seam: the binaries the spec
 	// names, which are the only processes the reaper may signal

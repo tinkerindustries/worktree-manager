@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/driver"
 	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
@@ -120,10 +121,14 @@ func (h *Handler) allocate(s *Session, req *protocol.Request) *protocol.Response
 		if serr != nil {
 			return &protocol.Response{Error: serr}
 		}
+		// The cidr fallback warning persists for the life of the worktree
+		// (nothing reallocates a fallen-back cidr), so a re-run reports it
+		// again, loudly.
 		return &protocol.Response{Result: mustJSON(protocol.AllocateResult{
 			App: app, Slug: e.Slug, Slot: e.Slot, State: e.State,
 			Resources: e.Resources, PathVisible: e.PathVisible, Secrets: e.Secrets,
 			Path: e.Path, Existed: true, Shared: shared,
+			Notes: cidrFallbackNotes(&args.Spec, e.Resources, e.Slot),
 		})}
 	}
 
@@ -243,7 +248,36 @@ func (h *Handler) allocate(s *Session, req *protocol.Request) *protocol.Response
 		App: app, Slug: entry.Slug, Slot: entry.Slot, State: entry.State,
 		Resources: entry.Resources, PathVisible: entry.PathVisible, Secrets: entry.Secrets,
 		ProbeNote: probeNote, Skipped: skipped, Shared: shared,
+		Notes: cidrFallbackNotes(&args.Spec, entry.Resources, entry.Slot),
 	})}
+}
+
+// cidrFallbackNotes returns the loud shared-pool fallback warning for
+// every cidr resource whose recorded value fell back — the allocation
+// path's half of the 03-drivers.md §4.3 rule that a fallback is never
+// silent. The driver's Verify reports the same warning for the life of the
+// worktree, because nothing reallocates a fallen-back cidr when a slot
+// later frees.
+func cidrFallbackNotes(sp *spec.Spec, resources map[string]spec.Resolved, slot int) []string {
+	var notes []string
+	for i := range sp.Resources {
+		r := &sp.Resources[i]
+		if r.Type != "cidr" {
+			continue
+		}
+		v, ok := resources[r.Name]
+		if !ok {
+			continue
+		}
+		value, ok := v.Value.(string)
+		if !ok {
+			continue
+		}
+		if note := driver.FallbackNote(r, value, slot); note != "" {
+			notes = append(notes, fmt.Sprintf("%s: %s", r.Name, note))
+		}
+	}
+	return notes
 }
 
 // ctxFor builds the template context for one existing entry: the entry's

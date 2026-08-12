@@ -49,6 +49,27 @@ func (d execDocker) ListNetworks(project string) ([]string, error) {
 		"--format", "{{.ID}}")
 }
 
+// ListNetworksAll returns the name of every network on the daemon.
+func (d execDocker) ListNetworksAll() ([]string, error) {
+	return dockerList("", "network", "ls", "--format", "{{.Name}}")
+}
+
+// NetworkSubnet returns the network's first IPv4 subnet as a CIDR string,
+// or "" when the network declares none. Networks without an IPAM subnet
+// (macvlan, ipvlan, or a bare user-defined network) cannot overlap
+// anything.
+func (d execDocker) NetworkSubnet(name string) (string, error) {
+	out, err := exec.Command("docker", "network", "inspect",
+		"--format", "{{range .IPAM.Config}}{{.Subnet}} {{end}}", name).Output()
+	if err != nil {
+		return "", fmt.Errorf("inspecting network %q: %w", name, err)
+	}
+	for _, subnet := range strings.Fields(string(out)) {
+		return subnet, nil
+	}
+	return "", nil
+}
+
 // ListVolumes returns the volume names carrying the project label.
 func (d execDocker) ListVolumes(project string) ([]string, error) {
 	return dockerList(project, "volume", "ls",

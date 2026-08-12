@@ -667,7 +667,7 @@ func (h *Handler) reconcile(s *Session, req *protocol.Request) *protocol.Respons
 		// teardown works from a handle held in the registry
 		// (ARCHITECTURE.md §10.2).
 		reap := h.reap(e, &args.Spec, false, false)
-		tresp := h.teardownEntry(s, e, reg, &args.Spec, nil)
+		tresp := h.teardownEntry(s, e, reg, &args.Spec, nil, nil)
 		if tresp.Error != nil {
 			out = append(out, protocol.ReconcileOutcome{
 				App: ref.App, Slug: ref.Slug, Action: "torn-down",
@@ -770,7 +770,7 @@ func (h *Handler) ReclaimEphemeral(now time.Time) (int, error) {
 				"app", e.App, "slug", e.Slug, "owner", e.Owner)
 			continue
 		}
-		tresp := h.teardownEntry(nil, e, reg, sp, nil)
+		tresp := h.teardownEntry(nil, e, reg, sp, nil, nil)
 		if tresp.Error != nil {
 			h.log.Warn("reclamation teardown left resources behind",
 				"app", e.App, "slug", e.Slug, "err", tresp.Error.Msg)

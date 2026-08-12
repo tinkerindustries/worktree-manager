@@ -122,14 +122,18 @@ func (rep TeardownReport) Clean() bool {
 // what survived — stopping early would leave more behind than continuing
 // does (03-drivers.md §5). purgeFlags are the CLI purge flags the caller
 // passed; a state-path resource whose purge.flag was passed is purged, every
-// other state-path is left alone (03-drivers.md §4.4).
+// other state-path is left alone (03-drivers.md §4.4). keepFlags are the CLI
+// keep flags the caller passed (e.g. "--keep-vm"); a machine resource whose
+// keep_flag was passed is left up — the entry drops but the VM stays
+// (B4.3).
 //
 // The iteration covers the union of the spec's resources and the recorded
 // values: a value with no spec row (the spec changed since allocation)
 // still gets torn down, because the registry's handles are authoritative
 // (03-drivers.md §2.2).
-func (r Registry) TeardownAll(s *spec.Spec, values map[string]spec.Resolved, env Env, purgeFlags []string) TeardownReport {
+func (r Registry) TeardownAll(s *spec.Spec, values map[string]spec.Resolved, env Env, purgeFlags, keepFlags []string) TeardownReport {
 	env.PurgeFlags = purgeFlags
+	env.KeepFlags = keepFlags
 	var rep TeardownReport
 
 	// The iteration covers the union of the spec's teardown-capable

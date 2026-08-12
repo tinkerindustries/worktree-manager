@@ -11,9 +11,11 @@ package coord
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/driver"
 	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
@@ -79,6 +81,31 @@ func (h *Handler) materialise(s *Session, req *protocol.Request) *protocol.Respo
 		// Applied in full; the entry stays reserving and the client
 		// activates it (step 6). Nothing to write: the entry is untouched.
 		return &protocol.Response{Result: mustJSON(out)}
+	}
+
+	// A refusal or an unavailability is a protocol-level error with the
+	// exit code the caller must see — the capacity guard's refusal is exit
+	// 3, an unavailable runner (no Colima on this platform) is exit 4 —
+	// rather than an in-band apply failure. ApplyAll already tore the
+	// applied resources down in reverse; a refusal at the machine driver
+	// is the first apply (machine is forced first), so the rollback
+	// covers it. The entry stays reserving and the client releases it,
+	// exactly like the clean-rollback path below.
+	var refusal *driver.RefusalError
+	var unavailable *driver.ErrUnavailable
+	if errors.As(rep.Err, &refusal) {
+		return &protocol.Response{Error: &protocol.Error{
+			Code:   3,
+			Msg:    fmt.Sprintf("materialising %s failed: %s", rep.Failed, rep.Err),
+			Remedy: "the refusal above names what is running and how to tear one down; fix it, then re-run wt init",
+		}}
+	}
+	if errors.As(rep.Err, &unavailable) {
+		return &protocol.Response{Error: &protocol.Error{
+			Code:   4,
+			Msg:    fmt.Sprintf("materialising %s failed: %s", rep.Failed, rep.Err),
+			Remedy: "the error above names the missing context; install it (or move to the platform that has it), then re-run wt init",
+		}}
 	}
 
 	// Apply failed part-way through; ApplyAll already tore the applied

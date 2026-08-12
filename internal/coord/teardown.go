@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
+	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
@@ -59,22 +60,29 @@ func (h *Handler) Teardown(s *Session, ref protocol.EntryRef, sp *spec.Spec, pur
 	if perr := h.checkOwner(s, e); perr != nil {
 		return &protocol.Response{Error: perr}
 	}
-	return h.teardownEntry(s, e, reg, sp, purgeFlags)
+	return h.teardownEntry(s, e, reg, sp, purgeFlags, nil)
 }
 
 // teardownEntry runs the teardown of one looked-up, ownership-checked
 // entry. The caller holds h.mu. Phase 5's rm verb calls it after the reap;
-// Teardown is the same path through the verb-shaped front door.
-func (h *Handler) teardownEntry(s *Session, e *store.Entry, reg store.RegistryFile, sp *spec.Spec, purgeFlags []string) *protocol.Response {
+// Teardown is the same path through the verb-shaped front door. keepFlags
+// are the CLI keep flags the caller passed (e.g. "--keep-vm"); a machine
+// resource whose keep_flag was passed is left up, and the note names the
+// manual teardown command.
+func (h *Handler) teardownEntry(s *Session, e *store.Entry, reg store.RegistryFile, sp *spec.Spec, purgeFlags, keepFlags []string) *protocol.Response {
 	env, perr := h.entryEnv(e, sp)
 	if perr != nil {
 		return &protocol.Response{Error: perr}
 	}
 
-	rep := h.Drivers.TeardownAll(sp, e.Resources, env, purgeFlags)
+	rep := h.Drivers.TeardownAll(sp, e.Resources, env, purgeFlags, keepFlags)
 
 	if rep.Clean() {
-		// Nothing survived: the entry drops and the slot frees.
+		// Nothing survived: the entry drops and the slot frees. A machine
+		// kept by --keep-vm is a deliberate survivor — the note says so,
+		// naming the documented bypass, so the leftover is never silent
+		// (B4.3).
+		notes := h.keptMachineNotes(sp, e, keepFlags)
 		idx := -1
 		for i := range reg.Entries {
 			if reg.Entries[i].App == e.App && reg.Entries[i].Slug == e.Slug {
@@ -87,7 +95,7 @@ func (h *Handler) teardownEntry(s *Session, e *store.Entry, reg store.RegistryFi
 			return h.storeErr("writing the registry", err)
 		}
 		return &protocol.Response{Result: mustJSON(protocol.ReleaseResult{
-			App: e.App, Slug: e.Slug, Removed: true,
+			App: e.App, Slug: e.Slug, Removed: true, Notes: notes,
 		})}
 	}
 
@@ -110,6 +118,15 @@ func (h *Handler) docker() driver.Docker {
 		return h.Docker
 	}
 	return driver.NewDocker()
+}
+
+// machine returns the handler's VM runner seam, defaulting to the
+// platform's real runner.
+func (h *Handler) machine() platform.MachineRunner {
+	if h.Machine != nil {
+		return h.Machine
+	}
+	return platform.Machine()
 }
 
 // entryEnv builds the driver environment for one entry: everything an
@@ -139,6 +156,7 @@ func (h *Handler) entryEnv(e *store.Entry, sp *spec.Spec) (driver.Env, *protocol
 		Home: home, Worktree: e.Path,
 		Resolved: e.Resources,
 		Docker:   h.docker(),
+		Machine:  h.machine(),
 	}
 	if band := findBand(bands, e.App); band != nil {
 		env.Bases = band.Bases
@@ -175,4 +193,43 @@ func teardownFailure(rep driver.TeardownReport) (int, string, string) {
 	return code,
 		fmt.Sprintf("teardown did not free the slot: %s", rep.Summary()),
 		"fix the cause named above, then re-run the teardown; the slot stays held until nothing survives"
+}
+
+// keptMachineNotes returns the bounded-coverage notes for machine
+// resources the caller kept with their keep flag: the entry drops but the
+// VM stays up, and the note names the documented bypass — the exact
+// command the driver supplies — so the leftover is never silent (B4.3,
+// 03-drivers.md §4.5). The driver's teardown already did nothing for these
+// resources; this is the note the report owes. The command comes from the
+// runner the teardown itself used (h.machine), so the note cannot drift
+// from the driver's own teardown.
+func (h *Handler) keptMachineNotes(sp *spec.Spec, e *store.Entry, keepFlags []string) []string {
+	var notes []string
+	for i := range sp.Resources {
+		r := &sp.Resources[i]
+		if r.Type != "machine" || r.KeepFlag == nil {
+			continue
+		}
+		kept := false
+		for _, f := range keepFlags {
+			if f == *r.KeepFlag {
+				kept = true
+				break
+			}
+		}
+		if !kept {
+			continue
+		}
+		v, ok := e.Resources[r.Name]
+		if !ok {
+			continue
+		}
+		name, ok := v.Value.(string)
+		if !ok || name == "" {
+			continue
+		}
+		notes = append(notes, fmt.Sprintf("%s kept (%s): the containers and the entry are gone but the VM stays up; tear it down yourself with %q when it is no longer needed",
+			name, *r.KeepFlag, h.machine().DeleteCommand(name)))
+	}
+	return notes
 }

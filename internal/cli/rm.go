@@ -58,7 +58,11 @@ type rmResult struct {
 }
 
 // runRm implements `wt rm [--json] [--dry-run] [--cwd <dir>] [--slug <s>]
-// [--keep-processes] [--purge <flag>]...`.
+// [--keep-processes] [--purge <flag>]... [--keep-vm]`. The keep flags are
+// the machine resources' keep_flag names from the spec (B4.3), so they are
+// registered after the spec loads; a spec that declares keep_flag:
+// "--keep-vm" makes `wt rm --keep-vm` legal, and a spec without one
+// refuses the flag as undefined.
 func runRm(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("rm", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -69,19 +73,13 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 	keepProcesses := fs.Bool("keep-processes", false, "do not signal processes bound to the worktree's ports")
 	var purgeFlags []string
 	fs.Var(stringListFlag{target: &purgeFlags}, "purge", "purge this state-path resource on teardown (repeatable)")
-	if err := fs.Parse(args); err != nil {
-		return ExitUsage
-	}
-	if fs.NArg() > 0 {
-		WriteError(stderr, UsageError(
-			"run 'wt rm --slug <slug>' with no positional arguments",
-			"unexpected arguments: %v", fs.Args()))
-		return ExitUsage
-	}
 
+	// The spec must load before the keep flags can be registered, and the
+	// spec's location depends on --cwd, so the flag's value is pre-scanned
+	// from the raw args in both spellings the flag package accepts.
 	dir := *cwd
-	if dir == "" {
-		dir = "."
+	if v := preScanFlag(args, "cwd"); v != "" {
+		dir = v
 	}
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
@@ -90,8 +88,10 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// The target: an explicit slug, or the cwd's worktree — never an
-	// inference of "the most recent worktree" (04-lifecycle.md §7.1).
-	targetSlug := *slug
+	// inference of "the most recent worktree" (04-lifecycle.md §7.1). The
+	// slug's value is pre-scanned so the target check keeps its place
+	// before the spec load, which the keep-flag registration needs.
+	targetSlug := preScanFlag(args, "slug")
 	if targetSlug == "" {
 		cls, err := identity.Classify(absDir, identity.StandaloneDeclared())
 		if err != nil || (cls.Outcome != identity.LinkedWorktree && cls.Outcome != identity.StandaloneClone) {
@@ -103,20 +103,54 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 		}
 		targetSlug = identity.DefaultSlug(cls.WorktreeRoot)
 	}
+
+	sp, code := loadSpec(absDir, stderr)
+	if code != ExitOK {
+		return code
+	}
+
+	// The keep flags: one boolean flag per declared keep_flag, deduplicated
+	// (two machine resources may declare the same flag name).
+	keepFlags := []string{}
+	seenKeep := map[string]bool{}
+	for i := range sp.Resources {
+		r := &sp.Resources[i]
+		if r.Type != "machine" || r.KeepFlag == nil || seenKeep[*r.KeepFlag] {
+			continue
+		}
+		seenKeep[*r.KeepFlag] = true
+		name := strings.TrimPrefix(*r.KeepFlag, "--")
+		keepFlags = append(keepFlags, *r.KeepFlag)
+		fs.BoolVar(new(bool), name, false, "keep the VM up: tear down the containers and the entry but leave the instance running")
+	}
+
+	if err := fs.Parse(args); err != nil {
+		return ExitUsage
+	}
+	if fs.NArg() > 0 {
+		WriteError(stderr, UsageError(
+			"run 'wt rm --slug <slug>' with no positional arguments",
+			"unexpected arguments: %v", fs.Args()))
+		return ExitUsage
+	}
+	keepPassed := []string{}
+	for _, kf := range keepFlags {
+		if flagValue(fs, strings.TrimPrefix(kf, "--")) {
+			keepPassed = append(keepPassed, kf)
+		}
+	}
+	// The parsed --slug is authoritative once Parse has run; the pre-scan
+	// only existed to place the target check before the spec load.
+	if *slug != "" {
+		targetSlug = *slug
+	}
+
 	if reason := identity.ValidateSlug(targetSlug); reason != "" {
 		e := New(ExitRefused,
 			fmt.Sprintf("slug %q is not valid (%s)", targetSlug, reason),
 			"give a slug matching ^[a-z0-9][a-z0-9-]*$ (at most 32 characters), then re-run")
 		WriteError(stderr, e)
 		return e.Code
-	}
-
-	// The spec comes from the caller's tree — rm must work when the target
-	// directory is already gone, and the caller's cwd is the one tree that
-	// still exists.
-	sp, code := loadSpec(absDir, stderr)
-	if code != ExitOK {
-		return code
 	}
 
 	sess, cerr := dialCoordinator()
@@ -129,7 +163,7 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 	// Phase one: prepare — ask the coordinator for the entry (its path and
 	// its resources) and the reap preview, changing nothing (the reap runs
 	// in dry-run, so nothing is signalled).
-	prep, perr := rmRequest(sess, sp, targetSlug, *keepProcesses, true, purgeFlags)
+	prep, perr := rmRequest(sess, sp, targetSlug, *keepProcesses, true, purgeFlags, keepPassed)
 	if perr != nil {
 		WriteError(stderr, perr)
 		return perr.Code
@@ -174,7 +208,7 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 		// The prepare call was the preview; print it and stop.
 		return rmPrintPreview(stdout, stderr, *jsonOut, sp, targetSlug, prep, targetExists, notes)
 	}
-	res, rerr := rmRequest(sess, sp, targetSlug, *keepProcesses, false, purgeFlags)
+	res, rerr := rmRequest(sess, sp, targetSlug, *keepProcesses, false, purgeFlags, keepPassed)
 	if rerr != nil {
 		WriteError(stderr, rerr)
 		return rerr.Code
@@ -209,10 +243,10 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 }
 
 // rmRequest runs one rm call and decodes the result.
-func rmRequest(sess *coordSession, sp *spec.Spec, slug string, keepProcesses, dryRun bool, purgeFlags []string) (*protocol.RmResult, *Error) {
+func rmRequest(sess *coordSession, sp *spec.Spec, slug string, keepProcesses, dryRun bool, purgeFlags, keepFlags []string) (*protocol.RmResult, *Error) {
 	raw, err := sess.request("rm", &protocol.RmArgs{
 		App: sp.App, Slug: slug, Spec: *sp,
-		KeepProcesses: keepProcesses, DryRun: dryRun, PurgeFlags: purgeFlags,
+		KeepProcesses: keepProcesses, DryRun: dryRun, PurgeFlags: purgeFlags, KeepFlags: keepFlags,
 	})
 	if err != nil {
 		return nil, err
@@ -509,4 +543,36 @@ func (f stringListFlag) String() string { return "" }
 func (f stringListFlag) Set(v string) error {
 	*f.target = append(*f.target, v)
 	return nil
+}
+
+// preScanFlag finds a flag's value in the raw args before the flag package
+// parses them, in both spellings the flag package accepts ("--cwd dir" and
+// "--cwd=dir", with one or two dashes). It exists so rm can load the spec
+// — and with it the machine keep flags the spec declares — before parsing.
+// An absent flag returns "".
+func preScanFlag(args []string, name string) string {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		for _, prefix := range []string{"--" + name + "=", "-" + name + "="} {
+			if v, ok := strings.CutPrefix(a, prefix); ok {
+				return v
+			}
+		}
+		if a == "--"+name || a == "-"+name {
+			if i+1 < len(args) {
+				return args[i+1]
+			}
+		}
+	}
+	return ""
+}
+
+// flagValue reads a boolean flag's value after Parse.
+func flagValue(fs *flag.FlagSet, name string) bool {
+	f := fs.Lookup(name)
+	if f == nil {
+		return false
+	}
+	b, _ := f.Value.(flag.Getter).Get().(bool)
+	return b
 }

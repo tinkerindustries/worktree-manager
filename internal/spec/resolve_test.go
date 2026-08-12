@@ -103,18 +103,42 @@ func TestResolveCIDRSlicing(t *testing.T) {
 	}
 }
 
+// TestResolveCIDRExhausted pins the phase-8 exhaustion behaviour
+// (03-drivers.md §4.3): the vm-app fixture's on_exhaustion is shared-pool
+// (the default), so a slot past the pool's 64 blocks falls back to the
+// shared pool itself — the loud warning is the driver's — and a spec that
+// declares on_exhaustion: fail stops with a FieldError naming the
+// exhaustion instead.
 func TestResolveCIDRExhausted(t *testing.T) {
 	s := loadFixture(t, "vm-app")
-	_, err := Resolve(s, testContext(65, "alpha"))
+	table, err := Resolve(s, testContext(65, "alpha"))
+	if err != nil {
+		t.Fatalf("shared-pool exhaustion must fall back, not fail: %v", err)
+	}
+	if table["egress"].Value != "172.30.0.0/16" {
+		t.Errorf("the fallback value must be the shared pool itself, got %v", table["egress"].Value)
+	}
+
+	fail := &Spec{
+		Version: 1, App: "vm-app",
+		Slots: Slots{Max: intPtr(100)},
+		Resources: []Resource{{
+			Type: "cidr", Name: "egress",
+			Pool: strPtr("172.30.0.0/16"), Size: intPtr(22),
+			OnExhaustion: strPtr("fail"),
+		}},
+		Emit: Emit{Descriptor: Descriptor{Filename: "wt-env.yaml", Format: "yaml"}},
+	}
+	_, err = Resolve(fail, testContext(65, "alpha"))
 	if err == nil {
-		t.Fatal("Resolve accepted slot 65, past the pool's 64 blocks")
+		t.Fatal("on_exhaustion: fail must refuse slot 65, past the pool's 64 blocks")
 	}
 	var fe *FieldError
 	if !asFieldError(err, &fe) {
 		t.Fatalf("error = %v, want FieldError", err)
 	}
-	if !strings.Contains(fe.Reason, "exhausted") {
-		t.Errorf("reason %q does not say the pool is exhausted", fe.Reason)
+	if !strings.Contains(fe.Reason, "exhausted") || !strings.Contains(fe.Reason, "fail") {
+		t.Errorf("reason %q must name the exhaustion and the mode", fe.Reason)
 	}
 }
 
@@ -236,3 +260,8 @@ func TestExplainTablesDisjointSameSlug(t *testing.T) {
 		})
 	}
 }
+
+// intPtr and strPtr build the pointer forms the spec's optional fields
+// take; the spec package's tests otherwise parse specs from YAML.
+func intPtr(i int) *int       { return &i }
+func strPtr(s string) *string { return &s }

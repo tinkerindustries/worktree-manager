@@ -76,9 +76,10 @@ func run(args []string) int {
 		return 1
 	}
 	// The driver registry is the allocation probe and the teardown path.
-	// cidr and machine join in phase 8; the registry already knows how to
-	// skip a type with no driver.
-	h.InstallDrivers(driver.NewRegistry(&driver.Port{}, &driver.Namespace{}, &driver.StatePath{}))
+	// Phase 8 adds cidr and machine; the registry skips a type with no
+	// driver, which is how the earlier phases ran without them.
+	h.InstallDrivers(driver.NewRegistry(&driver.Port{}, &driver.Namespace{}, &driver.StatePath{},
+		&driver.CIDR{}, &driver.Machine{}))
 	srv := coord.NewServer(h, log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

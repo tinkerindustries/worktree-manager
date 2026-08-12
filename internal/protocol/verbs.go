@@ -74,6 +74,11 @@ type AllocateResult struct {
 	// remediated, and the allocator says which slot it skipped (B1.6,
 	// 03-drivers.md §4.1).
 	Skipped []string `json:"skipped,omitempty"`
+	// Notes are the allocation's bounded-coverage statements beyond the
+	// probe: a cidr that fell back to the shared pool, naming the remedy
+	// (03-drivers.md §4.3's loud fallback — a fallback that is silent is
+	// the failure the rule exists to prevent).
+	Notes []string `json:"notes,omitempty"`
 	// Path is the entry's recorded worktree path, present only when an
 	// entry already existed.
 	Path string `json:"path,omitempty"`
@@ -105,6 +110,10 @@ type ReleaseResult struct {
 	App     string `json:"app"`
 	Slug    string `json:"slug"`
 	Removed bool   `json:"removed"`
+	// Notes are the bounded-coverage statements the release carries: a
+	// machine kept by its keep flag names the documented bypass, so the
+	// deliberate survivor is never silent (B4.3).
+	Notes []string `json:"notes,omitempty"`
 }
 
 // ReserveBandArgs is the bands.reserve request. Two forms, mutually
@@ -268,6 +277,10 @@ type RmArgs struct {
 	// KeepProcesses opts the reaper out: nothing is signalled and the
 	// survivors are the caller's business.
 	KeepProcesses bool `json:"keep_processes,omitempty"`
+	// KeepFlags are the CLI keep flags the caller passed (e.g.
+	// "--keep-vm"). A machine resource whose keep_flag matches one is left
+	// up on teardown — the entry drops but the VM stays (B4.3).
+	KeepFlags []string `json:"keep_flags,omitempty"`
 	// DryRun previews: the reaper lists what it would signal and nothing is
 	// torn down.
 	DryRun     bool     `json:"dry_run,omitempty"`
@@ -342,6 +355,9 @@ type RmResult struct {
 	Resources    []string `json:"resources,omitempty"`
 	Removed      bool     `json:"removed"`
 	TeardownNote string   `json:"teardown_note,omitempty"`
+	// Notes are the bounded-coverage statements the teardown carries: a
+	// machine kept by its keep flag names the documented bypass (B4.3).
+	Notes []string `json:"notes,omitempty"`
 }
 
 // --- Phase-6 verbs: the fleet surface -----------------------------------

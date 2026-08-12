@@ -12,9 +12,15 @@ import (
 // namespace hit means a previous teardown was incomplete, not that the slot
 // is taken (03-drivers.md §4.2) — which is why the namespace driver does not
 // gate and the probe never consults it.
-func ProbeFromRegistry(reg driver.Registry) Probe {
+//
+// docker is the seam the probe passes to the drivers: the cidr probe asks
+// the reachable daemon whether any network overlaps the derived slice. The
+// probe runs inside the coordinator, so this is the real runner here; a
+// test installs a fake.
+func ProbeFromRegistry(reg driver.Registry, docker driver.Docker) Probe {
 	return func(s *spec.Spec, slot int, resources map[string]spec.Resolved) ProbeResult {
 		held, unavailable := false, false
+		env := driver.Env{Docker: docker, Slot: slot}
 		for i := range s.Resources {
 			r := &s.Resources[i]
 			res, ok := resources[r.Name]
@@ -25,7 +31,7 @@ func ProbeFromRegistry(reg driver.Registry) Probe {
 			if d == nil || !d.GatesAllocation() {
 				continue
 			}
-			switch d.Probe(r, res.Value, driver.Env{}) {
+			switch d.Probe(r, res.Value, env) {
 			case driver.ProbeHeld:
 				held = true
 			case driver.ProbeUnavailable:
@@ -47,5 +53,5 @@ func ProbeFromRegistry(reg driver.Registry) Probe {
 // phase-4 registry; a test calls it with fakes to drive the seam.
 func (h *Handler) InstallDrivers(reg driver.Registry) {
 	h.Drivers = reg
-	h.Probe = ProbeFromRegistry(reg)
+	h.Probe = ProbeFromRegistry(reg, h.docker())
 }

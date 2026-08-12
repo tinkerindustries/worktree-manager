@@ -150,6 +150,85 @@ func conformanceCases(t *testing.T) []conformanceCase {
 		},
 		statePathConformanceCase(t),
 		namespaceConformanceCase(t),
+		cidrConformanceCase(t),
+		machineConformanceCase(t),
+	}
+}
+
+// cidrConformanceCase is the cidr row: a clean fake docker, so the suite's
+// probe reads free (no network overlaps the derived /22).
+func cidrConformanceCase(t *testing.T) conformanceCase {
+	s := &spec.Spec{
+		Version: 1, App: "conformance",
+		Slots: spec.Slots{Max: intPtr(32)},
+		Resources: []spec.Resource{{
+			Type: "cidr", Name: "egress",
+			Pool: strPtr("172.30.0.0/16"), Size: intPtr(22),
+		}},
+		Emit: spec.Emit{Descriptor: spec.Descriptor{Filename: "wt-env.yaml", Format: "yaml"}},
+	}
+	ctx := spec.Context{
+		App: "conformance", Slug: "wt-1", Slot: 1,
+		Home: "/home/wt", Worktree: "/home/wt/worktrees/wt-1",
+	}
+	table, err := spec.Resolve(s, ctx)
+	if err != nil {
+		t.Fatalf("resolving the cidr conformance spec: %v", err)
+	}
+	return conformanceCase{
+		name: "cidr",
+		d:    &CIDR{},
+		spec: s,
+		ctx:  ctx,
+		env: Env{
+			Spec: s, App: "conformance", Slug: "wt-1", Slot: 1,
+			Home: "/home/wt", Worktree: "/home/wt/worktrees/wt-1",
+			Resolved: table,
+			Docker:   newFakeDocker(),
+		},
+		resource:     "egress",
+		wantApply:    false,
+		wantTeardown: false,
+		wantGates:    true,
+	}
+}
+
+// machineConformanceCase is the machine row: an empty fake runner, so the
+// suite's probe reads free, the apply starts the instance, and the
+// teardown deletes it.
+func machineConformanceCase(t *testing.T) conformanceCase {
+	s := &spec.Spec{
+		Version: 1, App: "conformance",
+		Slots: spec.Slots{Max: intPtr(32)},
+		Resources: []spec.Resource{{
+			Type: "machine", Name: "vm", Driver: strPtr("auto"),
+			Template: strPtr("{app}-{slug}-{slot}"), MaxConcurrent: intPtr(4),
+		}},
+		Emit: spec.Emit{Descriptor: spec.Descriptor{Filename: "wt-env.yaml", Format: "yaml"}},
+	}
+	ctx := spec.Context{
+		App: "conformance", Slug: "wt-1", Slot: 1,
+		Home: "/home/wt", Worktree: "/home/wt/worktrees/wt-1",
+	}
+	table, err := spec.Resolve(s, ctx)
+	if err != nil {
+		t.Fatalf("resolving the machine conformance spec: %v", err)
+	}
+	return conformanceCase{
+		name: "machine",
+		d:    &Machine{},
+		spec: s,
+		ctx:  ctx,
+		env: Env{
+			Spec: s, App: "conformance", Slug: "wt-1", Slot: 1,
+			Home: "/home/wt", Worktree: "/home/wt/worktrees/wt-1",
+			Resolved: table,
+			Machine:  newFakeMachine(),
+		},
+		resource:     "vm",
+		wantApply:    true,
+		wantTeardown: true,
+		wantGates:    false,
 	}
 }
 
