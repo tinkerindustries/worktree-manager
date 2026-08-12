@@ -55,10 +55,16 @@ configuration; neither binary branches on repo identity.
   slug validation, descriptor location, the guard engine.
 - `internal/platform` — M8: symlink-resolved path realisation, the mount's
   case-sensitivity probe, the socket path, peer credentials, the private
-  store-dir permission model, and the launchd supervisor seam. The only
-  package permitted to branch on `GOOS`.
-- `internal/descriptor` — the per-worktree allocation record and its
-  reader (yaml and json); phase 5 writes the same type.
+  store-dir permission model, the atomic-write helper, and the launchd
+  supervisor seam. The only package permitted to branch on `GOOS`.
+- `internal/descriptor` — the per-worktree allocation record: type,
+  reader, atomic writer, the shared-block and isolation-state builders,
+  and the `info/exclude` ignore rule.
+- `internal/envfile` — the `.env` managed block: replace-only-the-block
+  re-runs, the duplicate strip, the first-write seed from the main
+  checkout, the unbalanced-marker refusal.
+- `internal/generate` — the generated Go descriptor reader, stdlib-only
+  and gofmt-clean by construction.
 - `internal/protocol` — the wire between the two binaries: message types,
   newline-delimited JSON framing, version negotiation.
 - `internal/store` — the coordinator's state directory: `WT_HOME`/`$HOME/.wt`

@@ -7,7 +7,7 @@ deliberately both named `ARCHITECTURE.md` (plan.md §7).
 
 ## Packages
 
-One module, `github.com/mrgeoffrich/worktree-manager`, two binaries, eight
+One module, `github.com/mrgeoffrich/worktree-manager`, two binaries, eleven
 internal packages:
 
 ```
@@ -24,10 +24,17 @@ internal/platform  M8: path realisation, the mount's case-sensitivity
               probe, the port-probe socket options (SO_REUSEADDR set on
               unix, unset on Windows — the one GOOS branch callers never
               see), the socket path, peer credentials, the private-dir
-              permission model, the supervisor (launchd) seam; the only
-              package permitted to branch on GOOS
-internal/descriptor  M5 read side: the per-worktree allocation record and
-              its reader (yaml and json); phase 5 writes the same type
+              permission model, the atomic-write helper, the supervisor
+              (launchd) seam; the only package permitted to branch on GOOS
+internal/descriptor  M5: the per-worktree allocation record, its reader
+              (yaml and json), its atomic writer, the shared-block and
+              isolation-state builders, and the info/exclude ignore rule
+internal/envfile  M5: the .env delivery channel — the wt-managed block,
+              the duplicate strip, the first-write seed from the main
+              checkout, and the unbalanced-marker refusal
+internal/generate  M5: the generated Go descriptor reader — the source
+              an adopted repo compiles into its own entry points, with an
+              embedded YAML-subset parser (stdlib only)
 internal/protocol  the wire between the two binaries: message types,
               newline-delimited JSON framing, version negotiation, and
               the phase-3 verb payloads (which carry the parsed spec)
@@ -65,7 +72,15 @@ Import rules, fixed for the whole plan:
 - `internal/identity` → `internal/spec`, `internal/platform`,
   `internal/descriptor`. It contains no platform branch of its own.
 - `internal/descriptor` → `internal/spec` (the `spec.Resolved` shape of its
-  resources map).
+  resources map, `spec.EmitYAML` for emission, `spec.Substitute` for the
+  shared block) and `internal/platform` (the atomic write). It never
+  imports the coordinator's store — the client-side emitters cannot.
+- `internal/envfile` → `internal/spec` (the emit.env templates resolve
+  through `spec.Substitute`) and `internal/platform` (the atomic write).
+- `internal/generate` → `internal/spec` (the spec the reader is generated
+  from) plus `go/format` from the standard library. The generated source
+  itself imports only the standard library — it is copied into an adopted
+  repository, so it can never add a dependency to that repo's go.mod.
 - `internal/platform` imports only the standard library and is the only
   package that may branch on `GOOS`; no `runtime.GOOS ==` and no
   `_darwin.go` build tag exists anywhere else.
@@ -101,7 +116,10 @@ Import rules, fixed for the whole plan:
 - `EmitYAML` quotes every string scalar, unconditionally. A worktree may
   be slugged `no`, `on`, `off`, `yes` or `y`, and an unquoted emitter
   would turn those into booleans on the way back in (docs/ARCHITECTURE.md
-  §8.2). Phase 5's descriptor emitter uses this same function.
+  §8.2). The descriptor emitter uses this same function.
+- `Substitute(t, ctx, resolved)` resolves a non-resource template — a
+  hand-authored shared name, a seed source, an emit.env key — against the
+  builtin variables plus the already-resolved resource table.
 
 ## Identity and containment (`internal/identity`, `internal/platform`)
 
@@ -141,8 +159,83 @@ Import rules, fixed for the whole plan:
 - `Read(path, format)` takes the format from `emit.descriptor.format` —
   yaml or json, never sniffed — refuses unknown fields, refuses a newer
   schema version naming the upgrade, and reports an unparseable descriptor
-  without ever overwriting it (phase 5 owns the emitter; it marshals this
-  same type).
+  without ever overwriting it.
+- `Write(path, format, d)` is the emitter on the same type: yaml through
+  `spec.EmitYAML` (every string scalar quoted, so a slugged `no` never
+  round-trips as false) or json through `encoding/json`, written
+  atomically via `platform.AtomicWrite` at 0600. The descriptor is always
+  written, whatever else a repo chooses (05-delivery.md §1), and it lands
+  at the worktree root, undotted, at `emit.descriptor.filename`.
+- `BuildShared(s, ctx, resolved, impact)` builds the shared block's two
+  halves (03-drivers.md §6): every resource with `default: shared`
+  contributes itself with its resolved path and its impact text — the
+  text arrives as a callback because only the coordinator side imports
+  the drivers — and the spec's hand-authored `shared:` entries resolve
+  their template names through `spec.Substitute`. A shared resource with
+  no resolved value, or an empty impact text, is an error: a stale shared
+  block is worse than none because it is believed.
+- `BuildState(s)` carries the spec's isolation decisions into the
+  descriptor: one entry per state-path resource, `isolated: false` for
+  `default: shared`, `isolated: true` otherwise.
+- `EnsureIgnored(worktreeRoot, gitCommonDir, filename)` implements
+  05-delivery.md §2.2: if adoption already committed the ignore line to
+  the worktree root's `.gitignore`, nothing is written; otherwise the line
+  goes to `$GIT_COMMON_DIR/info/exclude`, idempotently and atomically. A
+  tracked `.gitignore` is never touched — in a linked worktree it is
+  shared through the branch, and every write would dirty a working tree
+  another tool just created clean. The git common dir and the worktree
+  root come from the classification (`identity.Classification`), the only
+  way the caller should reach either.
+
+## Delivery — the three channels (`internal/envfile`, `internal/generate`)
+
+05-delivery.md §1's channels, as functions another package calls — init
+(phase 5's other half) sequences them; nothing here is a verb.
+
+- **The descriptor** is channel one, above.
+- **The `.env` managed block** (`internal/envfile`): `Update(path, env,
+  ctx, resolved, seedFrom)` rewrites a repo's .env through the marked
+  block — a re-run replaces only the marked lines, so hand edits above
+  and below survive. Any definition of a managed key found outside the
+  block is stripped rather than left to be shadowed, and the report names
+  the keys (duplicates cannot be ordered: dotenv parsers disagree about
+  which duplicate wins). Unbalanced or nested markers refuse the write,
+  naming the line numbers. A first write seeds from the main checkout's
+  .env — the `seedFrom` path the caller reaches through
+  `identity.Classification.MainCheckoutPath`, the one legitimate consumer
+  of that path — copying unmanaged content only: managed keys come from
+  this worktree's allocation, never from slot 0. A missing source file
+  seeds nothing and is not an error; the report says the seed was
+  skipped. A fresh .env is written 0600, an existing one keeps its mode.
+- **The generated reader** (`internal/generate`): `Reader(spec)` renders
+  the Go source an adopted repo compiles into its own entry points
+  (05-delivery.md §4), baked from `emit.reader` (package, app-scoped env
+  var), `emit.descriptor` (filename, format) and the resource list. It
+  reads the descriptor file and nothing else — no registry, no socket, no
+  `WT_HOME`, no wt binary installed — and applies the four-row
+  resolution table: explicit flags (fully supplied short-circuits the
+  descriptor read entirely, B18.2); an env override naming a descriptor,
+  `--env` beating the app-scoped variable and a foreign-app descriptor
+  refused naming both apps; the descriptor found by walking up from cwd
+  to the worktree root, with git (the repo's own tool) telling the
+  primary checkout — legacy default, slot 0 keeps the committed defaults
+  — from a linked worktree; and a missing descriptor in a linked worktree
+  of an adopted repo refusing loudly, naming `wt init`. The status output
+  reports `env_source` and `env_path`. The generated source depends on
+  the standard library alone and is gofmt-clean by construction: a
+  yaml-format descriptor is parsed by a small parser for the exact YAML
+  subset the emitter writes (block mappings, block sequences, quoted and
+  plain scalars, empty flow collections), and anything outside the subset
+  — or a newer schema version — is refused whole.
+
+## The atomic write (`internal/platform`)
+
+- The repository's one atomic write path: temp file in the same
+  directory, fsync the file, rename, fsync the directory. It moved here
+  from the store in phase 5 because the client-side emitters owe the same
+  guarantee and never import the coordinator's store;
+  `store.AtomicWrite` is a one-line delegate, so the sequence exists once
+  and cannot drift.
 
 ## The guard (`internal/identity` guard engine, `wt guard` verb)
 
@@ -187,8 +280,10 @@ Import rules, fixed for the whole plan:
   §4.6, compiled but unverified in this phase).
 - The one write path is atomic: temp file in the same directory, fsync
   the file, rename, fsync the directory — same directory because a rename
-  across filesystems is not atomic. `AtomicWrite` is the only atomic-write
-  helper; the registry, the ledger and clients.json all go through it.
+  across filesystems is not atomic. The sequence lives in
+  `internal/platform` since phase 5 (the client-side emitters owe it and
+  never import the store); `store.AtomicWrite` delegates to it, and the
+  registry, the ledger and clients.json all go through it.
 - Every store file carries a `schema_version` field; a file written by a
   newer schema is refused on read naming the upgrade, never written back.
   The registry adds a second rail: `ReadRegistryList` decodes a newer file
@@ -373,8 +468,8 @@ into the release verb.
 The six rules of `docs/ARCHITECTURE.md` §8.6, stated as invariants:
 
 1. **The descriptor beats the registry** — the registry is a cache;
-   rebuilding it from descriptors must always be safe. (Phase 5 writes
-   descriptors; the rebuild lands in phase 6.)
+   rebuilding it from descriptors must always be safe. (The descriptor
+   emitter writes them; the rebuild lands in phase 6.)
 2. **The ledger beats the spec on where ports sit** — allocation feeds the
    ledger's bases into `spec.Resolve`; a committed band would stop two
    developers from differing.
@@ -484,3 +579,20 @@ The six rules of `docs/ARCHITECTURE.md` §8.6, stated as invariants:
   new file. The case-sensitivity probe creates one probe file per call; it
   is cheap, and whether the guard should cache it per session is an open
   question (plan.md §9.2).
+- The descriptor's emitted YAML quotes map keys as well as values
+  (`"api":`), and an absent section emits as `state: {}` — the generated
+  reader's YAML subset parser accepts both shapes, and anything else is
+  refused with the line number. The subset is pinned by
+  `TestGeneratedReaderParsesTheEmittedDescriptor`, which emits a real
+  descriptor and parses it with the built generated reader.
+- The generated reader is stdlib-only by design and gofmt-clean by
+  construction (`go/format` runs inside the generator), because it lands
+  in an adopted repo where it must not be the one file that fails that
+  repo's fmt check or drags in a dependency.
+- The `.env` writer and the descriptor writer are 0600 for a fresh file
+  (both may carry credentials), preserving an existing file's mode; the
+  ignore fallback is 0644 — git's own info/exclude is not secret.
+- The generated reader tells the primary checkout from a linked worktree
+  with git, the repo's own tool — that is the only outside read the
+  four-row table needs, and it is what distinguishes "slot 0 keeps the
+  committed defaults" from "refuse, naming wt init".

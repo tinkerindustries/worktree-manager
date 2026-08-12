@@ -29,6 +29,73 @@ go test ./internal/spec/ -run TestExplainTablesDisjoint -v
 go test ./internal/driver/ -run TestDriverConformance -v
 ```
 
+### The delivery layer (phase 5)
+
+The three channels of `internal/envfile` and `internal/descriptor`'s write
+side, one named test per exit criterion:
+
+- `internal/descriptor/write_test.go`:
+  - `TestWriteYAMLQuotesTheSlug` — criterion 1: a descriptor emitted as
+    YAML round-trips a worktree slugged `no` (and `on`, `off`, `yes`,
+    `y`) without turning it into `false`.
+  - `TestWriteLandsAtWorktreeRootUndotted` and `TestWriteIsAtomic` —
+    criterion 2: the descriptor lands at the worktree root, undotted, in
+    the format `emit.descriptor` declares, via temp-file-fsync-rename with
+    no temp file left behind.
+  - `TestBuildSharedCarriesBothHalves` and
+    `TestBuildSharedRefusesSilentOmission` — criterion 3: the shared block
+    carries both halves, and a shared resource with no resolved value or
+    no impact text is an error, never a silent omission.
+  - `TestWriteRoundTrip`, `TestWriteEmitsThroughTheReader`,
+    `TestWriteUnknownFormat`, `TestBuildStateCarriesTheIsolationDecisions`.
+- `internal/envfile/envfile_test.go`:
+  - `TestManagedKeyAboveBlockIsStripped` and `TestReRunReplacesOnlyTheBlock`
+    — criterion 4: a managed key defined above the block comes back with
+    one definition, the report names the stripped keys, and a re-run
+    replaces only the block so hand edits above and below survive.
+  - `TestFirstWriteSeedsFromMainCheckout` and
+    `TestFirstWriteSeedsNothingWhenSourceMissing` — criterion 5: a first
+    write seeds from the main checkout copying unmanaged content only
+    (slot 0's managed values never carry over), and a missing source
+    seeds nothing and is not an error.
+  - `TestUnbalancedMarkersRefused` — criterion 6: unbalanced or nested
+    managed markers refuse the write naming the line numbers, and the
+    file is left untouched.
+  - `TestCommentedManagedKeyIsNotStripped`, `TestNoSeedWhenDisabled`,
+    `TestNewFileModeIsPrivate`.
+- `internal/generate/reader_test.go` — the generated reader, proved by
+  building it:
+  - `TestGeneratedReaderCompilesAndRuns` — criterion 8: the generated
+    source is written into a temp Go module, built with `go build` (a
+    generator whose output was never built is a generator that does not
+    work), and the binary exercises all four rows of the resolution table
+    against real git repositories, including the loud failure naming
+    `wt init`.
+  - `TestGeneratedReaderRefusesNewerVersion` — criterion 9: a descriptor
+    whose schema version is newer than the reader understands is refused
+    naming the version, on both the cwd and the env-override paths.
+  - `TestGeneratedReaderEnvOverride` (—env beats the variable, a missing
+    override is never a fall-through, a foreign-app descriptor is refused
+    naming both apps), `TestGeneratedReaderShortCircuitsExplicitFlags`
+    (B18.2: a broken override cannot take down an explicit call),
+    `TestGeneratedReaderParsesTheEmittedDescriptor` (the yaml subset
+    parser round-trips exactly what the emitter writes),
+    `TestGeneratedReaderParsesJSONFormat`, `TestGeneratedReaderRefuses-
+    UnknownFields`, `TestReaderGenerationRefusals`,
+    `TestGeneratedReaderFormatIsBaked`.
+- `internal/descriptor/ignore_test.go` — the gitignore rule, criterion 7,
+  in layer 2 below: it needs real git repositories.
+
+Run one test:
+
+```sh
+go test ./internal/envfile/ -run TestManagedKeyAboveBlockIsStripped -v
+go test ./internal/generate/ -run TestGeneratedReaderCompilesAndRuns -v
+```
+
+This layer needs a Go toolchain (the generated reader is built) and, for
+the reader tests, git (the resolution rows are real repositories).
+
 ## Layer 2 — real-repo fixtures
 
 Classification, root resolution and containment against real repositories,
@@ -68,12 +135,25 @@ nested `.git` is committed to this repository. Two fixture kinds:
   `TestGuardDeniesWriteToPrimaryCheckout`, `TestGuardDeniesReadCLAUDEOutside`
   and `TestGuardFailsOpen` in `internal/identity/`, and at the binary level
   by `TestRunGuard*` and `TestRunShow*` in `internal/cli/`.
+- The gitignore rule (criterion 7) is tested against real repositories in
+  `internal/descriptor/ignore_test.go`, because the rule exists for a
+  mechanism only a real repo exercises — a tracked `.gitignore` shared
+  through the branch in a linked worktree:
+  `TestEnsureIgnoredWritesInfoExclude` (the line goes to
+  `$GIT_COMMON_DIR/info/exclude` and git honours it, tree stays clean),
+  `TestEnsureIgnoredIsIdempotent` (a second write changes nothing),
+  `TestEnsureIgnoredLeavesTrackedGitignoreUntouched` (a committed
+  `.gitignore` is never modified),
+  `TestEnsureIgnoredSkipsWhenAdoptionCommittedTheLine` (detected, never
+  duplicated), and `TestEnsureIgnoredOneWriteCoversLinkedWorktrees` (one
+  write from one worktree covers every linked worktree of the repo).
 
 Run one test:
 
 ```sh
 go test ./internal/identity/ -run TestClassifyFixtures -v
 go test ./internal/identity/ -run TestGuardDeniesWriteToPrimaryCheckout -v
+go test ./internal/descriptor/ -run TestEnsureIgnoredWritesInfoExclude -v
 ```
 
 This layer needs nothing installed but git.
