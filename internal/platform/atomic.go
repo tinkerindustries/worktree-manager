@@ -48,15 +48,12 @@ func AtomicWrite(path string, data []byte, perm os.FileMode) error {
 		os.Remove(tmpName)
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
-	// fsync the directory so the rename itself is durable. On Windows this
-	// fails — the Windows store refuses to open in the first place, so the
-	// write path is never reached there (08-platform.md §4.6).
-	d, err := os.Open(dir)
-	if err == nil {
-		err = d.Sync()
-		d.Close()
-	}
-	if err != nil {
+	// fsync the directory so the rename itself is durable. The unix
+	// implementation opens the directory and syncs it; on Windows the
+	// step is a no-op — opening a directory handle fails there, and NTFS
+	// journaling plus MoveFileEx provides the durability the unix fsync
+	// buys (stated as bounded coverage in atomic_windows.go).
+	if err := syncDir(dir); err != nil {
 		return fmt.Errorf("writing %s: fsyncing %s: %w", path, dir, err)
 	}
 	return nil

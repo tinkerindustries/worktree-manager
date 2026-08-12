@@ -9,59 +9,119 @@ import (
 	"strings"
 )
 
-// The launchd agent that supervises the coordinator on macOS. Only macOS
-// has a supervisor in this phase: the Linux systemd unit and the Windows
-// service or logon task are phase 8 (plan.md §5, "Phase 8").
+// The coordinator's supervisor registration. macOS runs a launchd
+// LaunchAgent, Linux a systemd user unit with its paired .socket unit
+// (systemd_linux.go), Windows a logon scheduled task (task_windows.go).
+// The registration file — the plist, the service unit or the task XML —
+// is the "registered" observation `daemon status` checks
+// (docs/ARCHITECTURE.md §13.1).
 const (
 	LaunchAgentLabel    = "com.mrgeoffrich.wtd"
 	LaunchAgentFilename = LaunchAgentLabel + ".plist"
+	// SystemdUnitLabel is the systemd unit name prefix, matching the
+	// launchd label. The two units are <label>.service and
+	// <label>.socket (systemd_linux.go).
+	SystemdUnitLabel = "com.mrgeoffrich.wtd"
+	// SystemdServiceFilename is the service unit's filename. The service
+	// is the registration's primary file (what "registered" checks), the
+	// .socket unit is its paired half.
+	SystemdServiceFilename = SystemdUnitLabel + ".service"
+	// SystemdSocketFilename is the socket unit's filename. The socket
+	// unit owns the listener; the service consumes it via LISTEN_FDS.
+	SystemdSocketFilename = SystemdUnitLabel + ".socket"
+	// WindowsTaskName is the scheduled task's name; WindowsTaskFilename
+	// is the task XML the scheduler database is registered from (the
+	// logon-task registration, phase 8b).
+	WindowsTaskName     = "com.mrgeoffrich.wtd"
+	WindowsTaskFilename = WindowsTaskName + ".xml"
 )
 
-// ErrNoSupervisor is returned where this phase has no supervisor to
-// register with — Linux and Windows. The remedy always names the
-// foreground mode and the phase that owns the unit.
-var ErrNoSupervisor = errors.New("no coordinator supervisor on this platform in this phase (the Linux systemd unit and the Windows service are phase 8); run wtd in the foreground instead")
+// ErrNoSupervisor is returned where no supervisor exists: a platform this
+// project does not target. The remedy always names the foreground mode.
+var ErrNoSupervisor = errors.New("no coordinator supervisor on this platform; run wtd in the foreground instead")
 
 // SupervisorRegistrationPath returns the path of the coordinator's
 // supervisor registration file. A prefix overrides the real location so a
 // test can direct the registration at a temporary directory — no test may
-// install a LaunchAgent on the machine running it — and under a prefix the
-// registration file is inert data on every platform. Without a prefix,
-// macOS resolves ~/Library/LaunchAgents and Linux/Windows refuse with
-// ErrNoSupervisor.
+// install a real supervisor unit on the machine running it — and under a
+// prefix the registration file is inert data on every platform. Without a
+// prefix: macOS ~/Library/LaunchAgents, Linux the user's systemd
+// directory, Windows %LOCALAPPDATA%\wt (the task XML the scheduler
+// database is registered from).
 func SupervisorRegistrationPath(prefix string) (string, error) {
 	if prefix != "" {
-		return filepath.Join(prefix, LaunchAgentFilename), nil
+		return filepath.Join(prefix, SupervisorFilename(runtime.GOOS)), nil
 	}
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", fmt.Errorf("resolving the LaunchAgents directory: %w", err)
 		}
 		return filepath.Join(home, "Library", "LaunchAgents", LaunchAgentFilename), nil
+	case "linux":
+		dir, err := systemdUserDir("")
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(dir, SystemdServiceFilename), nil
+	case "windows":
+		dir, err := windowsTaskDir("")
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(dir, WindowsTaskFilename), nil
 	}
 	return "", ErrNoSupervisor
 }
 
+// SupervisorFilename is the registration filename under a test prefix,
+// matched to the platform so a prefixed install plants the file a
+// prefixed status check looks for.
+func SupervisorFilename(goos string) string {
+	switch goos {
+	case "darwin":
+		return LaunchAgentFilename
+	case "linux":
+		return SystemdServiceFilename
+	case "windows":
+		return WindowsTaskFilename
+	}
+	return LaunchAgentFilename
+}
+
 // SupervisorRunning reports whether the supervisor currently runs the
-// coordinator. On macOS this is launchctl's view, independent of the
-// socket — that independence is what lets daemon status distinguish
-// "registered but stopped" from "running but unreachable". A prefix means a
-// test never loaded anything, so the answer is false without consulting
-// launchd. On Linux and Windows there is no supervisor in this phase.
+// coordinator. On macOS this is launchctl's view, on Linux systemd's
+// view of the socket unit, on Windows the Task Scheduler's view of the
+// task — each independent of the socket, which is what lets daemon
+// status distinguish "registered but stopped" from "running but
+// unreachable". A prefix means a test never loaded anything, so the
+// answer is false without consulting the supervisor.
 func SupervisorRunning(prefix string) (bool, error) {
-	if runtime.GOOS == "darwin" && prefix == "" {
+	switch {
+	case runtime.GOOS == "darwin" && prefix == "":
 		return launchdRunning()
+	case runtime.GOOS == "linux" && prefix == "":
+		return systemdRunning(prefix)
+	case runtime.GOOS == "windows" && prefix == "":
+		return taskSchedulerRunning(prefix)
 	}
 	return false, nil
 }
 
+// LingeringCaveat reports the systemd lingering caveat — a systemd user
+// unit stops at logout unless lingering is enabled — where a reader of
+// `daemon status` or `daemon install` will see it. Empty on platforms
+// without the caveat and under test prefixes. The caveat names the
+// remedy: `loginctl enable-linger <user>`.
+func LingeringCaveat(prefix string) string { return lingeringCaveat(prefix) }
+
 // InstallSupervisorOpts directs the coordinator's supervisor registration.
 type InstallSupervisorOpts struct {
-	// Prefix overrides the registration directory (tests). Empty means the
-	// real ~/Library/LaunchAgents on macOS, and ErrNoSupervisor elsewhere.
+	// Prefix overrides the registration directory (tests). Empty means
+	// the real location on the platform's supervisor.
 	Prefix string
-	// WtdPath is the absolute path the registration file will exec — the
+	// WtdPath is the absolute path the registration will exec — the
 	// coordinator binary, normally a sibling of the wt binary that is
 	// running `wt daemon install`.
 	WtdPath string
@@ -70,30 +130,48 @@ type InstallSupervisorOpts struct {
 // InstallSupervisorResult reports what registration wrote and whether the
 // supervisor was asked to start the coordinator.
 type InstallSupervisorResult struct {
-	PlistPath string
-	Label     string
-	Loaded    bool
-	Note      string
+	// RegistrationPath is the primary registration file that was written
+	// (the plist, the service unit, or the task XML).
+	RegistrationPath string
+	Label            string
+	Loaded           bool
+	Note             string
 }
 
 // InstallSupervisor registers the coordinator with the platform's
-// supervisor and starts it. The plist deliberately uses RunAtLoad and
-// KeepAlive rather than launchd socket activation: launchd hands the
+// supervisor and starts it. The macOS plist deliberately uses RunAtLoad
+// and KeepAlive rather than launchd socket activation: launchd hands the
 // listener over through launch_activate_socket, a C API, and this project
 // is CGO_ENABLED=0 throughout — there is no pure-Go path to that file
-// descriptor (docs/ARCHITECTURE.md §4.1 names the Sockets key; the task
-// brief overrides it for that reason).
+// descriptor (docs/ARCHITECTURE.md §4.1 names the Sockets key; the phase
+// 2 brief overrides it for that reason). Linux does use systemd socket
+// activation, whose LISTEN_FDS handoff is pure-Go readable
+// (systemd_linux.go); Windows registers a logon scheduled task
+// (task_windows.go).
 //
 // Under a prefix the registration file is written and nothing is loaded —
 // the point of the prefix is that a test never touches the machine's
-// launchd.
+// supervisor.
 func InstallSupervisor(opts InstallSupervisorOpts) (InstallSupervisorResult, error) {
+	if opts.WtdPath == "" {
+		return InstallSupervisorResult{}, errors.New("the registration file needs the coordinator binary path (wtd)")
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		return installLaunchAgent(opts)
+	case "linux":
+		return installSystemdUnits(opts.Prefix, opts.WtdPath)
+	case "windows":
+		return installWindowsTask(opts.Prefix, opts.WtdPath)
+	}
+	return InstallSupervisorResult{}, ErrNoSupervisor
+}
+
+// installLaunchAgent writes the plist and, outside a prefix, loads it.
+func installLaunchAgent(opts InstallSupervisorOpts) (InstallSupervisorResult, error) {
 	path, err := SupervisorRegistrationPath(opts.Prefix)
 	if err != nil {
 		return InstallSupervisorResult{}, err
-	}
-	if opts.WtdPath == "" {
-		return InstallSupervisorResult{}, errors.New("the registration file needs the coordinator binary path (wtd)")
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return InstallSupervisorResult{}, fmt.Errorf("creating the registration directory %s: %w", filepath.Dir(path), err)
@@ -103,17 +181,17 @@ func InstallSupervisor(opts InstallSupervisorOpts) (InstallSupervisorResult, err
 	}
 	if opts.Prefix != "" {
 		return InstallSupervisorResult{
-			PlistPath: path, Label: LaunchAgentLabel, Loaded: false,
+			RegistrationPath: path, Label: LaunchAgentLabel, Loaded: false,
 			Note: "registration written under a test prefix; no launchd state was touched",
 		}, nil
 	}
 	// Real registration: macOS only — the prefix-less path on Linux and
-	// Windows already refused above with ErrNoSupervisor.
+	// Windows is handled by their own installers above.
 	if err := loadLaunchAgent(path); err != nil {
-		return InstallSupervisorResult{PlistPath: path, Label: LaunchAgentLabel},
+		return InstallSupervisorResult{RegistrationPath: path, Label: LaunchAgentLabel},
 			fmt.Errorf("registering %s with launchd: %w", path, err)
 	}
-	return InstallSupervisorResult{PlistPath: path, Label: LaunchAgentLabel, Loaded: true}, nil
+	return InstallSupervisorResult{RegistrationPath: path, Label: LaunchAgentLabel, Loaded: true}, nil
 }
 
 // launchdPlist is the LaunchAgent property list. RunAtLoad starts the
@@ -168,8 +246,10 @@ func CoordinatorStartCommand(socketPath string) string {
 	switch runtime.GOOS {
 	case "darwin":
 		return "wt daemon install"
+	case "linux":
+		return "register and start the coordinator: wt daemon install (installs the systemd user unit and its paired socket unit)"
 	case "windows":
-		return "install the coordinator as a Windows service (phase 8); for now run wtd in the foreground"
+		return "register and start the coordinator: wt daemon install (installs the logon task)"
 	default:
 		if socketPath == "" {
 			return "run wtd in the foreground with WT_SOCKET set"
@@ -199,15 +279,21 @@ func DaemonFixesFor(socketPath string) DaemonFixes {
 			RegisteredStopped:  fmt.Sprintf("start the coordinator: launchctl kickstart %s (or re-run: wt daemon install)", domain),
 			RunningUnreachable: fmt.Sprintf("restart the coordinator: launchctl kickstart -k %s — and check that WT_SOCKET names the socket the coordinator listens on", domain),
 		}
+	case "linux":
+		return DaemonFixes{
+			NotRegistered:      "register and start the coordinator: wt daemon install",
+			RegisteredStopped:  fmt.Sprintf("start the coordinator: systemctl --user start %s (or re-run: wt daemon install)", SystemdSocketFilename),
+			RunningUnreachable: fmt.Sprintf("restart the coordinator: systemctl --user restart %s — and check that WT_SOCKET matches the socket unit's ListenStream (systemctl --user cat %s)", SystemdSocketFilename, SystemdSocketFilename),
+		}
 	case "windows":
 		return DaemonFixes{
-			NotRegistered:      "install the coordinator as a Windows service (phase 8); for now run wtd in the foreground",
-			RegisteredStopped:  "start the coordinator service (phase 8); for now run wtd in the foreground",
-			RunningUnreachable: "restart the coordinator (phase 8); for now run wtd in the foreground",
+			NotRegistered:      "register and start the coordinator: wt daemon install",
+			RegisteredStopped:  fmt.Sprintf("start the coordinator: schtasks /Run /TN %s (or re-run: wt daemon install)", WindowsTaskName),
+			RunningUnreachable: fmt.Sprintf("restart the coordinator: schtasks /End /TN %s, then schtasks /Run /TN %s — and check that WT_SOCKET names the pipe the coordinator listens on", WindowsTaskName, WindowsTaskName),
 		}
 	default:
 		return DaemonFixes{
-			NotRegistered:      start + " — the Linux supervisor unit is phase 8",
+			NotRegistered:      start,
 			RegisteredStopped:  start,
 			RunningUnreachable: start + " — and check that WT_SOCKET names the socket the coordinator listens on",
 		}

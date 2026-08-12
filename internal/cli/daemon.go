@@ -43,6 +43,11 @@ type daemonStatusResult struct {
 	Running    bool   `json:"running"`
 	Reachable  bool   `json:"reachable"`
 	Fix        string `json:"fix,omitempty"`
+	// Note carries a caveat a reader of the state needs — the systemd
+	// lingering warning on Linux, which applies to every state (a
+	// coordinator that dies at logout is a coordinator nobody notices
+	// until the next login).
+	Note string `json:"note,omitempty"`
 }
 
 // daemonStatusDeps are the observations `daemon status` is built from, as
@@ -153,6 +158,11 @@ func runDaemonStatus(args []string, stdout, stderr io.Writer) int {
 	socketPath, _ := platform.SocketPath()
 	dialErr := daemonDeps.reachable()
 	res := daemonStatusOf(registered, running, dialErr, platform.DaemonFixesFor(socketPath))
+	// The lingering caveat applies to every state on Linux: a systemd
+	// user unit stops at logout unless lingering is enabled, so a running
+	// coordinator today is a dead one after logout. The note names the
+	// remedy (loginctl enable-linger <user>).
+	res.Note = platform.LingeringCaveat(*prefix)
 
 	if *jsonOut {
 		if err := WriteJSON(stdout, res); err != nil {
@@ -165,27 +175,34 @@ func runDaemonStatus(args []string, stdout, stderr io.Writer) int {
 	if res.Fix != "" {
 		fmt.Fprintf(stdout, "fix: %s\n", res.Fix)
 	}
+	if res.Note != "" {
+		fmt.Fprintf(stdout, "note: %s\n", res.Note)
+	}
 	return ExitOK
 }
 
 // daemonInstallResult is the one JSON object `wt daemon install --json`
-// prints.
+// prints. RegistrationPath is the primary registration file that was
+// written — the launchd plist on macOS, the systemd service unit on
+// Linux, the scheduled-task XML on Windows (the field was plist_path
+// before phase 8b; nothing outside internal/cli consumed the old name).
 type daemonInstallResult struct {
-	PlistPath string `json:"plist_path"`
-	Label     string `json:"label"`
-	Loaded    bool   `json:"loaded"`
-	Note      string `json:"note,omitempty"`
+	RegistrationPath string `json:"registration_path"`
+	Label            string `json:"label"`
+	Loaded           bool   `json:"loaded"`
+	Note             string `json:"note,omitempty"`
 }
 
 // runDaemonInstall implements `wt daemon install [--prefix <dir>]
 // [--wtd <path>] [--json]`: it registers the coordinator with the
 // platform's supervisor and starts it. The --prefix option directs the
-// registration at a temporary prefix instead of the real
-// ~/Library/LaunchAgents — no test may install a LaunchAgent on the
-// machine running it, and under a prefix nothing is loaded either.
-// macOS launchd is the one supervisor this phase registers with; on Linux
-// and Windows a real registration refuses with exit 4 naming the phase-8
-// unit and the foreground alternative.
+// registration at a temporary prefix instead of the real supervisor
+// location — no test may install a real supervisor unit on the machine
+// running it, and under a prefix nothing is loaded either. Each platform
+// has its supervisor: launchd on macOS, the systemd user unit with its
+// paired socket unit on Linux (phase 8b), the logon scheduled task on
+// Windows (phase 8b). A platform with no supervisor refuses with exit 4
+// naming the foreground alternative.
 func runDaemonInstall(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("daemon install", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -229,7 +246,7 @@ func runDaemonInstall(args []string, stdout, stderr io.Writer) int {
 		return ExitFailure
 	}
 
-	out := daemonInstallResult{PlistPath: res.PlistPath, Label: res.Label, Loaded: res.Loaded, Note: res.Note}
+	out := daemonInstallResult{RegistrationPath: res.RegistrationPath, Label: res.Label, Loaded: res.Loaded, Note: res.Note}
 	if *jsonOut {
 		if err := WriteJSON(stdout, out); err != nil {
 			WriteError(stderr, New(ExitFailure, err.Error(), ""))
@@ -241,7 +258,7 @@ func runDaemonInstall(args []string, stdout, stderr io.Writer) int {
 	if res.Loaded {
 		loaded = "yes"
 	}
-	fmt.Fprintf(stdout, "installed: %s\n", res.PlistPath)
+	fmt.Fprintf(stdout, "installed: %s\n", res.RegistrationPath)
 	fmt.Fprintf(stdout, "loaded: %s\n", loaded)
 	if res.Note != "" {
 		fmt.Fprintf(stdout, "%s\n", res.Note)

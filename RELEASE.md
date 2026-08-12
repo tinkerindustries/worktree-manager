@@ -63,8 +63,8 @@ CI runs the matrix on every push (`.github/workflows/ci.yml`).
 | Piece | Location |
 |---|---|
 | Store | `WT_HOME`, else `$HOME/.wt` — read by `wtd` alone, never by a client |
-| Socket | macOS `~/Library/Application Support/wt/sock`; Linux `$XDG_RUNTIME_DIR/wt/sock`; Windows `\\.\pipe\wt` (phase 8). `WT_SOCKET` overrides everywhere. The socket sits outside the store so a container mounts the socket alone. |
-| Supervisor registration | macOS `~/Library/LaunchAgents/com.mrgeoffrich.wtd.plist` (launchd LaunchAgent; `RunAtLoad` + `KeepAlive` — not socket activation, which needs the C-only `launch_activate_socket`). Linux systemd and Windows service: phase 8. |
+| Socket | macOS `~/Library/Application Support/wt/sock`; Linux `$XDG_RUNTIME_DIR/wt/sock`; Windows `\\.\pipe\wt`. `WT_SOCKET` overrides everywhere. The socket sits outside the store so a container mounts the socket alone. |
+| Supervisor registration | macOS `~/Library/LaunchAgents/com.mrgeoffrich.wtd.plist` (launchd LaunchAgent; `RunAtLoad` + `KeepAlive` — not socket activation, which needs the C-only `launch_activate_socket`). Linux `~/.config/systemd/user/com.mrgeoffrich.wtd.{service,socket}` (systemd user unit with socket activation; lingering caveat: `loginctl enable-linger <user>`). Windows `%LOCALAPPDATA%\wt\com.mrgeoffrich.wtd.xml` (logon scheduled task, registered via `schtasks`). |
 
 ## How a release is cut
 
@@ -80,3 +80,10 @@ CI runs the matrix on every push (`.github/workflows/ci.yml`).
 4. The macOS suite — including the launchd-backed `daemon status` states
    and a real `daemon install` — runs by hand on a macOS machine, because
    no test in the suite touches the machine's LaunchAgents.
+5. The Windows desktop surfaces — a real `schtasks /Create` registration,
+   `taskkill`'s escalation against a real desktop process, and the
+   coordinator's reachability of Docker Desktop and WSL2 from the logon
+   task — run by hand on an interactive Windows desktop; a hosted runner
+   proves the build, the unit and in-process layers and the named pipe
+   instead (`.github/workflows/ci.yml`, the `windows` job), and
+   everything unverified is reported `not_run` rather than assumed.

@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"runtime"
 )
 
 // plainEnv is the emit.env shape of the plain-app fixture: managed keys
@@ -282,7 +283,9 @@ func TestNewFileModeIsPrivate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o600 {
+	// Mode bits are the permission model on unix; on Windows they are not
+	// meaningful (08-platform.md §4.6).
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Errorf("new .env mode = %o, want 600", fi.Mode().Perm())
 	}
 }

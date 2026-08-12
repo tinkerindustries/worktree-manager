@@ -68,13 +68,12 @@ func TestDefaultSocketPath(t *testing.T) {
 // listen on a short path under the temp dir (unix socket paths are
 // length-limited, 104 bytes on macOS), check the 0700 restriction, and
 // verify a second coordinator on the same path is refused while a stale
-// socket file is reclaimed.
+// socket file is reclaimed. On Windows the same contract is exercised over
+// the named pipe in pipe_windows_test.go (TestListenSocketOnWindows) —
+// mode bits do not exist there, the ACL is the permission model.
 func TestListenSocket(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		if _, err := ListenSocket(`\\.\pipe\wt`); err == nil {
-			t.Fatal("ListenSocket on Windows succeeded, want the phase-8 refusal")
-		}
-		return
+		t.Skip("the pipe analogue of this test is TestListenSocketOnWindows in pipe_windows_test.go")
 	}
 	dir := sockDir(t)
 	sock := filepath.Join(dir, "s")
@@ -123,10 +122,12 @@ func TestListenSocketStaleReclaim(t *testing.T) {
 
 // TestPeerUID reports the kernel's own view of the connecting process — the
 // host identity the coordinator trusts. The listener and dialer run in this
-// same process, so the reported uid must be the test's own.
+// same process, so the reported uid must be the test's own. On Windows the
+// pipe's ACL is the identity; that assertion lives in
+// TestPipePeerUIDReportsTheOwner (pipe_windows_test.go).
 func TestPeerUID(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		return // the windows file reports the phase-8 refusal; nothing to assert here
+		t.Skip("the pipe-owner identity is asserted in TestPipePeerUIDReportsTheOwner")
 	}
 	dir := sockDir(t)
 	sock := filepath.Join(dir, "s")

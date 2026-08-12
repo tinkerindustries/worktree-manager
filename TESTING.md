@@ -555,6 +555,35 @@ and criterion 8's ordering and rollback:
 | Adoption layer (phase 7, untagged) | git and a Go toolchain, no docker |
 | Live acceptance | docker, and a coordinator process for the gates (phase 5), `gh` for the gates that check PRs (phase 5/6) |
 
+## The Windows layer (phase 8b)
+
+The `windows` job in CI (`windows-latest`) runs `go build ./...` and
+`go test ./...` natively — the parts of the Windows surface a hosted
+runner can prove (plan.md §5, phase 8's exit criteria):
+
+- the named pipe carrying a full request: `TestPipeCarriesAHello` and
+  the already-listening refusal, the pipe-owner identity and the
+  SID/SDDL machinery (`internal/platform/pipe_windows_test.go`), and a
+  full hello + ping round trip through a real `coord.Server` on a temp
+  pipe (`internal/coord/pipe_integration_test.go`);
+- the store ACL: `TestEnsurePrivateDirWindowsACL` (set + read-back) and
+  `TestEnsurePrivateDirRefusesWhenACLUnsettable` (the refusal, driven
+  through the `windowsSetACL` seam), plus `TestAtomicWriteWindows`;
+- the logon-task registration: the UTF-16 task XML's shape and the
+  status parser (`internal/platform/task_windows_test.go`) — the
+  `schtasks /Create` itself is never run on the machine (prefix rail);
+- path realisation: long/deep paths, symlinks, and the mapped-drive
+  equivalence proven with `subst` (`internal/platform/
+  realpath_windows_test.go`), skipping with the reason where `subst`
+  cannot run.
+
+Not provable on a runner, and reported `not_run` rather than simulated:
+registering the logon task against a real Task Scheduler, `taskkill`'s
+escalation against a real desktop process, Docker Desktop pipe and WSL2
+reachability from the task. The unix-only reaper tests live in
+`internal/coord/reap_unix_test.go` (`//go:build darwin || linux`) for
+this reason.
+
 ## Command surface
 
 ```sh

@@ -67,7 +67,9 @@ configuration; neither binary branches on repo identity.
   `reconcile`, `clients` and `cleanup` (gated on gh: missing or
   unauthenticated gh cleans nothing and exits 4; the full rm safety
   checks apply even when the PR is merged; unverifiable entries are never
-  touched).
+  touched). Since phase 8b `daemon status` reports the systemd lingering
+  caveat on Linux, and `daemon install` registers with launchd, systemd
+  (with its paired socket unit) or the Task Scheduler per platform.
 - `internal/identity` — M1: classification, root resolution, containment,
   slug validation, descriptor location, the guard engine, and the
   per-session classification cache (`WT_GUARD_CACHE`) the generated guard
@@ -86,13 +88,20 @@ configuration; neither binary branches on repo identity.
   refuses with the descriptor missing). Bodies are stable; the managed
   block records the spec fields each file came from. Not a verb — the
   onboarding skill and the tests drive it; `cmd/wt` never imports it.
-- `internal/platform` — M8: symlink-resolved path realisation, the mount's
-  case-sensitivity probe, the socket path, peer credentials, the private
-  store-dir permission model, the atomic-write helper, the launchd
-  supervisor seam, and the machine runner seam (Colima on macOS, WSL2 on
-  Windows, nothing elsewhere — the `MachineRunner` interface the machine
-  driver shells out through and its fake-runner tests fake). The only
-  package permitted to branch on `GOOS`.
+- `internal/platform` — M8: symlink-resolved path realisation (on Windows
+  via `GetFinalPathNameByHandleW`, which also canonicalises long paths and
+  mapped drives), the mount's case-sensitivity probe, the socket path, the
+  named-pipe transport on Windows (owner-only ACL, pipe_windows.go), peer
+  credentials (the pipe's ACL is the whole of host identity on Windows),
+  the private store-dir permission model (0700 on unix; the current-user
+  ACL, with the refusal to hold credentials where it cannot be set, on
+  Windows), the atomic-write helper (the directory-fsync step is unix-only
+  and stated), the supervisor seam (launchd on macOS, the systemd user
+  unit with its paired .socket unit and LISTEN_FDS socket activation on
+  Linux, the logon scheduled task on Windows), and the machine runner seam
+  (Colima on macOS, WSL2 on Windows, nothing elsewhere — the
+  `MachineRunner` interface the machine driver shells out through and its
+  fake-runner tests fake). The only package permitted to branch on `GOOS`.
 - `internal/descriptor` — the per-worktree allocation record: type,
   reader, atomic writer, the shared-block and isolation-state builders,
   and the `info/exclude` ignore rule.

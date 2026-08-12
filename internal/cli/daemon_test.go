@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf16"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
@@ -201,7 +202,7 @@ func TestDaemonStatusEndToEndRegisteredStopped(t *testing.T) {
 	if err := os.MkdirAll(prefix, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	plist := filepath.Join(prefix, platform.LaunchAgentFilename)
+	plist := filepath.Join(prefix, platform.SupervisorFilename(runtime.GOOS))
 	if err := os.WriteFile(plist, []byte("<plist/>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -246,8 +247,9 @@ func TestDaemonStatusEndToEndRunning(t *testing.T) {
 	}
 }
 
-// TestDaemonInstallPrefix is the no-test-installs-a-LaunchAgent rail:
-// install with --prefix writes the plist into the prefix and loads nothing.
+// TestDaemonInstallPrefix is the no-test-installs-a-real-supervisor-unit
+// rail: install with --prefix writes the registration file(s) into the
+// prefix and loads nothing.
 func TestDaemonInstallPrefix(t *testing.T) {
 	prefix := shortSock(t, "p")
 	if err := os.MkdirAll(prefix, 0o755); err != nil {
@@ -266,17 +268,23 @@ func TestDaemonInstallPrefix(t *testing.T) {
 		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
 	}
 	if res.Loaded {
-		t.Error("a prefixed install reported loaded; it must never touch launchd")
+		t.Error("a prefixed install reported loaded; it must never touch the supervisor")
 	}
-	if res.PlistPath != filepath.Join(prefix, platform.LaunchAgentFilename) {
-		t.Errorf("plist path = %q", res.PlistPath)
+	wantPath := filepath.Join(prefix, platform.SupervisorFilename(runtime.GOOS))
+	if res.RegistrationPath != wantPath {
+		t.Errorf("registration path = %q, want %q", res.RegistrationPath, wantPath)
 	}
-	data, err := os.ReadFile(res.PlistPath)
+	data, err := os.ReadFile(res.RegistrationPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), platform.LaunchAgentLabel) {
-		t.Errorf("plist lacks the label:\n%s", data)
+	content := string(data)
+	if runtime.GOOS == "windows" {
+		// The task XML is UTF-16 (schtasks /Create /XML requires it).
+		content = decodeUTF16LE(t, data)
+	}
+	if !strings.Contains(content, platform.LaunchAgentLabel) {
+		t.Errorf("registration file lacks the label:\n%s", content)
 	}
 
 	code, stdout, _ = runCLI(t, "daemon", "install", "--prefix", prefix, "--wtd", stub)
@@ -288,23 +296,32 @@ func TestDaemonInstallPrefix(t *testing.T) {
 	}
 }
 
-// TestDaemonInstallRefusesWithoutSupervisor: on Linux and Windows a real
-// (prefix-less) registration is phase 8 and refuses with exit 4 naming the
-// foreground alternative. On darwin the prefix-less path is the real
-// launchd, which no test may touch.
+// TestDaemonInstallRefusesWithoutSupervisor: a real (prefix-less)
+// registration registers with the machine's supervisor, which no test may
+// do on darwin, linux or windows — so the refusal path is only reachable
+// on a platform this project does not target. The missing-wtd path is
+// testable everywhere and exits 4 with the build remedy.
 func TestDaemonInstallRefusesWithoutSupervisor(t *testing.T) {
-	if runtime.GOOS == "darwin" {
-		t.Skip("darwin's prefix-less install is the real launchd; tests only use prefixes")
-	}
-	code, _, stderr := runCLI(t, "daemon", "install", "--wtd", os.Args[0])
-	if code != ExitUnavailable {
-		t.Fatalf("exit = %d, want 4; stderr: %s", code, stderr)
-	}
-	if !strings.Contains(stderr, "foreground") {
-		t.Errorf("refusal does not name the foreground alternative: %s", stderr)
-	}
-	if !strings.Contains(stderr, "fix:") {
-		t.Errorf("refusal has no remedy: %s", stderr)
+	switch runtime.GOOS {
+	case "darwin", "linux", "windows":
+		code, _, stderr := runCLI(t, "daemon", "install", "--wtd", filepath.Join(t.TempDir(), "missing-wtd"))
+		if code != ExitUnavailable {
+			t.Fatalf("exit = %d, want 4 for a missing coordinator binary; stderr: %s", code, stderr)
+		}
+		if !strings.Contains(stderr, "fix:") {
+			t.Errorf("refusal has no remedy: %s", stderr)
+		}
+	default:
+		code, _, stderr := runCLI(t, "daemon", "install", "--wtd", os.Args[0])
+		if code != ExitUnavailable {
+			t.Fatalf("exit = %d, want 4; stderr: %s", code, stderr)
+		}
+		if !strings.Contains(stderr, "foreground") {
+			t.Errorf("refusal does not name the foreground alternative: %s", stderr)
+		}
+		if !strings.Contains(stderr, "fix:") {
+			t.Errorf("refusal has no remedy: %s", stderr)
+		}
 	}
 }
 
@@ -411,4 +428,22 @@ func TestDaemonVerbUsage(t *testing.T) {
 		t.Errorf("help lacks the daemon verbs:\n%s", stdout)
 	}
 	_ = code
+}
+
+// decodeUTF16LE decodes a UTF-16LE byte slice (BOM stripped) — the
+// encoding schtasks requires for task XML, which the shared daemon tests
+// read on the Windows job.
+func decodeUTF16LE(t *testing.T, data []byte) string {
+	t.Helper()
+	if len(data)%2 != 0 {
+		t.Fatalf("UTF-16 data has an odd length: %d", len(data))
+	}
+	u := make([]uint16, len(data)/2)
+	for i := range u {
+		u[i] = uint16(data[2*i]) | uint16(data[2*i+1])<<8
+	}
+	if len(u) > 0 && u[0] == 0xFEFF {
+		u = u[1:]
+	}
+	return string(utf16.Decode(u))
 }
