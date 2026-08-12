@@ -130,9 +130,14 @@ func runStart(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// Persist any sticky parameter chosen this run back into the
-	// descriptor (04-lifecycle.md §5.2).
+	// descriptor (04-lifecycle.md §5.2), merged with the persisted set so
+	// one run's choices never drop another run's.
 	if len(runner.chosenValues()) > 0 {
-		d.Extras = withStickyParams(d.Extras, runner.chosenValues())
+		merged := stickyParamsOf(d)
+		for k, v := range runner.chosenValues() {
+			merged[k] = v
+		}
+		d.Extras = withStickyParams(d.Extras, merged)
 		if err := descriptor.Write(dpath, sp.Emit.Descriptor.Format, d); err != nil {
 			fmt.Fprintf(stderr, "warning: persisting the chosen hook parameters into %s failed: %v; the choice is not recorded and will be re-made next run\n", dpath, err)
 		}

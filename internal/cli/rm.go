@@ -232,15 +232,6 @@ func rmNoEntry(stdout, stderr io.Writer, jsonOut bool, sp *spec.Spec, slug, call
 	// the directory basename, and `git worktree list` names every tree.
 	root := ""
 	if out, err := runGitOutput(callerDir, "worktree", "list", "--porcelain"); err == nil {
-		var path string
-		for _, line := range strings.Split(out, "\n") {
-			if rest, ok := strings.CutPrefix(line, "worktree "); ok {
-				path = rest
-				continue
-			}
-			// The next entry's first line starts a new record.
-		}
-		_ = path
 		for _, line := range strings.Split(out, "\n") {
 			if rest, ok := strings.CutPrefix(line, "worktree "); ok && filepath.Base(rest) == slug {
 				root = rest

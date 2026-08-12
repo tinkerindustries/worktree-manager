@@ -127,6 +127,11 @@ func (r *hookRunner) runHook(name string, hook *spec.Hook) error {
 	if err != nil {
 		return err
 	}
+	if cmd == "" {
+		// The seed hook's missing-credentials case: resolveCommand printed
+		// the warning and skipped; nothing runs.
+		return nil
+	}
 	if r.dryRun {
 		fmt.Fprintf(r.stderr, "hook %s: would run: %s\n", name, cmd)
 		return nil
