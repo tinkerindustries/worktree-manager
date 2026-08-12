@@ -6,7 +6,7 @@ import (
 )
 
 // usageText is the client's help. Every verb in the system offers --json;
-// phase 0 adds exactly two verbs, spec validate and spec explain.
+// phase 1 adds guard and show alongside phase 0's spec verbs.
 const usageText = `wt — worktree manager client
 
 usage:
@@ -16,6 +16,11 @@ usage:
   wt spec explain --slot N --slug S  resolve the resource table for one slot
       [--base <name>=<port>]...      one base per port resource
       [--home <path>] [--worktree <path>] [--json]
+  wt show [--json] [--cwd <dir>]     read the descriptor back from the
+                                     working tree
+  wt guard [--json] [--cwd <dir>]    the enforcement hook: deny a tool call
+      [--tool <name>] [--input <json>]  whose file_path escapes the worktree.
+      [--path <file>]                accepts a PreToolUse payload on stdin
   wt help                            this help
 
 every verb offers --json: exactly one JSON object on stdout, nothing else.
@@ -38,6 +43,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return ExitOK
 	case "spec":
 		return runSpec(args[1:], stdout, stderr)
+	case "guard":
+		return runGuard(args[1:], stdout, stderr)
+	case "show":
+		return runShow(args[1:], stdout, stderr)
 	default:
 		WriteError(stderr, UsageError(
 			"run 'wt help' for the verb list",
