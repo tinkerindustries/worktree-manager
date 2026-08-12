@@ -1,0 +1,15 @@
+# Invalid: the template references `db`, a resource this spec does not
+# declare. Rejected at validation naming the unknown resource.
+version: 1
+app: unknown-resource-app
+slots:
+  max: 4
+resources:
+  - type: namespace
+    name: compose
+    kind: compose
+    template: "{app}-{db}"
+emit:
+  descriptor:
+    filename: wt-env.yaml
+    format: yaml

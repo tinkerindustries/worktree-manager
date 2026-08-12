@@ -1,0 +1,70 @@
+# plain-app's committed spec — the adoption signal. Shape per
+# docs/design/03-drivers.md §3.1; hooks and emit are fixed in full by phase 0.
+version: 1
+app: plain-app
+
+slots:
+  max: 32
+
+resources:
+  # The one stride port: port = base + slot.
+  - type: port
+    name: api
+  # Seed mode `seeded`: a snapshot of the shared source taken at creation.
+  - type: state-path
+    name: db
+    template: "{home}/.plain-app/worktrees/{slug}-{slot}/db.sqlite"
+    flag: "--isolate-db"
+    seed:
+      from: "{home}/.plain-app/db.sqlite"
+      modes: [seeded, empty, shared]
+      default: seeded
+    purge:
+      flag: "--purge-db"
+  # Seed mode `empty`: a fresh directory, no copy.
+  - type: state-path
+    name: cache
+    template: "{home}/.plain-app/worktrees/{slug}-{slot}/cache/"
+    seed:
+      from: "{home}/.plain-app/cache/"
+      modes: [empty]
+      default: empty
+  # Seed mode `shared`, and the resource with `default: shared`: isolation
+  # off, reached unisolated by every worktree and the main checkout. The
+  # shared block in the descriptor gets this resource automatically (M3 §6).
+  - type: state-path
+    name: shared_db
+    template: "{home}/.plain-app/shared/db.sqlite"
+    default: shared
+    seed:
+      from: "{home}/.plain-app/shared/db.sqlite"
+      modes: [shared]
+      default: shared
+
+# The hand-authored half of the shared block: a resource the tooling does
+# not model at all (03-drivers §6).
+shared:
+  - name: "https://api.example.com/v1"
+    impact: third-party API tenant, shared by every worktree; rate limits are per tenant
+
+hooks:
+  install:
+    run: ./bin/setup.sh
+  health:
+    run: "curl -fsS http://127.0.0.1:{api}/healthz"
+    params:
+      retries:
+        default: "3"
+
+emit:
+  descriptor:
+    filename: wt-env.json
+    format: json
+  env:
+    path: .env
+    seed: true
+    keys:
+      API_PORT: "{api}"
+      DB_PATH: "{db}"
+      CACHE_PATH: "{cache}"
+      SHARED_DB_PATH: "{shared_db}"

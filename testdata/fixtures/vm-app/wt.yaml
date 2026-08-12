@@ -1,0 +1,38 @@
+# vm-app's committed spec — the adoption signal. Shape per
+# docs/design/03-drivers.md §3.1; hooks and emit are fixed in full by phase 0.
+#
+# slots.max is 100 even though the cidr pool only holds 64 blocks: the pool
+# must be small enough to exhaust, which is what makes the capacity guard
+# and the loud fallback real rather than theoretical (03-drivers §4.3).
+version: 1
+app: vm-app
+
+slots:
+  max: 100
+
+resources:
+  # One VM per worktree, capped at 4 concurrent instances (B4.2's guard).
+  - type: machine
+    name: vm
+    driver: auto
+    template: "{app}-{slug}-{slot}"
+    max_concurrent: 4
+    keep_flag: "--keep-vm"
+  # A /22 per worktree out of 172.30.0.0/16 (B5.1): slot 1 takes
+  # 172.30.0.0/22, slot 2 172.30.4.0/22, and so on; 64 blocks in all.
+  - type: cidr
+    name: egress
+    pool: 172.30.0.0/16
+    size: 22
+    on_exhaustion: shared-pool
+
+hooks:
+  install:
+    run: ./scripts/provision.sh --profile {vm}
+  health:
+    run: ./scripts/health.sh --profile {vm}
+
+emit:
+  descriptor:
+    filename: wt-env.yaml
+    format: yaml

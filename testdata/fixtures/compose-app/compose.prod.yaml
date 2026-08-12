@@ -1,0 +1,11 @@
+# The co-resident production stack on fixed ports. It pins `name:` because
+# production must never be renamed by a stray `-p` (B8.1, B8.3), and its
+# ports are the repo's committed defaults: wt.yaml reserves 5319 and 5320 so
+# no worktree allocation can land on them.
+name: compose-app-prod
+services:
+  api:
+    image: compose-app:prod
+    ports:
+      - "5319:5319"
+      - "5320:5320"
