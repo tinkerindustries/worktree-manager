@@ -32,10 +32,6 @@ func (h *Handler) rm(s *Session, req *protocol.Request) *protocol.Response {
 		return respErr(3, fmt.Sprintf("the spec sent with the teardown is refused whole: %v", err),
 			"fix the spec, then re-run")
 	}
-	if h.Drivers == nil {
-		return respErr(1, "the coordinator has no driver registry installed",
-			"restart wtd, then re-run")
-	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -52,6 +48,12 @@ func (h *Handler) rm(s *Session, req *protocol.Request) *protocol.Response {
 	}
 	if perr := h.checkOwner(s, e); perr != nil {
 		return &protocol.Response{Error: perr}
+	}
+	// The drivers are needed only for the teardown, so the no-entry data
+	// outcome above does not depend on the registry being installed.
+	if h.Drivers == nil {
+		return respErr(1, "the coordinator has no driver registry installed",
+			"restart wtd, then re-run")
 	}
 
 	reap := h.reap(e, &args.Spec, args.KeepProcesses, args.DryRun)

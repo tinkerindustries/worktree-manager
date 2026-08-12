@@ -11,6 +11,8 @@ package identity
 import (
 	"os"
 	"path/filepath"
+
+	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 )
 
 // NestedInside returns the enclosing git working tree of worktreeRoot, or
@@ -25,7 +27,14 @@ import (
 // impossible through `git worktree add` (git refuses the path), but a
 // clone can land there — and is refused like any other nesting.
 func NestedInside(worktreeRoot string) (string, error) {
-	dir := filepath.Dir(worktreeRoot)
+	// Resolve the tree itself first: a symlinked spelling of the root must
+	// walk the same ancestors as git's own resolution, or the walk would
+	// start in the symlink's parent instead of the tree's.
+	resolved, err := platform.RealPath(worktreeRoot)
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Dir(resolved)
 	for {
 		root, ok, err := gitTreeRoot(dir)
 		if err != nil {

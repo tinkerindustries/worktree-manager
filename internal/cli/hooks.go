@@ -38,8 +38,9 @@ import (
 
 // healthPollInterval is how often the health hook is retried, and how
 // often progress is logged (B7.4: poll, log every 10s, dump the last lines
-// on timeout).
-const healthPollInterval = 10 * time.Second
+// on timeout). A variable so the polling behaviour is testable without
+// waiting ten seconds between attempts.
+var healthPollInterval = 10 * time.Second
 
 // healthTailLines is how many of the last lines of the health check's
 // output are dumped on timeout.
@@ -132,25 +133,33 @@ func (r *hookRunner) runHook(name string, hook *spec.Hook) error {
 	}
 	fmt.Fprintf(r.stderr, "hook %s: %s\n", name, cmd)
 
-	c := exec.Command("sh", "-c", cmd)
+	var c *exec.Cmd
+	var ctx context.Context
+	timeout := r.hookTimeout(name, hook)
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		// CommandContext owns the kill-on-timeout plumbing; the Cancel
+		// override widens it from the shell to the shell's whole process
+		// group, so a timed-out hook cannot orphan its children.
+		c = exec.CommandContext(ctx, "sh", "-c", cmd)
+		c.Cancel = func() error { return platform.KillGroup(c) }
+		c.WaitDelay = 5 * time.Second
+	} else {
+		c = exec.Command("sh", "-c", cmd)
+	}
 	c.Dir = r.worktree
 	c.Env = r.hookEnv()
 	c.Stdout = r.stderr
 	c.Stderr = r.stderr
 	platform.StartInOwnGroup(c)
 
-	timeout := r.hookTimeout(name, hook)
-	if timeout > 0 {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		defer cancel()
-		c.Cancel = func() error { return platform.KillGroup(c) }
-		c.WaitDelay = 5 * time.Second
-		err = c.Run()
-		if ctx.Err() != nil {
-			return fmt.Errorf("hook %s timed out after %s; its process group was terminated", name, timeout)
-		}
-	} else {
-		err = c.Run()
+	err = c.Run()
+	if timeout > 0 && ctx.Err() != nil {
+		// The context expired and the process group was killed: the
+		// timeout is the failure, named as such.
+		return fmt.Errorf("hook %s timed out after %s; its process group was terminated", name, timeout)
 	}
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
