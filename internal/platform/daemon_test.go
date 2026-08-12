@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf16"
 )
 
 // TestSupervisorRegistrationPathPrefix: under a prefix the registration file
@@ -132,10 +133,37 @@ func TestInstallSupervisorPrefix(t *testing.T) {
 			}
 		}
 	case "windows":
-		if !strings.Contains(file, "Exec") {
-			t.Errorf("task XML lacks the Exec action:\n%s", file)
+		// The task XML is written UTF-16 (schtasks /Create /XML requires
+		// it), so decode before asserting.
+		task := decodeUTF16LE(t, data)
+		for _, want := range []string{
+			"<LogonTrigger>",
+			"<Command>" + wtd + "</Command>",
+			"<RestartOnFailure>",
+			"<LogonType>InteractiveToken</LogonType>",
+		} {
+			if !strings.Contains(task, want) {
+				t.Errorf("task XML lacks %s:\n%s", want, task)
+			}
 		}
 	}
+}
+
+// decodeUTF16LE decodes a UTF-16LE byte slice (BOM stripped) for the
+// windows branch of the shared tests.
+func decodeUTF16LE(t *testing.T, data []byte) string {
+	t.Helper()
+	if len(data)%2 != 0 {
+		t.Fatalf("UTF-16 data has an odd length: %d", len(data))
+	}
+	u := make([]uint16, len(data)/2)
+	for i := range u {
+		u[i] = uint16(data[2*i]) | uint16(data[2*i+1])<<8
+	}
+	if len(u) > 0 && u[0] == 0xFEFF {
+		u = u[1:]
+	}
+	return string(utf16.Decode(u))
 }
 
 // TestInstallSupervisorRealRegistrationNeverRunsInTests: a real

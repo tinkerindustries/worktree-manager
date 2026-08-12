@@ -66,7 +66,11 @@ func SupervisorRegistrationPath(prefix string) (string, error) {
 		}
 		return filepath.Join(dir, SystemdServiceFilename), nil
 	case "windows":
-		return "", ErrNoSupervisor // the logon-task registration is phase 8b, commit 3
+		dir, err := windowsTaskDir("")
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(dir, WindowsTaskFilename), nil
 	}
 	return "", ErrNoSupervisor
 }
@@ -81,7 +85,7 @@ func SupervisorFilename(goos string) string {
 	case "linux":
 		return SystemdServiceFilename
 	case "windows":
-		return LaunchAgentFilename // placeholder until the logon-task registration lands (phase 8b, commit 3)
+		return WindowsTaskFilename
 	}
 	return LaunchAgentFilename
 }
@@ -99,6 +103,8 @@ func SupervisorRunning(prefix string) (bool, error) {
 		return launchdRunning()
 	case runtime.GOOS == "linux" && prefix == "":
 		return systemdRunning(prefix)
+	case runtime.GOOS == "windows" && prefix == "":
+		return taskSchedulerRunning(prefix)
 	}
 	return false, nil
 }
@@ -155,6 +161,8 @@ func InstallSupervisor(opts InstallSupervisorOpts) (InstallSupervisorResult, err
 		return installLaunchAgent(opts)
 	case "linux":
 		return installSystemdUnits(opts.Prefix, opts.WtdPath)
+	case "windows":
+		return installWindowsTask(opts.Prefix, opts.WtdPath)
 	}
 	return InstallSupervisorResult{}, ErrNoSupervisor
 }
@@ -241,7 +249,7 @@ func CoordinatorStartCommand(socketPath string) string {
 	case "linux":
 		return "register and start the coordinator: wt daemon install (installs the systemd user unit and its paired socket unit)"
 	case "windows":
-		return "install the coordinator as a Windows service or logon task (phase 8b); for now run wtd in the foreground"
+		return "register and start the coordinator: wt daemon install (installs the logon task)"
 	default:
 		if socketPath == "" {
 			return "run wtd in the foreground with WT_SOCKET set"
@@ -279,9 +287,9 @@ func DaemonFixesFor(socketPath string) DaemonFixes {
 		}
 	case "windows":
 		return DaemonFixes{
-			NotRegistered:      "install the coordinator as a Windows service or logon task (phase 8b); for now run wtd in the foreground",
-			RegisteredStopped:  "start the coordinator (phase 8b); for now run wtd in the foreground",
-			RunningUnreachable: "restart the coordinator (phase 8b); for now run wtd in the foreground",
+			NotRegistered:      "register and start the coordinator: wt daemon install",
+			RegisteredStopped:  fmt.Sprintf("start the coordinator: schtasks /Run /TN %s (or re-run: wt daemon install)", WindowsTaskName),
+			RunningUnreachable: fmt.Sprintf("restart the coordinator: schtasks /End /TN %s, then schtasks /Run /TN %s — and check that WT_SOCKET names the pipe the coordinator listens on", WindowsTaskName, WindowsTaskName),
 		}
 	default:
 		return DaemonFixes{
