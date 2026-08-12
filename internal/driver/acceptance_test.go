@@ -296,28 +296,28 @@ func TestAcceptanceTeardownContinuesPastFailure(t *testing.T) {
 // the driver level: the probe sees a port published by a container. The
 // coordinator-level half lives in internal/coord.
 //
-// This test process runs inside a container whose network namespace is not
-// the daemon's publishing namespace — the daemon binds published ports on
-// the host's loopback, invisible from here (03-drivers.md §4.1's documented
-// limitation). The faithful construction is a container that publishes into
-// the coordinator's own namespace, which is exactly the relationship
-// revision 2 relies on: probing runs in the coordinator's network
-// namespace, and a port a container publishes there is visible to it
-// (ARCHITECTURE.md §8.4).
+// The probe binds on loopback in whichever network namespace this process
+// occupies, and the container has to publish into that same namespace for
+// the test to mean anything. Which construction achieves that depends on
+// where the test runs, so publishArgs works it out rather than assuming.
+// On a host — the coordinator's real situation — the daemon publishes onto
+// the host's loopback and an ordinary -p is right. Inside a container
+// sharing the daemon, the host's loopback is invisible and the container
+// has to join this process's namespace instead.
 func TestAcceptancePortProbeSeesPublishedContainerPort(t *testing.T) {
 	requireDocker(t)
 	port := freePort(t)
 	project := acceptanceProject(t)
-	me, err := os.Hostname()
-	if err != nil {
-		t.Fatalf("our container id: %v", err)
-	}
 
 	name := project + "-pub"
-	runDockerCLI(t, "run", "-d", "--name", name,
-		"--network", "container:"+me,
-		"busybox:latest", "httpd", "-f", "-p", fmt.Sprint(port))
+	// Registered before the container is created: runDockerCLI fails the
+	// test on a non-zero exit, and a cleanup registered after it would never
+	// run — which is how an earlier version of this test leaked containers
+	// onto the machine it failed on.
 	t.Cleanup(func() { exec.Command("docker", "rm", "-f", name).Run() })
+	args := append([]string{"run", "-d", "--name", name}, publishArgs(t, port)...)
+	args = append(args, "busybox:latest", "httpd", "-f", "-p", fmt.Sprint(port))
+	runDockerCLI(t, args...)
 
 	// The container's httpd binds the port in our namespace shortly after
 	// start; poll until the probe sees it held.
@@ -329,4 +329,25 @@ func TestAcceptancePortProbeSeesPublishedContainerPort(t *testing.T) {
 		timeSleep(200)
 	}
 	t.Fatalf("the probe never saw port %d, published by container %s, as held", port, name)
+}
+
+// publishArgs returns the docker run flags that make a container's port
+// reachable from this process's network namespace.
+//
+// On a host the daemon publishes onto the host's loopback, which is where
+// the probe binds, so -p is both correct and the arrangement the coordinator
+// actually runs in. Inside a container that shares the daemon, the host's
+// loopback is not this process's loopback, so the published port would be
+// invisible; there the container joins this process's namespace instead.
+// The two are distinguished by asking the daemon whether this process's
+// hostname names a container it knows — a capability question, not a guess
+// from /.dockerenv.
+func publishArgs(t *testing.T, port int) []string {
+	t.Helper()
+	if me, err := os.Hostname(); err == nil && me != "" {
+		if exec.Command("docker", "inspect", "--type", "container", me).Run() == nil {
+			return []string{"--network", "container:" + me}
+		}
+	}
+	return []string{"-p", fmt.Sprintf("127.0.0.1:%d:%d", port, port)}
 }
