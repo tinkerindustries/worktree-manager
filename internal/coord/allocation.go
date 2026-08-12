@@ -547,6 +547,14 @@ func (h *Handler) activate(s *Session, req *protocol.Request) *protocol.Response
 // release implements the release verb: drop the entry entirely — the
 // rollback path a client drives when init fails before activation, and the
 // deallocate step phase 5's rm sequences after teardown. Owned entries only.
+//
+// A tearing-down entry is refused rather than dropped: its resources
+// survived a teardown, and releasing it would orphan them (B2.3). The
+// refusal names the teardown re-run. This matters since phase 9: a client
+// whose init died mid-request across a coordinator restart drives the
+// rollback with release, and the restart recovery may already have moved
+// the entry to tearing-down — a blind release would drop the survivors
+// with it.
 func (h *Handler) release(s *Session, req *protocol.Request) *protocol.Response {
 	var ref protocol.EntryRef
 	if err := json.Unmarshal(req.Args, &ref); err != nil {
@@ -571,6 +579,12 @@ func (h *Handler) release(s *Session, req *protocol.Request) *protocol.Response 
 	}
 	if perr := h.checkOwner(s, &reg.Entries[idx]); perr != nil {
 		return &protocol.Response{Error: perr}
+	}
+	if reg.Entries[idx].State == store.StateTearingDown {
+		return respErr(3,
+			fmt.Sprintf("entry %q is tearing-down with resources outstanding (%s); releasing it would orphan what survived",
+				ref.Slug, teardownNoteText(&reg.Entries[idx])),
+			fmt.Sprintf("re-run the teardown: wt rm --slug %s (or wt reconcile), which retries the teardown and drops the entry when nothing survives", ref.Slug))
 	}
 	reg.Entries = append(reg.Entries[:idx], reg.Entries[idx+1:]...)
 	if err := h.st.WriteRegistry(reg); err != nil {

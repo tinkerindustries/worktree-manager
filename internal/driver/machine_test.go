@@ -316,6 +316,37 @@ func TestMachineTeardownDeletesUnlessKeepFlag(t *testing.T) {
 		m := newFakeMachine()
 		_, env, res := machineFixture(t, m, false)
 		name := machineValue(t, env.Spec)
+		m.instances = []platform.MachineInstance{{Name: name, Running: true}}
+		if err := (&Machine{}).Teardown(res, name, env); err != nil {
+			t.Fatalf("Teardown: %v", err)
+		}
+		if len(m.deleted) != 1 || m.deleted[0] != name {
+			t.Fatalf("deleted = %v, want %s", m.deleted, name)
+		}
+	})
+
+	t.Run("teardown of a never-created instance is a clean no-op", func(t *testing.T) {
+		// Phase 9's R1 shape: the restart recovery tears down a reserving
+		// entry whose materialisation never ran, and rm hits the same case
+		// when the VM was destroyed by hand. A delete of a profile that does
+		// not exist would wedge the entry in tearing-down forever — nothing
+		// a person could delete either.
+		m := newFakeMachine()
+		_, env, res := machineFixture(t, m, false)
+		name := machineValue(t, env.Spec)
+		if err := (&Machine{}).Teardown(res, name, env); err != nil {
+			t.Fatalf("Teardown of a never-created instance: %v", err)
+		}
+		if len(m.deleted) != 0 {
+			t.Errorf("nothing may be deleted for an instance that does not exist: %v", m.deleted)
+		}
+	})
+
+	t.Run("teardown of a stopped existing instance deletes", func(t *testing.T) {
+		m := newFakeMachine()
+		_, env, res := machineFixture(t, m, false)
+		name := machineValue(t, env.Spec)
+		m.instances = []platform.MachineInstance{{Name: name, Running: false}}
 		if err := (&Machine{}).Teardown(res, name, env); err != nil {
 			t.Fatalf("Teardown: %v", err)
 		}
@@ -341,6 +372,7 @@ func TestMachineTeardownDeletesUnlessKeepFlag(t *testing.T) {
 		m := newFakeMachine()
 		_, env, res := machineFixture(t, m, true)
 		name := machineValue(t, env.Spec)
+		m.instances = []platform.MachineInstance{{Name: name, Running: true}}
 		env.KeepFlags = []string{"--some-other-flag"}
 		if err := (&Machine{}).Teardown(res, name, env); err != nil {
 			t.Fatalf("Teardown: %v", err)
@@ -370,6 +402,7 @@ func TestMachineTeardownFailureReportsSurvivorAndBypass(t *testing.T) {
 	m.deleteErr = errors.New("profile is in use")
 	_, env, res := machineFixture(t, m, false)
 	name := machineValue(t, env.Spec)
+	m.instances = []platform.MachineInstance{{Name: name, Running: true}}
 	err := (&Machine{}).Teardown(res, name, env)
 	if !isTeardownError(err) {
 		t.Fatalf("Teardown = %v, want a TeardownError", err)

@@ -45,12 +45,16 @@ func machineSpec(t *testing.T, keepFlag string) *spec.Spec {
 // coordFakeMachine is the coordinator tests' runner seam.
 type coordFakeMachine struct {
 	instances []platform.MachineInstance
+	listErr   error
 	started   []string
 	deleted   []string
 }
 
 func (f *coordFakeMachine) Binary() string { return "colima" }
 func (f *coordFakeMachine) List() ([]platform.MachineInstance, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	return f.instances, nil
 }
 func (f *coordFakeMachine) Start(name string) error {

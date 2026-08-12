@@ -85,6 +85,19 @@ func run(args []string) int {
 	// driver, which is how the earlier phases ran without them.
 	h.InstallDrivers(driver.NewRegistry(&driver.Port{}, &driver.Namespace{}, &driver.StatePath{},
 		&driver.CIDR{}, &driver.Machine{}))
+	// Phase 9, R1: a restart — an upgrade, a crash, a reboot — leaves any
+	// reserving entry's materialisation outcome unknowable. The startup
+	// pass tears those entries down by handle (or moves them to
+	// tearing-down with the note when teardown cannot complete), so an
+	// upgrade mid-operation is recoverable rather than wedged
+	// (docs/ARCHITECTURE.md §14.1 R1). It runs before the first connection
+	// is accepted, so no client can observe a half-recovered entry.
+	recovered, rerr := h.RecoverInterrupted()
+	if rerr != nil {
+		log.Error("recovering interrupted allocations", "err", rerr)
+		return 1
+	}
+	log.Info("wtd startup recovery", "result", coord.RecoveryReport(recovered))
 	srv := coord.NewServer(h, log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
