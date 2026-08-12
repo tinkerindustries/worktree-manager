@@ -101,6 +101,12 @@ func (h *Handler) list(s *Session, req *protocol.Request) *protocol.Response {
 		owned := e.Owner == s.Identity.Key && e.OwnerKind == s.Identity.Kind
 		if !owned {
 			le.Flags = append(le.Flags, "foreign")
+			// The owner's key is redacted for every other client: a named
+			// client's key is its token, and showing it would hand the
+			// identity over — the reader could present the token and read
+			// the owner's secrets with --wide (the security pass, phase 9;
+			// the same redaction covers the owner field of the entry).
+			le.Owner = redactKey(e.OwnerKind, e.Owner)
 		}
 		if e.PathVisible {
 			if _, serr := os.Stat(e.Path); serr != nil {
@@ -212,7 +218,7 @@ func (h *Handler) doctorEntry(e *store.Entry, clients store.ClientsFile, specs s
 		*findings = append(*findings, protocol.DoctorFinding{
 			App: app, Slug: slug, Level: "warning",
 			Message: fmt.Sprintf("the ephemeral owner %s client %s, last seen %s, has aged out past the reclamation interval; the entry will be reclaimed by handle",
-				e.OwnerKind, e.Owner, e.LastSeen),
+				e.OwnerKind, redactKey(e.OwnerKind, e.Owner), e.LastSeen),
 			Remedy: "run 'wt reconcile' to reclaim it now (or rescue anything it holds first)",
 		})
 	}
@@ -638,7 +644,7 @@ func (h *Handler) reconcile(s *Session, req *protocol.Request) *protocol.Respons
 			out = append(out, protocol.ReconcileOutcome{
 				App: ref.App, Slug: ref.Slug, Action: "skipped",
 				Note: fmt.Sprintf("owned by %s client %s, last seen %s; only the owning client may repair it, or an ephemeral owner that has aged out",
-					e.OwnerKind, e.Owner, lastSeenOf(clients, e.Owner, e.OwnerKind)),
+					e.OwnerKind, redactKey(e.OwnerKind, e.Owner), lastSeenOf(clients, e.Owner, e.OwnerKind)),
 			})
 			continue
 		}
@@ -709,8 +715,18 @@ func (h *Handler) clientsList(s *Session, req *protocol.Request) *protocol.Respo
 	interval := h.reclaimInterval()
 	out := make([]protocol.ClientInfo, 0, len(clients.Clients))
 	for _, c := range clients.Clients {
+		// A client's own row shows its full identity (the caller needs to
+		// recognise itself); every other row is redacted — a named row's
+		// identity is its token, and an ephemeral row's is a session id,
+		// neither of which another client may read (the security pass,
+		// phase 9).
+		mine := c.Kind == s.Identity.Kind && c.Identity == s.Identity.Key
+		identity := c.Identity
+		if !mine {
+			identity = redactKey(c.Kind, c.Identity)
+		}
 		info := protocol.ClientInfo{
-			Identity: c.Identity, Kind: c.Kind, Ephemeral: c.Ephemeral, LastSeen: c.LastSeen,
+			Identity: identity, Kind: c.Kind, Ephemeral: c.Ephemeral, LastSeen: c.LastSeen,
 		}
 		for _, e := range reg.Entries {
 			if e.Owner == c.Identity && e.OwnerKind == c.Kind {

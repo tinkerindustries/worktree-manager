@@ -555,6 +555,54 @@ and criterion 8's ordering and rollback:
 | Adoption layer (phase 7, untagged) | git and a Go toolchain, no docker |
 | Live acceptance | docker, and a coordinator process for the gates (phase 5), `gh` for the gates that check PRs (phase 5/6) |
 
+### The phase-9 layer: restart recovery, loopback TCP, the security pass
+
+Phase 9's tests, in the layer each belongs to:
+
+- `internal/coord/recover_test.go` — the R1 exit criterion, simulated the
+  way the real restart works (a new `Handler` over the same store path):
+  `TestRecoverInterruptedOnRestartTearsDownAndDrops` (the VM the machine
+  driver started is torn down by handle and the entry drops; the slot is
+  re-allocatable), `TestRecoverInterruptedNeverMaterialisedDropsCleanly`,
+  `TestRecoverInterruptedTeardownUnavailableMovesToTearingDown` (the
+  entry moves to tearing-down with the note and the slot stays held; the
+  owner's blind rollback `release` is refused),
+  `TestRecoverInterruptedWithoutSpecMovesToTearingDown`,
+  `TestRecoverInterruptedLeavesActiveAndTearingDownAlone` and
+  `TestReleaseRefusesTearingDownEntry`.
+- `internal/coord/tcp_test.go` — `TestTCPIdentityRules`: the configured
+  token authenticates over TCP, a wrong token and a missing one are the
+  same refusal (never an oracle), host and ephemeral claims over TCP are
+  refused, the socket path still self-asserts named tokens, and a handler
+  with no token configured refuses every TCP hello.
+- `internal/coord/security_test.go` — the security pass's fixes:
+  `TestListRedactsForeignOwnerKeys` and `TestClientsListRedactsForeignIdentities`
+  (a named client's key is its token; only the client itself sees it),
+  `TestOwnershipRefusalNeverLeaksTheToken`, and
+  `TestBandsReserveIsHostClientOnly` (the ledger verb is host-only).
+- `internal/protocol/protocol_test.go` — `TestReadMessageCapHoldsWhileReading`:
+  the 1 MiB wire cap holds while reading, so a peer streaming bytes
+  without a newline cannot grow the coordinator's memory.
+- `internal/cli/tcp_test.go` — the loopback TCP surface end to end
+  (**untagged**; it needs a Go toolchain and git, no docker):
+  `TestLoopbackTCPEndToEndAgainstRealWtd` builds the real `wtd` binary
+  and runs the real client through a full bands-reserve/init/list/rm
+  lifecycle over `tcp://` with `WT_CLIENT_TOKEN` (the band registration
+  itself runs over the socket, because bands.reserve is host-only),
+  `TestLoopbackTCPRejectsWrongAndMissingToken` (exit 3, no token leaked),
+  `TestWtdRefusesMisconfiguredTCP` (listener without token, token without
+  listener, short token, non-loopback address) and
+  `TestDaemonInstallTCPWritesTokenIntoRegistration` (the registration
+  carries `--tcp`/`--tcp-token`, is 0600 on unix, and the transcript
+  never echoes the token).
+- `internal/platform/tcp_test.go` — `TestValidateLoopbackTCP`,
+  `TestValidateTCPToken` and `TestValidateTCPConfig` pin the
+  configuration rails, and the Windows task XML's TCP variant is pinned
+  in `task_windows_test.go` (the `--tcp`/`--tcp-token` Arguments).
+- `internal/driver/machine_test.go` — the discover-before-destroy rail
+  behind the recovery: `TestMachineTeardownDeletesUnlessKeepFlag`'s
+  never-created-instance case is a clean no-op, never a survivor.
+
 ## The Windows layer (phase 8b)
 
 The `windows` job in CI (`windows-latest`) runs `go build ./...` and

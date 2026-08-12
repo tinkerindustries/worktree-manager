@@ -44,12 +44,31 @@ func run(args []string) int {
 	fs.SetOutput(os.Stderr)
 	socket := fs.String("socket", "", "socket path (default: WT_SOCKET, then the platform default)")
 	activate := fs.Bool("activate", false, "consume the listening socket systemd passed via LISTEN_FDS (the systemd unit passes this; mutually exclusive with --socket)")
+	tcp := fs.String("tcp", "", "also listen on this loopback TCP address (opt-in; requires --tcp-token)")
+	tcpToken := fs.String("tcp-token", "", "the token every TCP connection must present (required with --tcp; at least 16 characters)")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
 	if fs.NArg() > 0 {
 		fmt.Fprintf(os.Stderr, "wtd: unexpected arguments: %v\n", fs.Args())
 		return 1
+	}
+
+	// The opt-in loopback TCP surface: it requires a token because peer
+	// credentials do not exist on a TCP connection, and the two flags are
+	// one decision — a TCP listener without a token, or a token without a
+	// listener, is refused rather than half-honoured (docs/ARCHITECTURE.md
+	// §4.1). A short token is refused: the listener must not be
+	// brute-forceable.
+	if (*tcp == "") != (*tcpToken == "") {
+		fmt.Fprintln(os.Stderr, "wtd: --tcp and --tcp-token must be given together (a TCP listener without a token would be unauthenticated)")
+		return 1
+	}
+	if *tcp != "" {
+		if err := platform.ValidateTCPConfig(*tcp, *tcpToken); err != nil {
+			fmt.Fprintf(os.Stderr, "wtd: %v\n", err)
+			return 1
+		}
 	}
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -80,11 +99,25 @@ func run(args []string) int {
 		log.Error("building the coordinator", "err", err)
 		return 1
 	}
+	h.TCPToken = *tcpToken
 	// The driver registry is the allocation probe and the teardown path.
 	// Phase 8 adds cidr and machine; the registry skips a type with no
 	// driver, which is how the earlier phases ran without them.
 	h.InstallDrivers(driver.NewRegistry(&driver.Port{}, &driver.Namespace{}, &driver.StatePath{},
 		&driver.CIDR{}, &driver.Machine{}))
+	// Phase 9, R1: a restart — an upgrade, a crash, a reboot — leaves any
+	// reserving entry's materialisation outcome unknowable. The startup
+	// pass tears those entries down by handle (or moves them to
+	// tearing-down with the note when teardown cannot complete), so an
+	// upgrade mid-operation is recoverable rather than wedged
+	// (docs/ARCHITECTURE.md §14.1 R1). It runs before the first connection
+	// is accepted, so no client can observe a half-recovered entry.
+	recovered, rerr := h.RecoverInterrupted()
+	if rerr != nil {
+		log.Error("recovering interrupted allocations", "err", rerr)
+		return 1
+	}
+	log.Info("wtd startup recovery", "result", coord.RecoveryReport(recovered))
 	srv := coord.NewServer(h, log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -98,6 +131,10 @@ func run(args []string) int {
 			log.Error("--activate and --socket are mutually exclusive", "socket", *socket)
 			return 1
 		}
+		if *tcp != "" {
+			log.Error("--tcp is not available under socket activation; the systemd unit does not pass it (configure --tcp with 'wt daemon install --tcp')")
+			return 1
+		}
 		ln, err := platform.ActivatedListener()
 		if err != nil {
 			log.Error("consuming the activated socket", "err", err)
@@ -109,6 +146,16 @@ func run(args []string) int {
 		}
 		log.Info("wtd starting", "version", version, "store", root, "socket", ln.Addr().String(), "activated", true)
 		if err := srv.ServeListener(ctx, ln); err != nil {
+			log.Error("coordinator stopped with an error", "err", err)
+			return 1
+		}
+		log.Info("wtd stopped")
+		return 0
+	}
+
+	if *tcp != "" {
+		log.Info("wtd starting", "version", version, "store", root, "socket", socketPath, "tcp", *tcp, "tcp_token", true)
+		if err := srv.ServeWithTCP(ctx, socketPath, *tcp); err != nil {
 			log.Error("coordinator stopped with an error", "err", err)
 			return 1
 		}

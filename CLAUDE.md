@@ -69,7 +69,11 @@ configuration; neither binary branches on repo identity.
   checks apply even when the PR is merged; unverifiable entries are never
   touched). Since phase 8b `daemon status` reports the systemd lingering
   caveat on Linux, and `daemon install` registers with launchd, systemd
-  (with its paired socket unit) or the Task Scheduler per platform.
+  (with its paired socket unit) or the Task Scheduler per platform. Phase
+  9: `daemon install --tcp <addr> --tcp-token <token>` (both together,
+  loopback-only, 16+ characters) writes the opt-in loopback TCP listener
+  into the registration; a registration that carries the token is 0600 on
+  unix and the token is never echoed.
 - `internal/identity` — M1: classification, root resolution, containment,
   slug validation, descriptor location, the guard engine, and the
   per-session classification cache (`WT_GUARD_CACHE`) the generated guard
@@ -137,8 +141,26 @@ configuration; neither binary branches on repo identity.
   coordinator's own host user's entries, never adopting a view, every
   skip logged. `doctor`'s unparseable-registry row keeps its refusal and
   states plainly why rebuild-from-descriptors cannot be safe: the
-  registry is the only source of repository locations.
-- `cmd/wt`, `cmd/wtd` — the two entry points.
+  registry is the only source of repository locations. Phase 9: the R1
+  restart recovery (`RecoverInterrupted` — every `reserving` entry a
+  starting coordinator finds is torn down by handle and dropped, or moved
+  to `tearing-down` with a note, before the first connection), the
+  loopback TCP identity rule (a TCP connection must present the
+  configured token — constant-time compare, one refusal for missing and
+  wrong — and named clients are the only kind TCP accepts), and the
+  security-pass redaction (a named client's key is its token, so foreign
+  keys in `list`, `clients list` and every error are a short hash;
+  `bands.reserve` is host-client-only; `release` refuses a
+  `tearing-down` entry).
+- `cmd/wt`, `cmd/wtd` — the two entry points. `wtd` takes `--tcp` and
+  `--tcp-token` (both together, loopback-only, 16+ characters) for the
+  opt-in loopback TCP listener.
+- `dist/` — the phase-9 distribution: `build.sh` (one archive per
+  platform with both binaries plus the installer, run by the release
+  workflow on every `v*` tag), `install.sh`/`install.ps1` (install into a
+  prefix, then drive `wt daemon install`; an explicit `--prefix` is
+  self-contained and loads nothing), `ziphelper.go` (the stdlib-only
+  Windows zip builder).
 - `.claude/skills/onboarding/` — the onboarding skill (a document): the
   eight phases, the primitives card, the plain-app walkthrough. It is the
   judgment half of the system; the binaries expose facts and refuse.
@@ -161,7 +183,14 @@ The six variables are `WT_SOCKET`, `WT_HOME` (read by `wtd` alone),
 the named-container token; setting it together with the ephemeral
 declaration is refused as ambiguous) and — phase 7's answer to the scope
 question — `WT_GUARD_CACHE`, the per-session classification cache
-directory the generated guard hook sets. A seventh is a scope question.
+directory the generated guard hook sets. Phase 9's scope question — a TCP
+endpoint — was answered without a seventh variable: `WT_SOCKET`'s
+`tcp://host:port` form dials the opt-in loopback TCP listener (the
+endpoint names the coordinator's location, the same §12.3 test as a
+socket path) and the token is the existing `WT_CLIENT_TOKEN`.
+`WT_TCP_TOKEN` is read by `install.sh`/`install.ps1` alone, never by a
+binary, as the operator's way to script `--tcp` without the token in
+shell history.
 
 ## Reading order
 

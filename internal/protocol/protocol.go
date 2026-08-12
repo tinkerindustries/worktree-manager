@@ -134,13 +134,27 @@ type Error struct {
 const MaxMessageBytes = 1 << 20 // 1 MiB
 
 // ReadMessage reads one newline-terminated JSON object from r into v.
+//
+// The cap is enforced while reading, not after: a peer that streams bytes
+// without a newline must be able to grow the coordinator's memory only up
+// to the cap, never without bound (the security pass, phase 9 — an
+// oversized request must not wedge the coordinator). ReadSlice fills at
+// most the buffer per call, so the accumulation loop stops as soon as the
+// cap is exceeded.
 func ReadMessage(r *bufio.Reader, v any) error {
-	line, err := r.ReadBytes('\n')
-	if err != nil {
-		return err
-	}
-	if len(line) > MaxMessageBytes {
-		return fmt.Errorf("message of %d bytes exceeds the %d-byte wire cap", len(line), MaxMessageBytes)
+	var line []byte
+	for {
+		frag, err := r.ReadSlice('\n')
+		line = append(line, frag...)
+		if len(line) > MaxMessageBytes {
+			return fmt.Errorf("message of more than %d bytes exceeds the wire cap", MaxMessageBytes)
+		}
+		if err == nil {
+			break
+		}
+		if err != bufio.ErrBufferFull {
+			return err
+		}
 	}
 	if err := json.Unmarshal(line, v); err != nil {
 		return fmt.Errorf("message is not one JSON object: %w", err)

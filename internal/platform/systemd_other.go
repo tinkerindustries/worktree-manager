@@ -20,7 +20,7 @@ func systemdUserDir(prefix string) (string, error) {
 func systemdRunning(prefix string) (bool, error) { return false, nil }
 
 // installSystemdUnits refuses off linux.
-func installSystemdUnits(prefix, wtdPath string) (InstallSupervisorResult, error) {
+func installSystemdUnits(prefix, wtdPath, tcpAddr, tcpToken string) (InstallSupervisorResult, error) {
 	return InstallSupervisorResult{}, errors.New("no systemd on this platform")
 }
 

@@ -1,0 +1,35 @@
+name: release
+
+# A tagged push cuts the phase-9 release: dist/build.sh assembles one
+# archive per platform (both binaries plus the platform's installer) and
+# the artefacts are attached to the tag's GitHub release. The tag is the
+# release version (RELEASE.md, "How a release is cut"); nothing is
+# published to a package manager channel and nothing is signed — the
+# PLAN-SCOPE.md non-goals for packaging.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build and publish the distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+      - name: assemble the distribution
+        run: dist/build.sh "${GITHUB_REF_NAME#v}"
+      - name: publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/out/wt-*.tar.gz dist/out/wt-*.zip dist/out/SHA256SUMS \
+            --title "Worktree Manager $GITHUB_REF_NAME" \
+            --notes "The $GITHUB_REF_NAME distribution: one archive per platform containing wt and wtd plus the installer (dist/install.sh, dist/install.ps1). See RELEASE.md for installation and rollback."

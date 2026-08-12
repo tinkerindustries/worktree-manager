@@ -209,6 +209,8 @@ func runDaemonInstall(args []string, stdout, stderr io.Writer) int {
 	jsonOut := fs.Bool("json", false, "print exactly one JSON object on stdout")
 	prefix := fs.String("prefix", "", "registration prefix instead of the real supervisor location (tests and temp prefixes)")
 	wtdFlag := fs.String("wtd", "", "path to the wtd binary (default: next to this wt binary)")
+	tcp := fs.String("tcp", "", "start the coordinator with the opt-in loopback TCP listener at this address (requires --tcp-token)")
+	tcpToken := fs.String("tcp-token", "", "the token every TCP connection must present (required with --tcp; at least 16 characters)")
 	if err := fs.Parse(args); err != nil {
 		return ExitUsage
 	}
@@ -216,6 +218,16 @@ func runDaemonInstall(args []string, stdout, stderr io.Writer) int {
 		WriteError(stderr, UsageError(
 			"run 'wt daemon install' with no arguments",
 			"unexpected arguments: %v", fs.Args()))
+		return ExitUsage
+	}
+
+	// The loopback TCP surface is one decision: address and token together,
+	// loopback-only, token long enough to resist brute force — validated
+	// here so a unit that could never authenticate is refused at
+	// configuration time rather than at the coordinator's first start
+	// (platform.ValidateTCPConfig is the same check wtd itself runs).
+	if err := platform.ValidateTCPConfig(*tcp, *tcpToken); err != nil {
+		WriteError(stderr, New(ExitUsage, err.Error(), "re-run with a loopback address and a token of at least 16 characters"))
 		return ExitUsage
 	}
 
@@ -235,7 +247,9 @@ func runDaemonInstall(args []string, stdout, stderr io.Writer) int {
 		return ExitUnavailable
 	}
 
-	res, err := platform.InstallSupervisor(platform.InstallSupervisorOpts{Prefix: *prefix, WtdPath: wtd})
+	res, err := platform.InstallSupervisor(platform.InstallSupervisorOpts{
+		Prefix: *prefix, WtdPath: wtd, TCPAddr: *tcp, TCPToken: *tcpToken,
+	})
 	if err != nil {
 		if errors.Is(err, platform.ErrNoSupervisor) {
 			WriteError(stderr, New(ExitUnavailable, err.Error(), platform.CoordinatorStartCommand("")))
@@ -260,6 +274,12 @@ func runDaemonInstall(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "installed: %s\n", res.RegistrationPath)
 	fmt.Fprintf(stdout, "loaded: %s\n", loaded)
+	if *tcp != "" {
+		// The address is configuration the user chose; the token is a
+		// secret and is never echoed — the operator already holds it, and
+		// an install transcript that repeated it would be a leak.
+		fmt.Fprintf(stdout, "loopback TCP: %s (token configured; clients dial tcp://%s with WT_CLIENT_TOKEN set)\n", *tcp, *tcp)
+	}
 	if res.Note != "" {
 		fmt.Fprintf(stdout, "%s\n", res.Note)
 	}

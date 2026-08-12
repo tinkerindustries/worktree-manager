@@ -28,9 +28,15 @@ usage:
                                      state names a different fix
   wt daemon install [--prefix <dir>] register wtd with the platform's
       [--wtd <path>] [--json]        supervisor (launchd on macOS) and
-                                     start it; --prefix writes the
-                                     registration into a temp directory
-                                     instead and loads nothing
+      [--tcp <addr>]                 start it; --prefix writes the
+      [--tcp-token <token>]          registration into a temp directory
+                                     instead and loads nothing; --tcp and
+                                     --tcp-token (both together, loopback
+                                     address, 16+ characters) also start
+                                     the opt-in loopback TCP listener for
+                                     hosts where a socket cannot be shared
+                                     into a container — every TCP
+                                     connection must present the token
   wt bands list [--json]             the port band ledger: the bases each
                                      app holds, and the host-global
                                      reservations no app may allocate from
@@ -98,6 +104,11 @@ usage:
 
 every verb offers --json: exactly one JSON object on stdout, nothing else.
 results go to stdout, diagnostics to stderr.
+
+WT_SOCKET names the coordinator's location: a socket path, or the opt-in
+loopback TCP form tcp://host:port (clients on hosts where a socket cannot
+be shared into a container — Docker Desktop's virtiofs — dial the host's
+loopback TCP listener and present the token via WT_CLIENT_TOKEN).
 
 exit codes: 0 success, 1 failure, 2 usage error, 3 refused by a safety
 check, 4 required context unavailable, 5 coordinator unreachable.

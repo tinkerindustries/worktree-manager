@@ -255,7 +255,7 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	})
 	if merr != nil {
 		if _, rerr := sess.request("release", &protocol.EntryRef{App: sp.App, Slug: name}); rerr != nil {
-			fmt.Fprintf(stderr, "warning: releasing the entry after the failed init failed: %v; a reserving entry ages out on the coordinator's timer\n", rerr)
+			fmt.Fprintf(stderr, "warning: releasing the entry after the failed init failed: %v; a reserving entry ages out on the coordinator's timer, and a tearing-down entry is repaired with 'wt rm --slug %s'\n", rerr, name)
 		}
 		WriteError(stderr, merr)
 		return merr.Code
@@ -283,7 +283,7 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 		// steps up to activation.
 		drop := func() {
 			if _, rerr := sess.request("release", &protocol.EntryRef{App: sp.App, Slug: name}); rerr != nil {
-				fmt.Fprintf(stderr, "warning: releasing the entry after the failed init failed: %v; a reserving entry ages out on the coordinator's timer\n", rerr)
+				fmt.Fprintf(stderr, "warning: releasing the entry after the failed init failed: %v; a reserving entry ages out on the coordinator's timer, and a tearing-down entry is repaired with 'wt rm --slug %s'\n", rerr, name)
 			}
 		}
 		drop()
@@ -378,7 +378,7 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 		if _, rerr := sess.request("release", &protocol.EntryRef{App: sp.App, Slug: name}); rerr != nil {
-			fmt.Fprintf(stderr, "warning: releasing the entry after the failed init failed: %v; a reserving entry ages out on the coordinator's timer\n", rerr)
+			fmt.Fprintf(stderr, "warning: releasing the entry after the failed init failed: %v; a reserving entry ages out on the coordinator's timer, and a tearing-down entry is repaired with 'wt rm --slug %s'\n", rerr, name)
 		}
 		e := New(ExitFailure,
 			fmt.Sprintf("emitting the allocation failed: %v; the written files were removed and the entry was released — the tree is as it was found", writeErr),

@@ -176,6 +176,16 @@ func (*Machine) Apply(r *spec.Resource, value any, env Env) (ApplyResult, error)
 // never anything read from the worktree (03-drivers.md §2.2). An
 // unavailable runner blocks freeing the slot, like every teardown
 // unavailable (plan.md §3).
+//
+// The destroy is discover-before-destroy (03-drivers.md §2.1's rule
+// generalised to the machine: a driver that does not create must
+// discover): the runner is asked for its instances, and an instance that
+// does not exist is a clean no-op. This is phase 9's R1 half — the
+// coordinator's restart recovery tears down reserving entries whose
+// materialisation may never have started, and a delete of a never-created
+// profile (a wedge: nothing a person can delete) must not move the entry
+// to tearing-down forever. It also fixes the same wedge for `rm` of a
+// machine entry whose VM was destroyed by hand.
 func (*Machine) Teardown(r *spec.Resource, value any, env Env) error {
 	name, ok := value.(string)
 	if !ok || name == "" {
@@ -190,6 +200,29 @@ func (*Machine) Teardown(r *spec.Resource, value any, env Env) error {
 	}
 	if env.Machine == nil {
 		return &ErrUnavailable{Reason: "no VM runner is installed on this coordinator; the machine driver runs Colima on macOS and WSL2 on Windows"}
+	}
+	instances, err := machineList(env)
+	if err != nil {
+		if errors.Is(err, platform.ErrMachineUnavailable) {
+			return &ErrUnavailable{Reason: err.Error()}
+		}
+		return &TeardownError{Resource: r.Name, Survivors: []Survivor{{
+			Kind: "machine", Name: name, Resource: r.Name,
+			Reason: fmt.Sprintf("checking whether it exists failed: %v; the documented bypass is %q", err, env.Machine.DeleteCommand(name)),
+		}}}
+	}
+	exists := false
+	for _, in := range instances {
+		if in.Name == name {
+			exists = true
+			break
+		}
+	}
+	if !exists {
+		// Nothing to destroy: the instance was never created (the entry is
+		// reserving and materialisation never ran, or the VM was deleted by
+		// hand). A clean no-op, exactly like a namespace with no objects.
+		return nil
 	}
 	if err := env.Machine.Delete(name); err != nil {
 		if errors.Is(err, platform.ErrMachineUnavailable) {

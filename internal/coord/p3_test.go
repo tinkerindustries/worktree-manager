@@ -938,11 +938,15 @@ func TestSecretsAreRecordedForTheOwner(t *testing.T) {
 
 // TestEphemeralEntryRecorded: an ephemeral client's entry records the
 // ephemeral flag; ageing those out is phase 6's work, not this phase's.
+// The band is registered by a host client: bands.reserve is host-only
+// (phase 9's security pass — a container's grant is entry-scoped).
 func TestEphemeralEntryRecorded(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	sess, _ := h.Connect(protocol.KindEphemeral, "")
+	host, _ := h.Connect(protocol.KindHost, "")
 	sp := testSpec(t, "compose-app", 8)
-	registerBand(t, h, sess, sp, 4200)
+	registerBand(t, h, host, sp, 4200)
+
+	sess, _ := h.Connect(protocol.KindEphemeral, "")
 
 	resp := h.Request(context.Background(), sess, verbAllocate, &protocol.AllocateArgs{
 		Spec: *sp, Slug: "alpha", Path: "/tmp/wt/alpha",
