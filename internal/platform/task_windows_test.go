@@ -20,10 +20,11 @@ import (
 // TestWindowsTaskXMLShape pins the document's decisions: a LogonTrigger in
 // the interactive session, the coordinator binary as the Exec action, and
 // RestartOnFailure — the partial replacement for the SCM's restart
-// handling that the logon-task choice accepts.
+// handling that the logon-task choice accepts. With the opt-in loopback
+// TCP surface configured, the Arguments carry --tcp and --tcp-token.
 func TestWindowsTaskXMLShape(t *testing.T) {
 	wtd := `C:\Program Files\wt\wtd.exe`
-	raw := windowsTaskXML(wtd)
+	raw := windowsTaskXML(wtd, "", "")
 	if len(raw) < 2 || raw[0] != 0xFF || raw[1] != 0xFE {
 		t.Error("task XML lacks the UTF-16LE byte-order mark")
 	}
@@ -47,6 +48,30 @@ func TestWindowsTaskXMLShape(t *testing.T) {
 	} {
 		if !strings.Contains(xml, want) {
 			t.Errorf("task XML lacks %s:\n%s", want, xml)
+		}
+	}
+	if strings.Contains(xml, "<Arguments>") {
+		t.Error("the plain registration must not carry Arguments")
+	}
+
+	// The TCP variant carries the surface's configuration in the action's
+	// Arguments — the token is validated whitespace-free so it stays one
+	// argument in the task's command line.
+	raw2 := windowsTaskXML(wtd, "127.0.0.1:7331", "tcp-token-0123456789abcdef")
+	u2 := make([]uint16, len(raw2)/2)
+	for i := range u2 {
+		u2[i] = uint16(raw2[2*i]) | uint16(raw2[2*i+1])<<8
+	}
+	if len(u2) > 0 && u2[0] == 0xFEFF {
+		u2 = u2[1:]
+	}
+	xml2 := string(utf16.Decode(u2))
+	for _, want := range []string{
+		"--tcp 127.0.0.1:7331",
+		"--tcp-token tcp-token-0123456789abcdef",
+	} {
+		if !strings.Contains(xml2, want) {
+			t.Errorf("the TCP task XML lacks %q:\n%s", want, xml2)
 		}
 	}
 }

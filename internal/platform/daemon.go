@@ -125,6 +125,14 @@ type InstallSupervisorOpts struct {
 	// coordinator binary, normally a sibling of the wt binary that is
 	// running `wt daemon install`.
 	WtdPath string
+	// TCPAddr and TCPToken enable the opt-in loopback TCP surface in the
+	// registration: the unit starts wtd with --tcp/--tcp-token so the
+	// supervisor-managed coordinator listens on TCP exactly like a
+	// foreground one. Both or neither (validated by ValidateTCPConfig); a
+	// registration file that carries the token is written 0600 on unix so
+	// a machine's other users cannot read it out of the unit file.
+	TCPAddr  string
+	TCPToken string
 }
 
 // InstallSupervisorResult reports what registration wrote and whether the
@@ -156,13 +164,16 @@ func InstallSupervisor(opts InstallSupervisorOpts) (InstallSupervisorResult, err
 	if opts.WtdPath == "" {
 		return InstallSupervisorResult{}, errors.New("the registration file needs the coordinator binary path (wtd)")
 	}
+	if err := ValidateTCPConfig(opts.TCPAddr, opts.TCPToken); err != nil {
+		return InstallSupervisorResult{}, err
+	}
 	switch runtime.GOOS {
 	case "darwin":
 		return installLaunchAgent(opts)
 	case "linux":
-		return installSystemdUnits(opts.Prefix, opts.WtdPath)
+		return installSystemdUnits(opts.Prefix, opts.WtdPath, opts.TCPAddr, opts.TCPToken)
 	case "windows":
-		return installWindowsTask(opts.Prefix, opts.WtdPath)
+		return installWindowsTask(opts.Prefix, opts.WtdPath, opts.TCPAddr, opts.TCPToken)
 	}
 	return InstallSupervisorResult{}, ErrNoSupervisor
 }
@@ -176,13 +187,25 @@ func installLaunchAgent(opts InstallSupervisorOpts) (InstallSupervisorResult, er
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return InstallSupervisorResult{}, fmt.Errorf("creating the registration directory %s: %w", filepath.Dir(path), err)
 	}
-	if err := os.WriteFile(path, launchdPlist(opts.WtdPath), 0o644); err != nil {
+	mode := os.FileMode(0o644)
+	if opts.TCPToken != "" {
+		// The plist carries the TCP token: readable by the owner alone, so
+		// a machine's other users cannot lift the token out of the unit
+		// file and connect over the loopback surface (the security pass,
+		// phase 9).
+		mode = 0o600
+	}
+	if err := os.WriteFile(path, launchdPlist(opts.WtdPath, opts.TCPAddr, opts.TCPToken), mode); err != nil {
 		return InstallSupervisorResult{}, fmt.Errorf("writing %s: %w", path, err)
 	}
 	if opts.Prefix != "" {
+		note := "registration written under a test prefix; no launchd state was touched"
+		if opts.TCPToken != "" {
+			note += "; the registration carries the loopback TCP token"
+		}
 		return InstallSupervisorResult{
 			RegistrationPath: path, Label: LaunchAgentLabel, Loaded: false,
-			Note: "registration written under a test prefix; no launchd state was touched",
+			Note: note,
 		}, nil
 	}
 	// Real registration: macOS only — the prefix-less path on Linux and
@@ -197,8 +220,18 @@ func installLaunchAgent(opts InstallSupervisorOpts) (InstallSupervisorResult, er
 // launchdPlist is the LaunchAgent property list. RunAtLoad starts the
 // coordinator when the user logs in, KeepAlive restarts it if it exits —
 // the lifecycle launchd socket activation would have provided, without the
-// C API.
-func launchdPlist(wtdPath string) []byte {
+// C API. With the loopback TCP surface configured, ProgramArguments
+// carries --tcp and --tcp-token; each argument is its own element, so the
+// token needs no escaping beyond the XML text rules.
+func launchdPlist(wtdPath, tcpAddr, tcpToken string) []byte {
+	args := []string{wtdPath}
+	if tcpAddr != "" {
+		args = append(args, "--tcp", tcpAddr, "--tcp-token", tcpToken)
+	}
+	var elems strings.Builder
+	for _, a := range args {
+		fmt.Fprintf(&elems, "\t\t<string>%s</string>\n", xmlEscape(a))
+	}
 	return []byte(fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -207,15 +240,14 @@ func launchdPlist(wtdPath string) []byte {
 	<string>%s</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>%s</string>
-	</array>
+%s	</array>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
 	<true/>
 </dict>
 </plist>
-`, LaunchAgentLabel, xmlEscape(wtdPath)))
+`, LaunchAgentLabel, elems.String()))
 }
 
 // xmlEscape makes a string safe inside the plist's element content.

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // SocketPath resolves the coordinator socket path: WT_SOCKET when set, else
@@ -59,8 +60,23 @@ func ListenSocket(path string) (net.Listener, error) {
 	return listenSocket(path)
 }
 
-// DialSocket connects to the coordinator at path — the unix socket on
-// macOS and Linux, the named pipe on Windows.
+// DialSocket connects to the coordinator: the unix socket or the named
+// pipe for a plain path, and the opt-in loopback TCP surface when WT_SOCKET
+// (or the caller's dial path) carries the tcp:// form — `tcp://host:port`
+// names the coordinator's location the same way a socket path does, which
+// is the phase-9 transport for hosts where a socket cannot be shared into
+// a container (Docker Desktop's virtiofs cannot carry a live unix socket;
+// docs/ARCHITECTURE.md §4.1). The TCP surface requires the token the
+// coordinator was configured with; the client presents it through
+// WT_CLIENT_TOKEN exactly as it does over the socket — one identity path,
+// not a second one.
 func DialSocket(path string) (net.Conn, error) {
+	if addr, ok := strings.CutPrefix(path, "tcp://"); ok {
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			return nil, fmt.Errorf("connecting to the coordinator over TCP at %s: %w", addr, err)
+		}
+		return conn, nil
+	}
 	return dialSocket(path)
 }

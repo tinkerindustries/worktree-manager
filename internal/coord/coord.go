@@ -12,6 +12,7 @@ package coord
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -48,10 +49,15 @@ type Session struct {
 
 // Peer is what the kernel reports about a connection. Only host identity
 // uses it; Known is false where the platform cannot report peer
-// credentials, and a host claim is then refused.
+// credentials, and a host claim is then refused. TCP marks a connection
+// that arrived on the opt-in loopback TCP listener: peer credentials do
+// not exist there, so the token is the whole of identity and the TCP
+// listener refuses every connection that does not present the configured
+// token (docs/ARCHITECTURE.md §4.1, §12.2).
 type Peer struct {
 	UID   int
 	Known bool
+	TCP   bool
 }
 
 // Handler is the coordinator's request core: protocol messages in,
@@ -114,6 +120,14 @@ type Handler struct {
 	// interactive verb does. Nil means the real gh runner; tests install
 	// fakes.
 	Gh func(dir string, args ...string) ([]byte, error)
+
+	// TCPToken is the token the opt-in loopback TCP listener requires on
+	// every connection (docs/ARCHITECTURE.md §4.1: loopback TCP needs an
+	// authentication token because peer credentials do not exist on a TCP
+	// connection). Empty means no TCP listener is configured — wtd refuses
+	// to start one without a token, and a handler with an empty token
+	// refuses every TCP hello rather than accepting one.
+	TCPToken string
 
 	st  *store.Store
 	log *slog.Logger
@@ -246,10 +260,22 @@ func versionRefusal(err error) *protocol.Error {
 // assignIdentity decides who the client is. A host client's identity is
 // the kernel's uid through peer credentials and any claim in the hello is
 // ignored; only the named token and the ephemeral declaration are things a
-// client asserts.
+// client asserts. On the opt-in loopback TCP listener the token is the
+// whole of identity: peer credentials do not exist there, so the listener
+// requires the configured token on every connection and accepts named
+// clients only (the token is compared in constant time, and a wrong token
+// and a missing one get the same refusal, so the listener is neither an
+// oracle nor brute-forceable — the security pass, phase 9).
 func (h *Handler) assignIdentity(peer Peer, hello *protocol.Hello) (Identity, *protocol.Error) {
 	switch hello.Kind {
 	case protocol.KindHost:
+		if peer.TCP {
+			return Identity{}, &protocol.Error{
+				Code:   3,
+				Msg:    "host identity cannot be verified over TCP: peer credentials do not exist on a TCP connection",
+				Remedy: "present the configured token instead (WT_CLIENT_TOKEN), or use the socket",
+			}
+		}
 		if !peer.Known {
 			return Identity{}, &protocol.Error{
 				Code:   3,
@@ -259,6 +285,24 @@ func (h *Handler) assignIdentity(peer Peer, hello *protocol.Hello) (Identity, *p
 		}
 		return Identity{Kind: protocol.KindHost, Key: strconv.Itoa(peer.UID)}, nil
 	case protocol.KindNamed:
+		if peer.TCP {
+			// The token is the whole of identity over TCP. Missing and
+			// wrong are the same refusal, and the compare is constant-time:
+			// the listener must not leak whether a guess was close, and a
+			// token of the enforced minimum length is not brute-forceable
+			// over the wire.
+			if h.TCPToken == "" {
+				return Identity{}, &protocol.Error{
+					Code:   3,
+					Msg:    "authentication refused: this coordinator has no TCP token configured",
+					Remedy: "start wtd with --tcp-token set, or use the socket",
+				}
+			}
+			if subtle.ConstantTimeCompare([]byte(hello.Token), []byte(h.TCPToken)) != 1 {
+				return Identity{}, tcpAuthRefusal()
+			}
+			return Identity{Kind: protocol.KindNamed, Key: hello.Token}, nil
+		}
 		if hello.Token == "" {
 			return Identity{}, &protocol.Error{
 				Code:   3,
@@ -268,6 +312,17 @@ func (h *Handler) assignIdentity(peer Peer, hello *protocol.Hello) (Identity, *p
 		}
 		return Identity{Kind: protocol.KindNamed, Key: hello.Token}, nil
 	case protocol.KindEphemeral:
+		if peer.TCP {
+			// The TCP surface is token-authenticated as a whole; the
+			// client cannot declare itself both named and ephemeral, so an
+			// ephemeral client cannot authenticate over TCP. A disposable
+			// container configures the token (named) instead.
+			return Identity{}, &protocol.Error{
+				Code:   3,
+				Msg:    "the TCP listener accepts the configured token only: ephemeral clients cannot authenticate over TCP",
+				Remedy: "configure the token into the image (WT_CLIENT_TOKEN) and connect as the named client",
+			}
+		}
 		return Identity{Kind: protocol.KindEphemeral, Key: newSessionID(), Ephemeral: true}, nil
 	default:
 		return Identity{}, &protocol.Error{
@@ -275,6 +330,17 @@ func (h *Handler) assignIdentity(peer Peer, hello *protocol.Hello) (Identity, *p
 			Msg:    fmt.Sprintf("unknown client kind %q", hello.Kind),
 			Remedy: "upgrade wt: this coordinator knows the kinds host, named and ephemeral",
 		}
+	}
+}
+
+// tcpAuthRefusal is the single refusal for a missing or wrong TCP token:
+// one message, so the listener cannot be used as an oracle to test tokens
+// one at a time.
+func tcpAuthRefusal() *protocol.Error {
+	return &protocol.Error{
+		Code:   3,
+		Msg:    "authentication refused: this connection must present the coordinator's configured token",
+		Remedy: "set WT_CLIENT_TOKEN to the token wtd was started with (--tcp-token), then re-run",
 	}
 }
 
