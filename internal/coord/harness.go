@@ -44,7 +44,13 @@ func NewHarness(t testing.TB, root string) *Harness {
 // package's own test), protocol.KindNamed with a token, or
 // protocol.KindEphemeral.
 func (h *Harness) Connect(kind, token string) (*Session, *protocol.HelloReply) {
-	peer := Peer{UID: 4242, Known: true} // synthetic: no kernel on a harness
+	return h.ConnectPeer(Peer{UID: 4242, Known: true}, kind, token)
+}
+
+// ConnectPeer runs the hello exchange with an explicit peer, so a test can
+// act as a second host client with a different uid — the ownership check
+// needs two distinct identities.
+func (h *Harness) ConnectPeer(peer Peer, kind, token string) (*Session, *protocol.HelloReply) {
 	return h.H.Begin(peer, &protocol.Hello{
 		Kind: kind, Token: token,
 		MinVer: protocol.VersionMin, MaxVer: protocol.VersionMax,

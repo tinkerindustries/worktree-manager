@@ -62,12 +62,21 @@ type Handler struct {
 	ProtocolMin int
 	ProtocolMax int
 
+	// Probe is the phase-4 seam: the check that skips a slot whose derived
+	// resources probe as held. This phase ships the no-probe probe
+	// (noProbe), which reports every slot free; the phase-4 port driver
+	// replaces it at startup. A test can install a fake.
+	Probe Probe
+
 	st  *store.Store
 	log *slog.Logger
 
-	// mu serialises the client table: connections arrive on their own
-	// goroutines, and load-modify-save of clients.json is the one
-	// coordinator-internal write that could race itself.
+	// mu serialises every store-touching operation: connections arrive on
+	// their own goroutines, and load-modify-save of the registry, the band
+	// ledger and clients.json is coordinator-internal write work that must
+	// not race itself. One writer serialises here — there is no lock file,
+	// no generation counter, no compare-and-swap retry; concurrent requests
+	// serialise in this one process (revision 2, plan.md §2).
 	mu sync.Mutex
 }
 
@@ -82,6 +91,7 @@ func NewHandler(st *store.Store, log *slog.Logger) (*Handler, error) {
 	return &Handler{
 		ProtocolMin: protocol.VersionMin,
 		ProtocolMax: protocol.VersionMax,
+		Probe:       noProbe,
 		st:          st,
 		log:         log,
 	}, nil
@@ -133,6 +143,16 @@ func (h *Handler) Handle(ctx context.Context, s *Session, req *protocol.Request)
 		// nothing behind it. Not a wt command — later phases add the real
 		// verbs on the same dispatch.
 		return &protocol.Response{Result: json.RawMessage(`{"ok":true}`)}
+	case verbAllocate:
+		return h.allocate(s, req)
+	case verbActivate:
+		return h.activate(s, req)
+	case verbRelease:
+		return h.release(s, req)
+	case verbBandsReserve:
+		return h.reserveBand(s, req)
+	case verbBandsList:
+		return h.listBands(s, req)
 	default:
 		return &protocol.Response{Error: &protocol.Error{
 			Code: 1,
