@@ -1,5 +1,9 @@
 # plain-app's committed spec — the adoption signal. Shape per
 # docs/design/03-drivers.md §3.1; hooks and emit are fixed in full by phase 0.
+# Phase 7 gives plain-app runnable content (plan.md §4.1): bin/server.go
+# binds the allocated port and serves /healthz, the build hook compiles it
+# into the worktree, the start hook launches it, and the health hook probes
+# it — namespace-independent and curl-free, like compose-app's.
 version: 1
 app: plain-app
 
@@ -47,14 +51,29 @@ shared:
   - name: "https://api.example.com/v1"
     impact: third-party API tenant, shared by every worktree; rate limits are per tenant
 
+# The reaper's allowlist (04-lifecycle §6): the only processes the
+# coordinator may signal are these binaries — the worktree's own server,
+# built by the build hook. A spec that names nothing signals nothing.
+reaper:
+  binaries: [plain-app-server]
+
 hooks:
   install:
     run: ./bin/setup.sh
+  build:
+    run: go build -o {worktree}/plain-app-server ./bin/server.go
+    timeout: 5m
+  # The server is launched in the background; the health hook's polling is
+  # what waits for it. The start hook must have no timeout — a timeout
+  # would kill the process group, taking the server with it.
+  start:
+    run: "nohup {worktree}/plain-app-server >{worktree}/wt-server.log 2>&1 &"
   health:
-    run: "curl -fsS http://127.0.0.1:{api}/healthz"
-    params:
-      retries:
-        default: "3"
+    # The server's own -healthcheck: dials 127.0.0.1:{api}/healthz and
+    # exits 0 or 1 — no curl on the machine needed, and the API_PORT the
+    # hook environment carries is the worktree's own allocation.
+    run: "{worktree}/plain-app-server -healthcheck"
+    timeout: 30s
 
 emit:
   descriptor:
