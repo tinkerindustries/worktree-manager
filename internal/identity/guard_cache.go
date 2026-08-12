@@ -187,13 +187,18 @@ func writeCacheEntry(path string, e guardCacheEntry) error {
 // cacheKey hashes the symlink-resolved cwd into a filename: the same
 // directory reached through different spellings shares one entry.
 func cacheKey(cwd string) (string, error) {
-	resolved, err := filepath.EvalSymlinks(cwd)
+	// platform.RealPath rather than EvalSymlinks: the key has to stay the
+	// same after the worktree is removed, or the entry written while it
+	// existed can never be found and invalidated. EvalSymlinks fails on a
+	// path that is gone, and falling back to Abs yields a different string
+	// wherever an ancestor is a symlink — on macOS /var is a symlink to
+	// /private/var, so every removal leaked its entry and the mid-session
+	// removal was never noticed. RealPath resolves through the deepest
+	// existing ancestor and re-appends the missing tail, so the key is
+	// stable across the path existing and not existing.
+	resolved, err := platform.RealPath(cwd)
 	if err != nil {
-		abs, aerr := filepath.Abs(cwd)
-		if aerr != nil {
-			return "", fmt.Errorf("resolving %s for the guard cache: %w", cwd, aerr)
-		}
-		resolved = abs
+		return "", fmt.Errorf("resolving %s for the guard cache: %w", cwd, err)
 	}
 	h := fnv.New64a()
 	h.Write([]byte(resolved))
