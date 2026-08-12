@@ -13,7 +13,17 @@ internal packages:
 ```
 cmd/wt        the client: verb dispatch into internal/cli, then os.Exit
 cmd/wtd       the coordinator: socket listener, protocol loop, graceful
-              shutdown; reads WT_HOME and WT_SOCKET, logs to stderr
+              shutdown, the R1 restart recovery (every reserving entry is
+              torn down by handle or moved to tearing-down before the
+              first connection), and the opt-in loopback TCP listener
+              (--tcp/--tcp-token, both together, loopback-only); reads
+              WT_HOME and WT_SOCKET, logs to stderr
+dist/         the phase-9 distribution: build.sh assembles one archive
+              per platform (both binaries plus the platform's installer),
+              install.sh and install.ps1 install into a prefix and drive
+              `wt daemon install`, ziphelper.go builds the Windows zip
+              with the standard library alone; the release workflow runs
+              build.sh on every v* tag
 internal/cli  verb dispatch, flag parsing, output, the exit-code error
               type, the one dial-and-request helper, the daemon verbs,
               and the lifecycle verbs — init (the seven-step sequence
@@ -32,7 +42,11 @@ internal/platform  M8: path realisation (on Windows via
               paths and mapped drives), the mount's case-sensitivity
               probe, the port-probe socket options (SO_REUSEADDR set on
               unix, unset on Windows — the one GOOS branch callers never
-              see), the socket path, the named-pipe transport on Windows
+              see), the socket path (and the tcp:// form DialSocket
+              dials — the loopback TCP surface's client half), the
+              loopback-TCP configuration rails (ValidateTCPConfig:
+              literal loopback address only, 16+-character whitespace-free
+              token), the named-pipe transport on Windows
               (owner-only ACL), peer credentials (the pipe's ACL is the
               whole of host identity on Windows), the private-dir
               permission model (0700 on unix; the current-user ACL with
@@ -41,7 +55,9 @@ internal/platform  M8: path realisation (on Windows via
               unix-only), the supervisor seam (launchd on macOS, the
               systemd user unit with its paired .socket unit and
               LISTEN_FDS socket activation on Linux, the logon scheduled
-              task on Windows), listener discovery (lsof on macOS,
+              task on Windows — each registration carrying the optional
+              --tcp/--tcp-token arguments, written 0600 when it carries
+              the token), listener discovery (lsof on macOS,
               /proc/net on Linux, netstat+tasklist on Windows) and
               signalling (TERM/KILL by pid, process groups; on Windows
               taskkill without /F then /F, the escalation reported); the
@@ -67,11 +83,14 @@ internal/generate  M5: the generated Go descriptor reader — the source
               an adopted repo compiles into its own entry points, with an
               embedded YAML-subset parser (stdlib only)
 internal/protocol  the wire between the two binaries: message types,
-              newline-delimited JSON framing, version negotiation, and
-              the verb payloads — the phase-3 allocate/activate/release
-              and bands verbs, phase 5's materialise and rm, and phase
-              6's list, doctor, reconcile and clients.list, which carry
-              the parsed spec where a teardown needs it
+              newline-delimited JSON framing with the cap enforced while
+              reading (a peer streaming bytes without a newline cannot
+              grow the coordinator's memory past 1 MiB), version
+              negotiation, and the verb payloads — the phase-3
+              allocate/activate/release and bands verbs, phase 5's
+              materialise and rm, and phase 6's list, doctor, reconcile
+              and clients.list, which carry the parsed spec where a
+              teardown needs it
 internal/store  the coordinator's state directory: root resolution,
               atomic writes, the schema_version envelope, clients.json,
               registry.json, bands.json (with the per-base spans doctor
@@ -90,7 +109,17 @@ internal/coord  the coordinator's request core, socket server and the
               entries plus aged-out ephemeral ones, repaired by the
               existing paths) and clients.list — plus reclamation, the
               coordinator's timer's teardown of aged-out ephemeral
-              clients' entries by handle
+              clients' entries by handle. Phase 9 adds the restart
+              recovery (R1: every reserving entry a starting coordinator
+              finds is resolved before the first connection — torn down
+              by handle and dropped, or moved to tearing-down with a
+              note), the loopback TCP identity rule (the configured token
+              is required on every TCP connection, constant-time,
+              one refusal for missing and wrong; named clients only), and
+              the security-pass redaction (a named client's key is its
+              token, so foreign keys in list, clients list and every
+              error are shown as a short hash; bands.reserve is
+              host-client-only)
 internal/driver  M3: the six-operation driver contract, the port,
               namespace, state-path, cidr and machine drivers, the docker
               CLI seam, the platform machine-runner seam, and the
@@ -728,12 +757,70 @@ The six rules of `docs/ARCHITECTURE.md` §8.6, stated as invariants:
     credentials.
   `--prefix` directs the registration at a temporary directory and loads
   nothing, so no test ever touches the machine's supervisor.
+  `--tcp <addr> --tcp-token <token>` (both together, loopback-only, token
+  of at least 16 characters) additionally starts the opt-in loopback TCP
+  listener, written into the registration; a registration that carries
+  the token is written 0600 on unix, and the token is never echoed.
 - The five environment variables read anywhere are `WT_SOCKET`,
   `WT_HOME` (wtd alone), `WT_STANDALONE`, `WT_CLIENT_EPHEMERAL` (the
   ephemeral declaration, `=1`) and `WT_CLIENT_TOKEN` (the named-container
   token, phase 6). Setting the token together with the ephemeral
   declaration is refused as ambiguous — one names a persistent client,
-  the other marks its entries reclaimable.
+  the other marks its entries reclaimable. The loopback TCP surface adds
+  no variable: `WT_SOCKET`'s `tcp://host:port` form names the
+  coordinator's location the way a socket path does — the §12.3 test is
+  the same one (a worker inheriting the coordinator's address is
+  correct), so the endpoint is carried in the location variable rather
+  than a sixth ambient one — and the token is the existing
+  `WT_CLIENT_TOKEN`. `WT_TCP_TOKEN` exists for the installer alone (the
+  operator's convenience when scripting `install.sh --tcp`), read by the
+  shell script, never by a binary.
+
+## The security pass (phase 9)
+
+The coordinator is the machine's most privileged component in this design
+and the socket is its entire attack surface (docs/ARCHITECTURE.md §12.2),
+so the phase-9 pass went over it deliberately. What was checked, what was
+fixed, and what remains:
+
+- **Socket and pipe permissions**: the unix socket is born 0700 (umask,
+  verified, chmod fallback) and the Windows pipe carries an owner-only
+  ACL; the store is 0700/0600 with the Windows ACL refusal. Enforced at
+  creation, verified by tests.
+- **Peer credentials**: host identity comes from the kernel
+  (SO_PEERCRED/LOCAL_PEERCRED, the pipe ACL) and a host claim is never
+  trusted — `assignIdentity` refuses a host hello when peer credentials
+  are unavailable. Over the opt-in TCP listener there are no peer
+  credentials, which is why the listener requires the configured token
+  on every connection (constant-time compare, one refusal for missing
+  and wrong, 16-character minimum against brute force, loopback-only
+  bind so the surface never reaches the LAN).
+- **Secrets**: served to the owning client alone and only under `--wide`,
+  redacted in `list`, `doctor` and every error path. The pass fixed the
+  identity-key leak: a named client's key IS its token, so `list`,
+  `clients list`, the ownership-refusal message and the coordinator's
+  own log now show a short hash of a foreign named/ephemeral key instead
+  of the key.
+- **The ledger boundary**: `bands.reserve` changes machine-global policy
+  and is host-client-only — the design's container grant ("create
+  entries and mutate what it created") is now enforced for the ledger
+  verb.
+- **Malformed or oversized requests**: the 1 MiB wire cap is enforced
+  while reading, so a peer streaming bytes without a newline cannot grow
+  the coordinator's memory; a connection that never sends its hello dies
+  after a 10-second deadline; an unknown verb and an undecodable payload
+  are refused, never crashed on.
+- **The ownership check** runs on every mutating verb: `allocate`
+  against an existing entry, `activate`, `release`, `materialise`, `rm`;
+  `reconcile` re-checks every ref; reclamation acts by handle on
+  aged-out ephemeral owners; the scheduled sweep gates on the host uid.
+- **Residual, stated**: an authenticated client can hold its connection
+  open indefinitely — the coordinator cannot close it without breaking
+  init's legitimately long client-side hook runs between requests. Each
+  idle connection costs one goroutine and a buffer, the store cannot
+  wedge (the handler mutex is held only during a request), and a
+  shutdown that waits for an idle connection is bounded by the
+  supervisor's kill timeout, which the R1 recovery makes safe.
 
 ## Invariants (plan.md §3), as they bind this phase
 
