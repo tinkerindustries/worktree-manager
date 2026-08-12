@@ -1,0 +1,13 @@
+# Invalid: `api` is a stride-form port and stride caps slots at 99
+# (02-coordination §6.1). Rejected at validation naming slots.max.
+version: 1
+app: stride-app
+slots:
+  max: 100
+resources:
+  - type: port
+    name: api
+emit:
+  descriptor:
+    filename: wt-env.yaml
+    format: yaml

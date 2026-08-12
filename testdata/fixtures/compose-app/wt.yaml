@@ -1,0 +1,83 @@
+# compose-app's committed spec — the adoption signal. Shape per
+# docs/design/03-drivers.md §3.1; hooks and emit are fixed in full by phase 0
+# (plan.md phase 0).
+#
+# Templates embed {slot} alongside {slug} so that two explain runs for
+# different slots of the same slug still resolve to disjoint tables — the
+# phase-0 exit criterion — and because slot-in-the-name keeps every derived
+# value legible in `docker ps`, the same property A4 asks of ports.
+version: 1
+app: compose-app
+
+slots:
+  max: 32
+
+resources:
+  # api in stride form: port = base + slot.
+  - type: port
+    name: api
+  # proxy in group form at api − 1 (M2 §6.1's fixed-relationship case):
+  # port = base + slot × 1 + (−1).
+  - type: port
+    name: proxy
+    form: group
+    size: 1
+    offset: -1
+  # The dev compose project, governing the dev and test files.
+  - type: namespace
+    name: compose
+    kind: compose
+    template: "{app}-{slug}-{slot}"
+    files: [compose.yaml, compose.test.yaml]
+  # The dependent test project, derived from the dev project (03-drivers §3.3).
+  - type: namespace
+    name: compose_test
+    kind: compose
+    template: "{compose}-test"
+  # The database, isolated per worktree.
+  - type: state-path
+    name: db
+    template: "{home}/.compose-app/worktrees/{slug}-{slot}/db.sqlite"
+
+# The committed defaults: the co-resident production stack's fixed ports
+# (compose.prod.yaml). B8.3 — a property of the repository, unlike the
+# host-global reservations that live in the ledger.
+reserved:
+  ports: [5319, 5320]
+
+# The hand-authored half of the shared block (03-drivers §6): the one
+# resource the tooling does not model.
+shared:
+  - name: "{home}/.compose-app/db.sqlite"
+    impact: writes are visible to every worktree and the main checkout
+
+# All six hooks, in run order (04-lifecycle §4 and §5). install uses the
+# shorthand form, equivalent to {run: "go mod download"}.
+hooks:
+  install: "go mod download"
+  prepull:
+    run: docker compose -f compose.yaml -p {compose} pull
+  build:
+    run: go build -o {worktree}/compose-app-dev ./cmd/server
+    timeout: 10m
+  start:
+    run: docker compose -f compose.yaml -p {compose} up -d --wait
+  seed:
+    run: ./scripts/seed.sh --profile {seed_profile}
+    params:
+      seed_profile:
+        sticky: true
+        default: dev
+  health:
+    run: curl -fsS http://127.0.0.1:{api}/healthz
+    timeout: 30s
+
+emit:
+  descriptor:
+    filename: wt-env.yaml
+    format: yaml
+  reader:
+    language: go
+    path: internal/env/env.go
+    package: env
+    env_var: COMPOSE_APP_ENV

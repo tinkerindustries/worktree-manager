@@ -1,0 +1,16 @@
+# Invalid: python is not a supported reader language — PLAN-SCOPE.md rules
+# out every language but Go, including as a "nearly free" second template.
+# Rejected at validation naming emit.reader.language.
+version: 1
+app: language-app
+slots:
+  max: 4
+emit:
+  descriptor:
+    filename: wt-env.yaml
+    format: yaml
+  reader:
+    language: python
+    path: env/env.py
+    package: env
+    env_var: LANGUAGE_APP_ENV
