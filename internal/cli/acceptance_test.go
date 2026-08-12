@@ -740,6 +740,9 @@ func TestAcceptanceGate2ContainerAndHostAllocate(t *testing.T) {
 	writeT(t, initScript, `#!/bin/sh
 set -e
 apk add --no-cache git >/dev/null 2>&1
+# The shared tree is owned by the host user and this container runs as
+# root, which git refuses to touch until told the ownership is expected.
+git config --global --add safe.directory '*'
 # $REPO is a bind-mount point, so it cannot be removed from in here —
 # only emptied. $WT is ordinary container filesystem and goes whole.
 rm -rf "$REPO"/..?* "$REPO"/.[!.]* "$REPO"/* 2>/dev/null || true
@@ -756,6 +759,9 @@ wt init --cwd "$WT" --description "the gate's container client" --json
 	writeT(t, rmScript, `#!/bin/sh
 set -e
 apk add --no-cache git >/dev/null 2>&1
+# The shared tree is owned by the host user and this container runs as
+# root, which git refuses to touch until told the ownership is expected.
+git config --global --add safe.directory '*'
 wt rm --cwd "$REPO" --slug wt-c
 `)
 	fakeGh := filepath.Join(tr.base, "gh")
