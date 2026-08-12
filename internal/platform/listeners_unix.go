@@ -184,11 +184,3 @@ func signalKill(pid int) error {
 func alive(pid int) bool {
 	return syscall.Kill(pid, 0) == nil
 }
-
-// errOutput recovers the command's stderr from an ExitError, for reporting.
-func errOutput(err error) []byte {
-	if ee, ok := err.(*exec.ExitError); ok {
-		return ee.Stderr
-	}
-	return nil
-}

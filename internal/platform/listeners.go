@@ -23,6 +23,7 @@ package platform
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 )
@@ -138,4 +139,12 @@ func parsePids(port int, out string) []Holder {
 // command, per 08-platform.md §3.
 func unavailableError(tool, detail string) error {
 	return fmt.Errorf("listener discovery needs %s, which is unavailable: %s", tool, detail)
+}
+
+// errOutput recovers the command's stderr from an ExitError, for reporting.
+func errOutput(err error) []byte {
+	if ee, ok := err.(*exec.ExitError); ok {
+		return ee.Stderr
+	}
+	return nil
 }
