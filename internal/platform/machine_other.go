@@ -8,8 +8,6 @@ package platform
 // names the platform that has a runner — a silent degrade reads as success
 // (plan.md §3), so the driver never pretends a machine exists here.
 
-import "fmt"
-
 // Machine returns no runner on this platform.
 func Machine() MachineRunner { return unsupportedMachine{} }
 
@@ -21,25 +19,18 @@ func (unsupportedMachine) Binary() string { return "" }
 
 // List cannot run.
 func (unsupportedMachine) List() ([]MachineInstance, error) {
-	return nil, machineUnavailable("this platform has no VM runner: the machine driver runs Colima on macOS and WSL2 on Windows")
+	return nil, machineUnavailable("the machine driver runs Colima on macOS and WSL2 on Windows")
 }
 
 // Start cannot run.
 func (unsupportedMachine) Start(name string) error {
-	return machineUnavailable("this platform has no VM runner: the machine driver runs Colima on macOS and WSL2 on Windows")
+	return machineUnavailable("the machine driver runs Colima on macOS and WSL2 on Windows")
 }
 
 // Delete cannot run.
 func (unsupportedMachine) Delete(name string) error {
-	return machineUnavailable("this platform has no VM runner: the machine driver runs Colima on macOS and WSL2 on Windows")
+	return machineUnavailable("the machine driver runs Colima on macOS and WSL2 on Windows")
 }
 
 // DeleteCommand names no bypass: there is nothing to tear down by hand.
 func (unsupportedMachine) DeleteCommand(name string) string { return "" }
-
-// machineUnavailable wraps a reason in ErrMachineUnavailable, the marker
-// the driver maps to unavailable (does not block allocation; does block
-// freeing the slot on teardown).
-func machineUnavailable(reason string) error {
-	return fmt.Errorf("%w: %s", ErrMachineUnavailable, reason)
-}

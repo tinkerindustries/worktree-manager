@@ -16,6 +16,7 @@ package platform
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -56,8 +57,10 @@ type MachineRunner interface {
 // ErrMachineUnavailable is what every runner operation returns when the
 // helper cannot run at all: the binary is absent, or the platform has no
 // runner. The driver maps it to its unavailable result, which does not
-// block allocation and does block freeing the slot on teardown.
-var ErrMachineUnavailable = errors.New("no VM runner available on this platform: the machine driver runs Colima on macOS and WSL2 on Windows")
+// block allocation and does block freeing the slot on teardown. The
+// sentinel's own text is the generic marker; the concrete reason is
+// appended by machineUnavailable, so the message is never doubled.
+var ErrMachineUnavailable = errors.New("no VM runner available on this platform")
 
 // parseColimaList parses `colima list --json` — one object per profile
 // with its status. The empty document "[]" is valid and means no
@@ -102,4 +105,11 @@ func parseWSLNames(out string) []string {
 		names = append(names, line)
 	}
 	return names
+}
+
+// machineUnavailable wraps a reason in ErrMachineUnavailable, the marker
+// the driver maps to unavailable (does not block allocation; does block
+// freeing the slot on teardown).
+func machineUnavailable(reason string) error {
+	return fmt.Errorf("%w: %s", ErrMachineUnavailable, reason)
 }
