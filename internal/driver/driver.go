@@ -115,10 +115,19 @@ type Env struct {
 	// refusal's seed.from; verify needs it for the files a compose namespace
 	// governs.
 	Spec *spec.Spec
+	// App, Slug and Slot identify the allocation the operation belongs to.
+	// Teardown resolves seed.from templates against the same context the
+	// values were derived with, so the identity rides along.
+	App  string
+	Slug string
+	Slot int
 	// Bases are the app's port band bases, the same map spec.Resolve's
 	// context carries. Derive feeds them through; the state-path driver
 	// needs them to resolve a seed.from that references a port resource.
 	Bases map[string]int
+	// Resolved is the denormalised resource table the values came from, so
+	// a template like seed.from can reference another resource by name.
+	Resolved map[string]spec.Resolved
 	// Home is the coordinator's home directory, the {home} the templates
 	// resolved against.
 	Home string
@@ -127,6 +136,16 @@ type Env struct {
 	// inside the tree (03-drivers.md §8). Teardown never uses it: the
 	// directory is routinely gone by the time teardown runs.
 	Worktree string
+	// SeedModes maps a state-path resource name to the seed mode chosen for
+	// this run, overriding the spec's seed.default. Phase 5's init passes
+	// the modes the user chose; absent an override the spec's default
+	// applies (03-drivers.md §4.4).
+	SeedModes map[string]string
+	// PurgeFlags are the CLI purge flags the caller passed (e.g.
+	// "--purge-db"). A state-path resource whose purge.flag was passed is
+	// purged on teardown; every other state-path is left alone — teardown
+	// only happens when the purge flag is given (03-drivers.md §4.4).
+	PurgeFlags []string
 	// Reservations are the ledger's host-global reservations at call time.
 	// The namespace driver refuses to tear down a project whose name matches
 	// one (03-drivers.md §4.2, B8.2).
@@ -213,3 +232,13 @@ const (
 	LevelWarning = "warning"
 	LevelError   = "error"
 )
+
+// RefusalError is a safety refusal: an operation the driver will not
+// perform, no matter how the caller asks — purging a state path that is or
+// contains the shared source, or tearing down a namespace matching a
+// host-global reservation (ARCHITECTURE.md §12.1). The sequencing collects
+// refusals separately from failures, and the coordinator maps one to exit
+// code 3 (refused by a safety check).
+type RefusalError struct{ Reason string }
+
+func (e *RefusalError) Error() string { return e.Reason }

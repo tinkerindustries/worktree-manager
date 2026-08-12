@@ -118,3 +118,37 @@ func validateTemplateVars(t, field string, resources map[string]bool) error {
 func slotString(slot int) string {
 	return strconv.Itoa(slot)
 }
+
+// Substitute resolves one non-resource template — a seed.from path or a
+// hand-authored shared name — against the same variables Resolve uses: the
+// builtins ({app}, {slug}, {slot}, {home}, {worktree}) plus the names of
+// other resources, which resolve through the already-resolved table. It is
+// the exported form of the substitution the resource templates go through,
+// for templates the schema does not model as resources: the state-path
+// driver resolves seed.from with it, and phase 5 resolves the shared
+// block's hand-authored half (03-drivers.md §3.3).
+func Substitute(t string, ctx Context, resolved map[string]Resolved) (string, error) {
+	value, err := substitute(t, func(name string) (string, bool) {
+		switch name {
+		case "app":
+			return ctx.App, true
+		case "slug":
+			return ctx.Slug, true
+		case "slot":
+			return strconv.Itoa(ctx.Slot), true
+		case "home":
+			return ctx.Home, true
+		case "worktree":
+			return ctx.Worktree, true
+		}
+		v, ok := resolved[name]
+		if !ok {
+			return "", false
+		}
+		return fmt.Sprint(v.Value), true
+	})
+	if err != nil {
+		return "", err
+	}
+	return value, nil
+}

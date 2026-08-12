@@ -6,6 +6,7 @@ package driver
 // suite"). Phase 8 adds cidr and machine as rows of the same table.
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
@@ -123,7 +124,7 @@ func runConformance(t *testing.T, tc conformanceCase) {
 // TestDriverConformance runs the suite over every driver. A new driver is a
 // row here, not a new test file.
 func TestDriverConformance(t *testing.T) {
-	for _, tc := range conformanceCases() {
+	for _, tc := range conformanceCases(t) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			runConformance(t, tc)
@@ -132,8 +133,9 @@ func TestDriverConformance(t *testing.T) {
 }
 
 // conformanceCases is the driver table. Each phase that adds a driver adds a
-// row; the suite code does not change.
-func conformanceCases() []conformanceCase {
+// row; the suite code does not change. t is passed so a case can build its
+// own temp environment.
+func conformanceCases(t *testing.T) []conformanceCase {
 	return []conformanceCase{
 		{
 			name:         "port",
@@ -146,6 +148,7 @@ func conformanceCases() []conformanceCase {
 			wantTeardown: false,
 			wantGates:    true,
 		},
+		statePathConformanceCase(t),
 	}
 }
 
@@ -184,4 +187,37 @@ func resourceByName(s *spec.Spec, name string) *spec.Resource {
 		}
 	}
 	return nil
+}
+
+// statePathConformanceCase is the state-path row: a temp home and the
+// empty seed mode, so the suite's apply and teardown are self-contained (a
+// seeded apply would need a source the suite does not assume).
+func statePathConformanceCase(t *testing.T) conformanceCase {
+	home := t.TempDir()
+	return conformanceCase{
+		name: "state-path",
+		d:    &StatePath{},
+		spec: &spec.Spec{
+			Version: 1, App: "conformance",
+			Slots: spec.Slots{Max: intPtr(32)},
+			Resources: []spec.Resource{{
+				Type: "state-path", Name: "db",
+				Template: strPtr(filepath.Join(home, "worktrees", "{slug}", "db.sqlite")),
+			}},
+			Emit: spec.Emit{Descriptor: spec.Descriptor{Filename: "wt-env.json", Format: "json"}},
+		},
+		ctx: spec.Context{
+			App: "conformance", Slug: "wt-1", Slot: 1,
+			Home: home, Worktree: filepath.Join(home, "worktrees", "wt-1"),
+		},
+		env: Env{
+			App: "conformance", Slug: "wt-1", Slot: 1,
+			Home: home, Worktree: filepath.Join(home, "worktrees", "wt-1"),
+			SeedModes: map[string]string{"db": "empty"},
+		},
+		resource:     "db",
+		wantApply:    true,
+		wantTeardown: true,
+		wantGates:    false,
+	}
 }
