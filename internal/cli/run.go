@@ -6,7 +6,8 @@ import (
 )
 
 // usageText is the client's help. Every verb in the system offers --json;
-// phase 1 adds guard and show alongside phase 0's spec verbs.
+// phase 2 adds the two daemon verbs alongside phase 0's spec verbs and
+// phase 1's guard and show.
 const usageText = `wt — worktree manager client
 
 usage:
@@ -21,6 +22,15 @@ usage:
   wt guard [--json] [--cwd <dir>]    the enforcement hook: deny a tool call
       [--tool <name>] [--input <json>]  whose file_path escapes the worktree.
       [--path <file>]                accepts a PreToolUse payload on stdin
+  wt daemon status [--prefix <dir>]  the coordinator's state: not registered,
+      [--json]                       registered but stopped, running but
+                                     unreachable, or running — each broken
+                                     state names a different fix
+  wt daemon install [--prefix <dir>] register wtd with the platform's
+      [--wtd <path>] [--json]        supervisor (launchd on macOS) and
+                                     start it; --prefix writes the
+                                     registration into a temp directory
+                                     instead and loads nothing
   wt help                            this help
 
 every verb offers --json: exactly one JSON object on stdout, nothing else.
@@ -47,6 +57,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runGuard(args[1:], stdout, stderr)
 	case "show":
 		return runShow(args[1:], stdout, stderr)
+	case "daemon":
+		return runDaemon(args[1:], stdout, stderr)
 	default:
 		WriteError(stderr, UsageError(
 			"run 'wt help' for the verb list",
