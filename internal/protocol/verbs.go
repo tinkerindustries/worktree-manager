@@ -31,7 +31,10 @@ type AllocateArgs struct {
 // derives from, the denormalised resource table, the state the entry was
 // committed in (reserving), whether the coordinator can stat the recorded
 // path, and the owner's own secrets echoed back — the owner is the only
-// client they are ever served to (ARCHITECTURE.md §12.2).
+// client they are ever served to (ARCHITECTURE.md §12.2). ProbeNote carries
+// the bounded-coverage statement when the chosen slot's probe was
+// unavailable: allocation proceeded on the registry alone, and the output
+// says so (03-drivers.md §4.1).
 type AllocateResult struct {
 	App         string                   `json:"app"`
 	Slug        string                   `json:"slug"`
@@ -40,6 +43,7 @@ type AllocateResult struct {
 	Resources   map[string]spec.Resolved `json:"resources"`
 	PathVisible bool                     `json:"path_visible"`
 	Secrets     map[string]string        `json:"secrets,omitempty"`
+	ProbeNote   string                   `json:"probe_note,omitempty"`
 }
 
 // EntryRef names one registry entry: the app and slug pair that identifies

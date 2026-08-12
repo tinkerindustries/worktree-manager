@@ -539,7 +539,7 @@ func TestAllocatorProbeSeam(t *testing.T) {
 		sess, _ := h.Connect(protocol.KindHost, "")
 		sp := testSpec(t, "compose-app", 8)
 		registerBand(t, h, sess, sp, 4200)
-		h.H.Probe = func(app string, slot int, resources map[string]spec.Resolved) ProbeResult {
+		h.H.Probe = func(s *spec.Spec, slot int, resources map[string]spec.Resolved) ProbeResult {
 			if slot == 1 {
 				return ProbeHeld
 			}
@@ -559,7 +559,7 @@ func TestAllocatorProbeSeam(t *testing.T) {
 		sess, _ := h.Connect(protocol.KindHost, "")
 		sp := testSpec(t, "compose-app", 8)
 		registerBand(t, h, sess, sp, 4200)
-		h.H.Probe = func(app string, slot int, resources map[string]spec.Resolved) ProbeResult {
+		h.H.Probe = func(s *spec.Spec, slot int, resources map[string]spec.Resolved) ProbeResult {
 			return ProbeUnavailable
 		}
 		res, perr := allocate(t, h, sess, sp, "alpha")
@@ -568,6 +568,11 @@ func TestAllocatorProbeSeam(t *testing.T) {
 		}
 		if res.Slot != 1 {
 			t.Errorf("slot = %d, want 1", res.Slot)
+		}
+		// Bounded coverage is stated: the output carries the note that the
+		// registry was the only check performed (03-drivers.md §4.1).
+		if res.ProbeNote == "" {
+			t.Error("ProbeNote is empty; an unavailable probe must state that the registry was the only check")
 		}
 	})
 

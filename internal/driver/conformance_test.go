@@ -135,11 +135,9 @@ func TestDriverConformance(t *testing.T) {
 // row; the suite code does not change.
 func conformanceCases() []conformanceCase {
 	return []conformanceCase{
-		// The stub row proves the suite machinery against the one type the
-		// shared derivation understands; the phase-4 port driver replaces it.
 		{
-			name:         "stub-port",
-			d:            &stubPort{},
+			name:         "port",
+			d:            &Port{},
 			spec:         portConformanceSpec(),
 			ctx:          portConformanceCtx(),
 			env:          Env{},
@@ -151,34 +149,7 @@ func conformanceCases() []conformanceCase {
 	}
 }
 
-// stubPort is the suite's first row: a minimal driver for the port type that
-// agrees with spec.Resolve. The real port driver replaces it in phase 4.
-type stubPort struct{}
-
-func (stubPort) Type() string          { return "port" }
-func (stubPort) HasApply() bool        { return false }
-func (stubPort) HasTeardown() bool     { return false }
-func (stubPort) GatesAllocation() bool { return true }
-func (stubPort) Derive(r *spec.Resource, s *spec.Spec, ctx spec.Context) (any, error) {
-	table, err := spec.Resolve(s, ctx)
-	if err != nil {
-		return nil, err
-	}
-	return table[r.Name].Value, nil
-}
-func (stubPort) Probe(*spec.Resource, any, Env) ProbeResult { return ProbeFree }
-func (stubPort) Apply(*spec.Resource, any, Env) (ApplyResult, error) {
-	return ApplyResult{}, nil
-}
-func (stubPort) Teardown(*spec.Resource, any, Env) error { return nil }
-func (stubPort) Verify(*spec.Resource, any, Env) ([]Finding, error) {
-	return nil, nil
-}
-func (stubPort) BlastRadius(*spec.Resource, *spec.Spec) string {
-	return "ports are not isolated: every worktree derives the same port and the second stack to bind fails to start"
-}
-
-// portConformanceSpec is the stride-port spec the stub row derives from.
+// portConformanceSpec is the stride-port spec the port row derives from.
 func portConformanceSpec() *spec.Spec {
 	max := 32
 	s := &spec.Spec{

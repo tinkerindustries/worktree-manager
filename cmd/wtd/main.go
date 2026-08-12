@@ -22,6 +22,7 @@ import (
 	"syscall"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/coord"
+	"github.com/mrgeoffrich/worktree-manager/internal/driver"
 	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
@@ -74,6 +75,10 @@ func run(args []string) int {
 		log.Error("building the coordinator", "err", err)
 		return 1
 	}
+	// The driver registry is the phase-4 allocation probe and the teardown
+	// path. The namespace and state-path drivers join as they land; until
+	// then the port driver alone makes the probe real.
+	h.InstallDrivers(driver.NewRegistry(&driver.Port{}))
 	srv := coord.NewServer(h, log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
