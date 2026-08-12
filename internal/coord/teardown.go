@@ -1,0 +1,153 @@
+package coord
+
+// teardown.go is the coordinator's teardown core: the entry lifecycle behind
+// the driver sequencing. Phase 5's rm sequences it into the release verb;
+// this phase proves the state transitions it drives (plan.md §5, phase 4).
+
+import (
+	"fmt"
+	"os"
+	"time"
+
+	"github.com/mrgeoffrich/worktree-manager/internal/driver"
+	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
+	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/mrgeoffrich/worktree-manager/internal/store"
+)
+
+// Teardown runs the teardown of one registry entry: every driver's teardown
+// in reverse dependency order over the entry's denormalised resources —
+// handles from the registry, never from the working tree (03-drivers.md
+// §2.2) — continuing past failures and collecting what survived. The entry
+// lifecycle is the B2.3 rail: nothing survives → the entry is dropped and
+// the slot frees; anything survives → the entry moves to tearing-down with
+// a note listing exactly what survived, and the slot stays held until a
+// re-run frees everything.
+//
+// The spec is required: the dependent projects and the purge refusal are
+// computed from it, and a teardown that could not run them would be a
+// partial honour of a destructive operation — refused instead (plan.md §3).
+// purgeFlags are the CLI purge flags the caller passed; a state-path
+// resource whose purge.flag was passed is purged, every other state-path is
+// left alone.
+func (h *Handler) Teardown(s *Session, ref protocol.EntryRef, sp *spec.Spec, purgeFlags []string) *protocol.Response {
+	if sp == nil {
+		return respErr(3, "teardown needs the spec: without it the dependent projects and the purge refusal cannot be computed",
+			"send the spec with the teardown, then re-run")
+	}
+	if err := spec.Validate(sp); err != nil {
+		return respErr(3, fmt.Sprintf("the spec sent with the teardown is refused whole: %v", err),
+			"fix the spec, then re-run the teardown")
+	}
+	if h.Drivers == nil {
+		return respErr(1, "the coordinator has no driver registry installed",
+			"restart wtd, then re-run the teardown")
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	reg, err := h.st.ReadRegistry()
+	if err != nil {
+		return h.storeErr("reading the registry", err)
+	}
+	e := registryEntry(reg, ref.App, ref.Slug)
+	if e == nil {
+		return respErr(1, fmt.Sprintf("no registry entry for app %q slug %q", ref.App, ref.Slug),
+			"allocate the worktree first, then re-run")
+	}
+	if perr := h.checkOwner(s, e); perr != nil {
+		return &protocol.Response{Error: perr}
+	}
+
+	bands, err := h.st.ReadBands()
+	if err != nil {
+		return h.storeErr("reading the band ledger", err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return respErr(4, fmt.Sprintf("the coordinator cannot determine the home directory for {home}: %v", err),
+			"set $HOME for the coordinator, then re-run")
+	}
+
+	env := driver.Env{
+		Spec: sp, App: e.App, Slug: e.Slug, Slot: e.Slot,
+		Home: home, Worktree: e.Path,
+		Resolved: e.Resources,
+		Docker:   h.docker(),
+	}
+	if band := findBand(bands, e.App); band != nil {
+		env.Bases = band.Bases
+	}
+	for _, r := range bands.Reservations {
+		env.Reservations = append(env.Reservations, driver.Reservation{
+			Ports: r.Ports, Names: r.Names, Note: r.Note,
+		})
+	}
+
+	rep := h.Drivers.TeardownAll(sp, e.Resources, env, purgeFlags)
+
+	if rep.Clean() {
+		// Nothing survived: the entry drops and the slot frees.
+		idx := -1
+		for i := range reg.Entries {
+			if reg.Entries[i].App == ref.App && reg.Entries[i].Slug == ref.Slug {
+				idx = i
+				break
+			}
+		}
+		reg.Entries = append(reg.Entries[:idx], reg.Entries[idx+1:]...)
+		if err := h.st.WriteRegistry(reg); err != nil {
+			return h.storeErr("writing the registry", err)
+		}
+		return &protocol.Response{Result: mustJSON(protocol.ReleaseResult{
+			App: ref.App, Slug: ref.Slug, Removed: true,
+		})}
+	}
+
+	// Something survived: tearing-down is a resting state, the note lists
+	// exactly what survived, and the slot stays held (B2.3, ARCHITECTURE.md
+	// §11.2).
+	e.State = store.StateTearingDown
+	e.TeardownNote = teardownNote(rep)
+	e.LastSeen = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := h.st.WriteRegistry(reg); err != nil {
+		return h.storeErr("writing the registry", err)
+	}
+	code, msg, remedy := teardownFailure(rep)
+	return respErr(code, msg, remedy)
+}
+
+// docker returns the handler's docker seam, defaulting to the real runner.
+func (h *Handler) docker() driver.Docker {
+	if h.Docker != nil {
+		return h.Docker
+	}
+	return driver.NewDocker()
+}
+
+// teardownNote composes the entry's note: exactly what survived, in the
+// report's own words, so a later reader needs no re-derivation.
+func teardownNote(rep driver.TeardownReport) string {
+	if rep.Clean() {
+		return ""
+	}
+	return "teardown left resources behind; the slot stays held until a re-run frees everything: " + rep.Summary()
+}
+
+// teardownFailure maps a report with refusals, unavailables or survivors to
+// the wire error: a refusal is code 3 (a safety check refused the
+// operation), an unavailable teardown is code 4 (required context
+// unavailable), a partial failure is code 1. The message names everything
+// outstanding and the remedy tells the user to fix the cause and re-run.
+func teardownFailure(rep driver.TeardownReport) (int, string, string) {
+	code := 1
+	if len(rep.Refusals) > 0 {
+		code = 3 // safety first: a refused teardown outranks a failed one
+	} else if len(rep.Unavailable) > 0 {
+		code = 4
+	}
+	return code,
+		fmt.Sprintf("teardown did not free the slot: %s", rep.Summary()),
+		"fix the cause named above, then re-run the teardown; the slot stays held until nothing survives"
+}

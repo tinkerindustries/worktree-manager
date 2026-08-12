@@ -62,6 +62,11 @@ type Entry struct {
 	Path        string `json:"path"`
 	PathVisible bool   `json:"path_visible"`
 	State       string `json:"state"`
+	// TeardownNote is written when a teardown leaves resources behind and
+	// the entry moves to tearing-down: exactly what survived, so a re-run
+	// (and phase 6's doctor) knows what is outstanding without re-deriving
+	// it. Cleared when a later teardown frees the entry.
+	TeardownNote string `json:"teardown_note,omitempty"`
 	// Resources are the derived values, denormalised (ARCHITECTURE.md §8.3).
 	Resources map[string]spec.Resolved `json:"resources"`
 	// DescriptorPath is where the descriptor went and Description what the

@@ -180,16 +180,6 @@ func portConformanceCtx() spec.Context {
 	}
 }
 
-// resourceByName finds one resource of the spec by name.
-func resourceByName(s *spec.Spec, name string) *spec.Resource {
-	for i := range s.Resources {
-		if s.Resources[i].Name == name {
-			return &s.Resources[i]
-		}
-	}
-	return nil
-}
-
 // statePathConformanceCase is the state-path row: a temp home and the
 // empty seed mode, so the suite's apply and teardown are self-contained (a
 // seeded apply would need a source the suite does not assume).

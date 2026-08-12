@@ -16,8 +16,9 @@ import (
 // execDocker runs the docker CLI.
 type execDocker struct{}
 
-// newDocker builds the real runner.
-func newDocker() Docker { return execDocker{} }
+// NewDocker builds the real runner, used by the coordinator's teardown path
+// by default.
+func NewDocker() Docker { return execDocker{} }
 
 // Version probes the daemon. An absent binary and an unreachable daemon are
 // both ErrUnavailable — the caller reports unavailable and says what fixes

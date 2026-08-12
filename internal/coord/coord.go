@@ -75,6 +75,10 @@ type Handler struct {
 	// before serving.
 	Drivers driver.Registry
 
+	// Docker is the docker seam the teardown path runs against. Nil means
+	// the real CLI runner (driver.NewDocker) is used; tests install fakes.
+	Docker driver.Docker
+
 	st  *store.Store
 	log *slog.Logger
 
