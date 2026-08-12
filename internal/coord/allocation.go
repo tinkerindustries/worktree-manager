@@ -613,6 +613,19 @@ func (h *Handler) AgeReserving(now time.Time, timeout time.Duration) (int, error
 // storeErr turns a store failure into the wire error with the exit code and
 // remedy. An unparseable registry is reported, never truncated and
 // recreated (02-coordination.md §14).
+//
+// The 06-fleet.md §5 row "registry unparseable | rebuild from every
+// descriptor this view can see" is answered here, in phase 8, and the
+// answer is that the rebuild still cannot happen: the registry is the only
+// source of repository locations on the machine (doctorRepos states the
+// same bound), so a rebuild could only discover the descriptors of the one
+// repository the caller happens to stand in. Rebuilding from that one
+// repo's worktrees would silently drop every other repo's entries — and
+// the rebuild cannot know which entries were this view's, so every
+// descriptor-visible worktree would be re-registered under the caller's
+// ownership, stealing other clients' slots and resources. A7's "rebuilding
+// the registry from descriptors must always be safe" is exactly what that
+// would violate, so the refusal stands, naming the restore.
 func (h *Handler) storeErr(action string, err error) *protocol.Response {
 	var ve *store.VersionError
 	if errors.As(err, &ve) {
@@ -621,7 +634,7 @@ func (h *Handler) storeErr(action string, err error) *protocol.Response {
 	msg := fmt.Sprintf("%s: %v", action, err)
 	remedy := "check the coordinator's store (WT_HOME) is readable and writable, then re-run"
 	if strings.Contains(err.Error(), "not a readable store file") {
-		remedy = "restore the store file from a backup; an unparseable store file is never truncated and recreated (rebuild-from-descriptors lands in a later phase)"
+		remedy = "restore the store file from a backup; an unparseable registry is never truncated and recreated — rebuilding it from descriptors is not possible, because the registry is the only source of repository locations and a rebuild from one repo's worktrees would silently drop every other repo's (and every other client's) entries"
 	}
 	return respErr(1, msg, remedy)
 }

@@ -8,6 +8,8 @@ package coord
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -68,7 +70,9 @@ func (f *coordFakeMachine) DeleteCommand(name string) string {
 func setupMachineHarness(t *testing.T, m *coordFakeMachine) (*Harness, *Session) {
 	t.Helper()
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	h.H.Machine = m
+	if m != nil {
+		h.H.Machine = m
+	}
 	h.H.InstallDrivers(driver.NewRegistry(&driver.Port{}, &driver.Namespace{}, &driver.StatePath{},
 		&driver.CIDR{}, &driver.Machine{}))
 	sess, reply := h.Connect(protocol.KindHost, "")
@@ -214,3 +218,116 @@ func TestCoordRmKeepVMLeavesTheInstanceUp(t *testing.T) {
 		t.Fatal("the first rm dropped the entry; the second must find nothing")
 	}
 }
+
+// TestDoctorMachineCapacityFinding is the deferred row of 06-fleet.md §4:
+// "max_concurrent machines approaching" — the machine driver exists now,
+// so doctor produces the finding, naming what is running and how to tear
+// one down, and notes the bound when the runner cannot answer.
+func TestDoctorMachineCapacityFinding(t *testing.T) {
+	t.Run("approaching the limit is a finding", func(t *testing.T) {
+		m := &coordFakeMachine{instances: []platform.MachineInstance{
+			{Name: "vm-app-wt-a-1", Running: true},
+			{Name: "vm-app-wt-b-2", Running: true},
+			{Name: "vm-app-wt-c-3", Running: true},
+		}}
+		h, sess := setupMachineHarness(t, m)
+		sp := machineSpec(t, "")
+		// The entry's path must be stattable for doctor to reach the
+		// spec-driven checks.
+		dir := t.TempDir()
+		allocateWithPath(t, h, sess, sp, "wt-1", filepath.Join(dir, "wt-1"))
+
+		resp := h.Request(context.Background(), sess, verbDoctor, nil)
+		if resp.Error != nil {
+			t.Fatalf("doctor: %v", resp.Error)
+		}
+		var res protocol.DoctorResult
+		mustUnmarshal(t, resp.Result, &res)
+		matched := false
+		for _, f := range res.Findings {
+			if f.Level != "warning" || !strings.Contains(f.Message, "approaching the machine capacity") {
+				continue
+			}
+			matched = true
+			for _, want := range []string{"3 of 4", "vm-app-wt-a-1", "colima delete", "capacity guard"} {
+				if !strings.Contains(f.Message, want) {
+					t.Errorf("the finding must name %q: %s", want, f.Message)
+				}
+			}
+			if f.Remedy == "" {
+				t.Errorf("the finding must name its fix: %+v", f)
+			}
+		}
+		if !matched {
+			t.Errorf("no capacity finding:\n%s", docFindingsT(res.Findings))
+		}
+	})
+
+	t.Run("well under the limit has no finding", func(t *testing.T) {
+		m := &coordFakeMachine{instances: []platform.MachineInstance{
+			{Name: "vm-app-wt-a-1", Running: true},
+		}}
+		h, sess := setupMachineHarness(t, m)
+		sp := machineSpec(t, "")
+		dir := t.TempDir()
+		allocateWithPath(t, h, sess, sp, "wt-1", filepath.Join(dir, "wt-1"))
+
+		resp := h.Request(context.Background(), sess, verbDoctor, nil)
+		var res protocol.DoctorResult
+		mustUnmarshal(t, resp.Result, &res)
+		for _, f := range res.Findings {
+			if strings.Contains(f.Message, "machine capacity") {
+				t.Errorf("1 of 4 running must not be a capacity finding: %+v", f)
+			}
+		}
+	})
+
+	t.Run("an unanswerable runner states the bound", func(t *testing.T) {
+		h, sess := setupMachineHarness(t, nil)
+		// The entry's path must sit inside a repo with the committed
+		// spec, or doctor cannot reach the spec-driven checks.
+		_, wt := sweepRepo(t, machineSpec(t, ""))
+		sp := machineSpec(t, "")
+		allocateWithPath(t, h, sess, sp, "wt-1", wt)
+
+		resp := h.Request(context.Background(), sess, verbDoctor, nil)
+		var res protocol.DoctorResult
+		mustUnmarshal(t, resp.Result, &res)
+		noted := false
+		for _, n := range res.Notes {
+			if strings.Contains(n, "machine capacity check was skipped") {
+				noted = true
+			}
+		}
+		if !noted {
+			t.Errorf("an unanswerable runner must be stated in the notes: %v", res.Notes)
+		}
+	})
+}
+
+// allocateWithPath allocates one entry at an explicit path.
+func allocateWithPath(t *testing.T, h *Harness, sess *Session, sp *spec.Spec, slug, path string) {
+	t.Helper()
+	if err := osMkdirAll(path); err != nil {
+		t.Fatal(err)
+	}
+	resp := h.Request(context.Background(), sess, verbAllocate, &protocol.AllocateArgs{
+		Spec: *sp, Slug: slug, Path: path,
+		DescriptorPath: filepath.Join(path, "wt-env.yaml"), Description: "a doctor worktree",
+	})
+	if resp.Error != nil {
+		t.Fatalf("allocating %s: %v", slug, resp.Error)
+	}
+}
+
+// docFindingsT renders findings for an assertion message.
+func docFindingsT(findings []protocol.DoctorFinding) string {
+	var b strings.Builder
+	for _, f := range findings {
+		fmt.Fprintf(&b, "%s: %s\n", f.Level, f.Message)
+	}
+	return b.String()
+}
+
+// osMkdirAll is a thin wrapper so the helper reads naturally.
+func osMkdirAll(path string) error { return os.MkdirAll(path, 0o700) }
