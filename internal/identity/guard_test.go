@@ -20,7 +20,7 @@ type adoptedRepo struct {
 
 func buildAdoptedRepo(t *testing.T) *adoptedRepo {
 	t.Helper()
-	root := t.TempDir()
+	root := tempDir(t)
 	ar := &adoptedRepo{
 		main:        filepath.Join(root, "repo"),
 		wt1:         filepath.Join(root, "wt1"),
@@ -261,7 +261,7 @@ func TestGuardPrimaryCheckout(t *testing.T) {
 // hook is generated per adopted repo, so a not-a-repository call is manual
 // use.
 func TestGuardNotARepository(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	v := guardFor(t, dir, "Write", map[string]any{"file_path": filepath.Join(dir, "x")})
 	if !v.Allowed {
 		t.Errorf("not-a-repository call denied: %q", v.Reason)

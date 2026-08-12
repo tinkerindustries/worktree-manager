@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 )
 
 // fixtures is the real-repository layer of plan.md §4: classification is
@@ -41,9 +43,23 @@ type fixtures struct {
 	linkGone  string // fixture 5: symlink to the removed worktree's path
 }
 
+// tempDir is t.TempDir() with symlinks already resolved. git reports
+// --show-toplevel in resolved form, so a fixture built under the raw
+// t.TempDir() compares unequal on macOS, where the temp root sits under /var,
+// a symlink to /private/var. On Linux the two are the same string and the
+// difference never shows.
+func tempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := platform.RealPath(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolving the temp dir: %v", err)
+	}
+	return dir
+}
+
 func buildFixtures(t *testing.T) *fixtures {
 	t.Helper()
-	root := t.TempDir()
+	root := tempDir(t)
 	fx := &fixtures{root: root}
 
 	fx.plain = filepath.Join(root, "plain")

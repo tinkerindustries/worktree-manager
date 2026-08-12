@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 )
 
 // adoptedTestRepo is a two-worktree repository that has adopted the tooling:
@@ -20,9 +22,22 @@ type adoptedTestRepo struct {
 	sharedStore string
 }
 
+// tempDir is t.TempDir() with symlinks already resolved. git reports
+// --show-toplevel resolved, so a fixture under the raw t.TempDir() compares
+// unequal on macOS, where the temp root is under /var, a symlink to
+// /private/var.
+func tempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := platform.RealPath(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolving the temp dir: %v", err)
+	}
+	return dir
+}
+
 func buildAdoptedTestRepo(t *testing.T) *adoptedTestRepo {
 	t.Helper()
-	root := t.TempDir()
+	root := tempDir(t)
 	ar := &adoptedTestRepo{
 		main:        filepath.Join(root, "repo"),
 		wt1:         filepath.Join(root, "wt1"),

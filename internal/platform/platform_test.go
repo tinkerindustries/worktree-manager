@@ -3,9 +3,22 @@ package platform
 import (
 	"os"
 	"path/filepath"
-	"strings"
+	"runtime"
 	"testing"
 )
+
+// tempDir is t.TempDir() with symlinks already resolved. Every expectation in
+// this file is a path RealPath produced, and on macOS the temp root sits under
+// /var, which is a symlink to /private/var — so a comparison against the raw
+// t.TempDir() fails there while passing on Linux.
+func tempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := RealPath(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolving the temp dir: %v", err)
+	}
+	return dir
+}
 
 // chdir changes the working directory for the duration of the test.
 func chdir(t *testing.T, dir string) {
@@ -25,7 +38,7 @@ func chdir(t *testing.T, dir string) {
 }
 
 func TestRealPathSymlink(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	real := filepath.Join(dir, "real")
 	if err := os.Mkdir(real, 0o755); err != nil {
 		t.Fatal(err)
@@ -48,7 +61,7 @@ func TestRealPathSymlink(t *testing.T) {
 // a file that does not exist yet still resolves through its existing
 // ancestors, so a first write inside the tree is contained.
 func TestRealPathNonexistentTail(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	real := filepath.Join(dir, "real")
 	if err := os.Mkdir(real, 0o755); err != nil {
 		t.Fatal(err)
@@ -68,7 +81,7 @@ func TestRealPathNonexistentTail(t *testing.T) {
 }
 
 func TestRealPathRelative(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	sub := filepath.Join(dir, "sub")
 	if err := os.Mkdir(sub, 0o755); err != nil {
 		t.Fatal(err)
@@ -90,14 +103,22 @@ func TestRealPathRelative(t *testing.T) {
 // ancestor at all, which is unreachable in practice; the walk itself is the
 // contract.
 func TestRealPathNonexistentAncestor(t *testing.T) {
-	root := t.TempDir()
+	root := tempDir(t)
+	// The expected value is the resolved root plus the tail, not the raw
+	// path: on macOS the temp root is under /var, which is a symlink to
+	// /private/var, so the resolved form differs from the path as given.
+	resolvedRoot, err := RealPath(root)
+	if err != nil {
+		t.Fatalf("RealPath(%s): %v", root, err)
+	}
 	dir := filepath.Join(root, "does-not-exist")
+	want := filepath.Join(resolvedRoot, "does-not-exist")
 	got, err := RealPath(dir)
 	if err != nil {
 		t.Fatalf("RealPath(%s): %v", dir, err)
 	}
-	if got != dir {
-		t.Errorf("RealPath(%s) = %s, want the absolute path itself", dir, got)
+	if got != want {
+		t.Errorf("RealPath(%s) = %s, want %s", dir, got, want)
 	}
 }
 
@@ -105,7 +126,7 @@ func TestRealPathNonexistentAncestor(t *testing.T) {
 // ground truth available: whether two case-differing names actually collide
 // on this mount.
 func TestCaseSensitiveProbeMatchesReality(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	got, err := CaseSensitive(dir)
 	if err != nil {
 		t.Fatalf("CaseSensitive: %v", err)
@@ -123,20 +144,29 @@ func TestCaseSensitiveProbeMatchesReality(t *testing.T) {
 }
 
 func TestCaseSensitiveProbeNonexistentDir(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "gone")
+	dir := filepath.Join(tempDir(t), "gone")
 	if _, err := CaseSensitive(dir); err == nil {
 		t.Errorf("CaseSensitive(%s) succeeded, want an error", dir)
 	}
 }
 
-// TestRealPathWindowsCanonicalUnused guards the darwin branch's shape: the
-// firmlink prefix never appears on this platform, and canonical must leave
-// paths untouched off macOS.
-func TestCanonicalOffDarwin(t *testing.T) {
-	if strings.HasPrefix(t.TempDir(), "/System/Volumes/Data") {
-		t.Skip("running on a macOS firmlink path; nothing to assert here")
+// TestCanonical pins both halves of the firmlink branch. On macOS
+// /System/Volumes/Data is a firmlink rather than a symlink, so EvalSymlinks
+// leaves it in place and canonical strips it; on every other platform the
+// prefix is an ordinary path component and must survive untouched.
+func TestCanonical(t *testing.T) {
+	const firmlinked = "/System/Volumes/Data/Users/geoff"
+	got := canonical(firmlinked)
+	want := firmlinked
+	if runtime.GOOS == "darwin" {
+		want = "/Users/geoff"
 	}
-	if got := canonical("/System/Volumes/Data/Users/geoff"); got != "/System/Volumes/Data/Users/geoff" {
-		t.Errorf("canonical rewrote a path on a non-darwin build: %s", got)
+	if got != want {
+		t.Errorf("canonical(%s) = %s, want %s", firmlinked, got, want)
+	}
+	if runtime.GOOS == "darwin" {
+		if got := canonical("/System/Volumes/Data"); got != "/" {
+			t.Errorf("canonical of the firmlink root = %s, want /", got)
+		}
 	}
 }
