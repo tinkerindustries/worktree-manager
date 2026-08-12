@@ -51,6 +51,7 @@ import (
 	"github.com/mrgeoffrich/worktree-manager/internal/descriptor"
 	"github.com/mrgeoffrich/worktree-manager/internal/envfile"
 	"github.com/mrgeoffrich/worktree-manager/internal/identity"
+	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 )
@@ -211,7 +212,7 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	// with exit 3 and asks for an explicit slug — two worktree directories
 	// with the same basename are otherwise indistinguishable in every
 	// listing the user reads afterwards (04-lifecycle.md §2.3).
-	if res.Path != "" && res.Path != cls.WorktreeRoot {
+	if res.Path != "" && !samePath(res.Path, cls.WorktreeRoot) {
 		e := New(ExitRefused,
 			fmt.Sprintf("slug %q already names entry %q at %s, which is a different path from %s",
 				name, res.Slug, res.Path, cls.WorktreeRoot),
@@ -544,4 +545,26 @@ func writeInitTable(stdout io.Writer, r *initResult) {
 		fmt.Fprintln(stdout)
 		writeShowTable(stdout, r.Descriptor)
 	}
+}
+
+// samePath reports whether two recorded worktree paths name the same
+// directory. The comparison resolves symlinks on both sides first: on macOS
+// /var is a symlink to /private/var and /tmp to /private/tmp, so an entry
+// written with one spelling and a classification carrying the other are the
+// same directory and differ as strings. Comparing them raw made init refuse
+// its own worktree as a slug collision, which also broke idempotence.
+//
+// A path that cannot be resolved — the recorded one may name a directory
+// inside a container this host cannot see — falls back to the raw
+// comparison rather than being called a collision.
+func samePath(a, b string) bool {
+	if a == b {
+		return true
+	}
+	ra, aerr := platform.RealPath(a)
+	rb, berr := platform.RealPath(b)
+	if aerr != nil || berr != nil {
+		return false
+	}
+	return ra == rb
 }

@@ -344,12 +344,17 @@ func TestRmRequiresATarget(t *testing.T) {
 // exits 5 naming the start command.
 func TestRmCoordinatorUnreachableExitsFive(t *testing.T) {
 	main, _, _ := rmFixture(t)
-	t.Setenv("WT_SOCKET", filepath.Join(t.TempDir(), "nothing-listens"))
+	t.Setenv("WT_SOCKET", shortSock(t, "nothing-listens"))
 	code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1")
 	if code != ExitUnreachable {
 		t.Fatalf("exit = %d, want %d; stderr: %s", code, ExitUnreachable, stderr)
 	}
-	if !strings.Contains(stderr, "wtd") {
-		t.Errorf("stderr = %q, want the coordinator start command named", stderr)
+	// The remedy is platform-specific by design: where a supervisor is
+	// implemented it is `wt daemon install`, and elsewhere it is the
+	// foreground `wtd` invocation. Asserting either one literally pins the
+	// platform the test happens to run on, so assert that a start command is
+	// named at all.
+	if !strings.Contains(stderr, "wtd") && !strings.Contains(stderr, "daemon install") {
+		t.Errorf("stderr = %q, want a command that starts the coordinator", stderr)
 	}
 }

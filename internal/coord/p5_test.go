@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -19,6 +18,7 @@ import (
 	"time"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
+	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
@@ -357,11 +357,28 @@ s.bind(('127.0.0.1', %d)); s.listen(1); time.sleep(300)"`, port)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(cmd.Process.Pid), "comm"))
+	// The command name comes from the same discovery the reaper uses, rather
+	// than from a second implementation. Reading /proc/<pid>/comm directly
+	// works only on Linux, and the reaper's own allowlist is matched against
+	// whatever platform.Listeners reports — so asking it is both portable and
+	// the thing actually under test.
+	holders, err := platform.Listeners([]int{port})
 	if err != nil {
-		t.Fatalf("reading the listener's comm: %v", err)
+		t.Fatalf("discovering the listener on port %d: %v", port, err)
 	}
-	return cmd.Process.Pid, strings.TrimSpace(string(data))
+	for _, h := range holders {
+		if h.PID == cmd.Process.Pid {
+			return h.PID, h.Command
+		}
+	}
+	// The listener may be a child that replaced the shell, or the shell may
+	// have forked; either way the discovery's pid is the one the reaper acts
+	// on, so take it.
+	if len(holders) == 1 {
+		return holders[0].PID, holders[0].Command
+	}
+	t.Fatalf("discovery found %d holders of port %d, want the listener started here: %+v", len(holders), port, holders)
+	return 0, ""
 }
 
 // reapHarness is the harness with the container-detection seam disabled,
