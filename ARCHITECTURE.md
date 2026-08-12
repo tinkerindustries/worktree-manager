@@ -48,18 +48,28 @@ internal/generate  M5: the generated Go descriptor reader — the source
 internal/protocol  the wire between the two binaries: message types,
               newline-delimited JSON framing, version negotiation, and
               the verb payloads — the phase-3 allocate/activate/release
-              and bands verbs, plus phase 5's materialise (init's step
-              3) and rm (reap + teardown), which carry the parsed spec
+              and bands verbs, phase 5's materialise and rm, and phase
+              6's list, doctor, reconcile and clients.list, which carry
+              the parsed spec where a teardown needs it
 internal/store  the coordinator's state directory: root resolution,
               atomic writes, the schema_version envelope, clients.json,
-              registry.json and bands.json
+              registry.json, bands.json (with the per-base spans doctor
+              reads) and specs.json (the per-app spec cache reclamation
+              falls back to)
 internal/coord  the coordinator's request core, socket server and the
               in-process harness; one writer serialises here. Phase 5
               adds the materialise verb (driver apply with the
               reverse-order rollback), the rm verb (reap, then teardown,
-              then the entry drop) and the reaper, whose allowlist seam
-              (ReapBinaries) is empty because the spec has no field that
-              names binaries — reported to the plan rather than added
+              then the entry drop) and the reaper, whose allowlist comes
+              from the spec's reaper.binaries field (phase 6). Phase 6
+              adds the fleet verbs — list (the stale/unverifiable/
+              reclaimable/foreign markers, secrets served to the owning
+              client alone), doctor (reads everything, writes nothing,
+              every finding naming its fix), reconcile (the caller's own
+              entries plus aged-out ephemeral ones, repaired by the
+              existing paths) and clients.list — plus reclamation, the
+              coordinator's timer's teardown of aged-out ephemeral
+              clients' entries by handle
 internal/driver  M3: the six-operation driver contract, the port,
               namespace and state-path drivers, the docker CLI seam, and
               the sequencing (apply in dependency order, teardown in
@@ -353,8 +363,13 @@ stays atomic under a single rename. The entry's fields are
   label-based teardown is the one operation that could otherwise reach a
   co-resident stack the tool knows nothing else about (03-drivers.md §4.2,
   B8.2).
-- This phase's store files are `clients.json`, `registry.json` and
-  `bands.json`, each carrying the `schema_version` envelope.
+- The store files are `clients.json`, `registry.json`, `bands.json` and —
+  since phase 6 — `specs.json`, each carrying the `schema_version`
+  envelope. The band ledger records each base's span (the size the
+  coordinator computed at registration), which is what doctor's overlap
+  check reads without any app's spec; `specs.json` is the per-app spec
+  cache every allocate writes, the fallback reclamation uses when an
+  entry's path is not visible from the host.
 
 ## The coordinator (`internal/coord`)
 
@@ -426,6 +441,43 @@ stays atomic under a single rename. The entry's fields are
   what survived. A re-run that frees everything drops the entry; `release`
   drops it directly — the rollback path a client drives when init fails
   before activation.
+
+### Fleet and reclamation (phase 6)
+
+- `list` computes the markers from the registry plus one stat per visible
+  path: `stale` when the directory is gone, `unverifiable` when the path
+  was never visible to the coordinator (a container path), `reclaimable`
+  when the ephemeral owner's measured last-seen is older than the
+  reclamation interval, `foreign` when the entry belongs to another
+  client. The registry is read with the lenient `ReadRegistryList`, so a
+  newer schema still lists.
+- `doctor` runs every check through the handler and writes nothing (the
+  test pins byte-identical store files). The uninitialised-worktree check
+  discovers repositories through the registry's visible entry paths and
+  runs `git worktree list`; a repo with no entries is not scanned, and the
+  bound is stated. The band-overlap check reads the per-base spans the
+  ledger records at registration, so it needs no app's spec; two port
+  resources of one app sharing a base (the group form) are not an
+  overlap.
+- `reconcile` is thin by construction: the client runs init's repair path
+  (`runInit` with the entry's own slug, description and directory) for an
+  eligible entry whose directory is present, and the coordinator verb
+  re-runs rm's reap-teardown-drop sequence (or the reserving rollback)
+  for the rest. Eligibility — the caller's own entries plus ephemeral
+  entries whose owner has aged out — is re-checked coordinator-side, and
+  every other entry is reported as skipped with the reason.
+- Reclamation runs on the coordinator's sweeper: every
+  `ReclaimIntervalDefault` (24 hours — the R3 answer, chosen and reasoned
+  in fleet.go) the aged-out ephemeral clients' entries are torn down by
+  handle and dropped. The spec comes from the walk-up lookup when the
+  entry's path is visible, else from `specs.json`, the per-app spec cache
+  every allocate writes; an entry whose spec is unavailable is skipped
+  with the bound stated, never torn down blind.
+- The reaper's allowlist is the spec's `reaper.binaries`, read through
+  the `ReapBinaries` seam and defaulting to empty — a spec that names
+  nothing signals nothing, which is the safe direction and must remain
+  the default. `doctor` reports a spec with port resources and an empty
+  allowlist, so the gap is visible rather than silent.
 
 ## The drivers (`internal/driver`)
 
@@ -523,8 +575,9 @@ The six rules of `docs/ARCHITECTURE.md` §8.6, stated as invariants:
   JSON object on stdout and nothing else. No colour, no spinner, no
   prompt.
 - Verbs are hand-dispatched with one `flag.FlagSet` per verb. This phase
-  has eight: `spec validate`, `spec explain`, `guard`, `show`,
-  `daemon status`, `daemon install`, `bands list` and `bands reserve`.
+  has twelve: `spec validate`, `spec explain`, `guard`, `show`,
+  `daemon status`, `daemon install`, `bands list`, `bands reserve`,
+  `list`, `doctor`, `reconcile` and `clients`.
 - `bands list` prints the band ledger — the bases each app holds and the
   host-global reservations — and `bands reserve` registers either: an
   app's band from its committed spec (`--base <name>=<port>...`, the spec
@@ -533,6 +586,36 @@ The six rules of `docs/ARCHITECTURE.md` §8.6, stated as invariants:
   <text>`, where the note is required — an unlabelled reservation is one
   nobody can later judge). Both reach the coordinator, so exit 5 is wired
   through `dialCoordinator` like every other coordinator verb.
+- `list` is the cross-repo registry, table or `--json`: app, slug, slot,
+  state, and the flags — `stale` (the coordinator can stat the recorded
+  path and the directory is gone), `unverifiable` (the path exists only
+  inside a container the coordinator cannot stat, and is never called
+  stale), `reclaimable` (the ephemeral owner has aged out past the
+  reclamation interval) and `foreign`. Seed credentials are redacted
+  unless `--wide` is given to the owning client — `wt list` from an agent
+  container cannot read the host user's credentials (phase-9 exit
+  criterion, structural here).
+- `doctor` reads everything and writes nothing. Every finding names the
+  exact command that fixes it (a hard rule): stale entries fix with
+  `wt rm`/`wt reconcile`, a missing descriptor with `wt init`, an
+  uninitialised worktree with `wt init` in that directory, an overdue
+  reserving entry with `wt reconcile`, a tearing-down entry with `wt rm`
+  again, resource drift with `wt init` to rebuild, a band overlap with
+  `wt bands reserve` to move one app, an approaching slot ceiling with
+  `wt cleanup`/`wt rm`, and a spec whose reaper can signal nothing with
+  `reaper.binaries`. The unverifiable marker is an observation, not a
+  finding. Doctor exits 0 when it ran; findings are data.
+- `reconcile` applies the repair paths to entries rather than to cwd:
+  init's four attach outcomes for an entry whose directory is present,
+  the reap-teardown-drop sequence for one whose directory is gone, the
+  rollback for a reserving entry past its timeout. It acts on the
+  caller's own entries plus ephemeral entries whose owner has aged out —
+  everything else is reported as skipped, never silently passed over —
+  and the coordinator re-checks the eligibility of every ref it receives.
+  `--dry-run` previews exactly what the real run does.
+- `clients` lists the known clients: identity, kind, the coordinator's
+  measured last-seen, how many entries each owns, and which ephemeral
+  clients have aged out.
 - `daemon status` distinguishes four states — running, not registered,
   registered but stopped, running but unreachable — and names a different
   fix for each broken one. The state machine is a pure function of two
@@ -547,9 +630,12 @@ The six rules of `docs/ARCHITECTURE.md` §8.6, stated as invariants:
   `--prefix` directs the registration at a temporary directory and loads
   nothing, so no test ever touches the machine's launchd; Linux and
   Windows refuse a real registration with exit 4 (phase 8 owns both).
-- The only environment variables read anywhere are `WT_SOCKET`,
-  `WT_HOME` (wtd alone), `WT_STANDALONE` and `WT_CLIENT_EPHEMERAL` (the
-  ephemeral declaration, `=1`). Adding a fifth is a scope question.
+- The five environment variables read anywhere are `WT_SOCKET`,
+  `WT_HOME` (wtd alone), `WT_STANDALONE`, `WT_CLIENT_EPHEMERAL` (the
+  ephemeral declaration, `=1`) and `WT_CLIENT_TOKEN` (the named-container
+  token, phase 6). Setting the token together with the ephemeral
+  declaration is refused as ambiguous — one names a persistent client,
+  the other marks its entries reclaimable.
 
 ## Invariants (plan.md §3), as they bind this phase
 
@@ -567,6 +653,12 @@ The six rules of `docs/ARCHITECTURE.md` §8.6, stated as invariants:
 
 - Unix socket paths are length-limited (104 bytes on macOS), so socket
   paths under temp directories keep short basenames in tests.
+- A port resource's value round-trips through JSON as `float64`, and every
+  consumer — the probe, the verify, the reaper's discovery input —
+  switches on `int`; `spec.Resolved` normalises port values to int on
+  JSON decode, the registry half of the rule the descriptor reader
+  applies. A test asserting `float64` after a decode is pinning the old
+  bug.
 - A closure that returns a `*Error` (cli's exit-code type) as an `error`
   hands callers a non-nil interface holding a nil pointer — the state
   machine in `daemon status` depends on the dial probe returning a plain
