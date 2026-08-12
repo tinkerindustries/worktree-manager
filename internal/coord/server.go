@@ -76,27 +76,43 @@ func (s *Server) Serve(ctx context.Context, socketPath string) error {
 // which is the whole cost of not sweeping lazily inside allocate.
 const sweepInterval = time.Minute
 
-// startSweeper runs the reserving-ageing timer for the life of the process:
-// a reserving entry past its timeout is dropped, which covers a client that
-// died mid-sequence (ARCHITECTURE.md §11.2). It stops when ctx is done and
-// is deliberately not tracked by the wait group — it holds no in-flight
-// request.
+// startSweeper runs the coordinator's own timers for the life of the
+// process: the reserving-ageing timer (a reserving entry past its timeout
+// is dropped, which covers a client that died mid-sequence,
+// ARCHITECTURE.md §11.2) and reclamation — aged-out ephemeral clients'
+// entries are torn down by handle on the reclamation interval
+// (ARCHITECTURE.md §10.2, phase 6). Both stop when ctx is done and neither
+// is tracked by the wait group — they hold no in-flight request.
 func (s *Server) startSweeper(ctx context.Context) {
 	go func() {
 		t := time.NewTicker(sweepInterval)
 		defer t.Stop()
+		lastReclaim := time.Now()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-t.C:
-				n, err := s.h.AgeReserving(time.Now(), ReservingTimeout)
+			case now := <-t.C:
+				n, err := s.h.AgeReserving(now, ReservingTimeout)
 				if err != nil {
 					s.log.Warn("ageing reserving entries", "err", err)
 					continue
 				}
 				if n > 0 {
 					s.log.Info("aged out reserving entries", "count", n)
+				}
+				// Reclamation runs when a full interval has passed since
+				// the previous run; the coordinator measures every
+				// connection, so last-seen is real, and the interval is
+				// the phase-6 choice (ReclaimIntervalDefault).
+				if now.Sub(lastReclaim) >= s.h.reclaimInterval() {
+					reclaimed, rerr := s.h.ReclaimEphemeral(now)
+					if rerr != nil {
+						s.log.Warn("reclaiming aged-out ephemeral clients", "err", rerr)
+					} else if reclaimed > 0 {
+						s.log.Info("reclaimed aged-out ephemeral clients' entries", "count", reclaimed)
+					}
+					lastReclaim = now
 				}
 			}
 		}

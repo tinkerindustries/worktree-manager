@@ -54,6 +54,25 @@ usage:
   wt bands reserve --host            reserve host-global ports no app may
       --port <p>... --note <text>    allocate from; the note names what
       [--json]                       holds the range
+  wt list [--json] [--wide]          the registry across every repo: app,
+                                     slug, slot, state, and the flags —
+                                     stale (directory gone), unverifiable
+                                     (a container path the coordinator
+                                     cannot stat), reclaimable, foreign.
+                                     seed credentials are redacted unless
+                                     --wide is given to the owning client
+  wt doctor [--json]                 read everything, write nothing; every
+                                     finding names the command that fixes
+                                     it
+  wt reconcile [--json] [--dry-run]  repair entries — the caller's own plus
+      [--cwd <dir>]                  aged-out ephemeral ones — through
+                                     init's repair path (directory present)
+                                     or reap+teardown+drop (directory
+                                     gone); --dry-run previews and changes
+                                     nothing
+  wt clients [--json]                the known clients: kind, last seen,
+                                     entries owned, and which ephemeral
+                                     clients have aged out
   wt help                            this help
 
 every verb offers --json: exactly one JSON object on stdout, nothing else.
@@ -90,6 +109,14 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runDaemon(args[1:], stdout, stderr)
 	case "bands":
 		return runBands(args[1:], stdout, stderr)
+	case "list":
+		return runList(args[1:], stdout, stderr)
+	case "doctor":
+		return runDoctor(args[1:], stdout, stderr)
+	case "reconcile":
+		return runReconcile(args[1:], stdout, stderr)
+	case "clients":
+		return runClients(args[1:], stdout, stderr)
 	default:
 		WriteError(stderr, UsageError(
 			"run 'wt help' for the verb list",

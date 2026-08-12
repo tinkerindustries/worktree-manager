@@ -347,7 +347,7 @@ func TestReservedPortsNeverAllocated(t *testing.T) {
 		if res.Slot != 2 {
 			t.Errorf("slot = %d, want 2 (slot 1's port 4201 is in the spec's reserved block)", res.Slot)
 		}
-		if res.Resources["api"].Value != float64(4202) {
+		if res.Resources["api"].Value != 4202 {
 			t.Errorf("api = %v, want 4202", res.Resources["api"].Value)
 		}
 	})
@@ -1027,7 +1027,7 @@ func TestAllocationEntryIsDenormalised(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := reg.Entries[0]
-	if len(e.Resources) != 1 || e.Resources["api"].Value != float64(res.Slot)+4200 {
+	if len(e.Resources) != 1 || e.Resources["api"].Value != res.Slot+4200 {
 		t.Errorf("entry resources = %+v, want the denormalised api port for slot %d", e.Resources, res.Slot)
 	}
 	if e.Path != "/tmp/wt/alpha" {

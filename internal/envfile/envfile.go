@@ -192,6 +192,36 @@ func Update(path string, env *spec.EnvEmit, ctx spec.Context, resolved map[strin
 	return rep, nil
 }
 
+// OutsideBlockKeys is the read-only half of the duplicate strip: which
+// managed keys are defined outside the managed block. Phase 6's doctor uses
+// it to report the drift before the next init strips it (D6, 05-delivery.md
+// §3.2). It changes nothing; a missing file has no keys outside any block.
+func OutsideBlockKeys(path string, keys map[string]string) ([]string, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading %s: %w", path, err)
+	}
+	lines := splitLines(content)
+	starts, ends := findMarkers(lines)
+	kept := lines
+	if len(starts) == 1 && len(ends) == 1 {
+		kept = append(lines[:starts[0]-1], lines[ends[0]:]...)
+	}
+	set := map[string]bool{}
+	var out []string
+	for _, line := range kept {
+		if key := managedKeyDef(line, keys); key != "" && !set[key] {
+			set[key] = true
+			out = append(out, key)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 // splitLines splits content on newlines, dropping the final empty segment
 // and tolerating CRLF.
 func splitLines(content []byte) []string {

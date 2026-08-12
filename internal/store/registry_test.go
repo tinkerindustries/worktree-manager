@@ -62,7 +62,7 @@ func TestRegistryRoundTrip(t *testing.T) {
 		e.DescriptorPath != want.DescriptorPath {
 		t.Errorf("entry round trip changed it:\n got %+v\nwant %+v", e, want)
 	}
-	if e.Resources["api"].Value != float64(4201) || e.Resources["api"].Type != "port" {
+	if e.Resources["api"].Value != 4201 || e.Resources["api"].Type != "port" {
 		t.Errorf("resources round trip = %+v", e.Resources)
 	}
 	if e.Resources["compose"].Value != "compose-app-brisk-otter-1" {
