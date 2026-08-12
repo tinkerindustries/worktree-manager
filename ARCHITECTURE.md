@@ -7,37 +7,56 @@ deliberately both named `ARCHITECTURE.md` (plan.md §7).
 
 ## Packages
 
-One module, `github.com/mrgeoffrich/worktree-manager`, two binaries, five
+One module, `github.com/mrgeoffrich/worktree-manager`, two binaries, eight
 internal packages:
 
 ```
 cmd/wt        the client: verb dispatch into internal/cli, then os.Exit
-cmd/wtd       the coordinator skeleton: prints a version line, starts nothing
-internal/cli  verb dispatch, flag parsing, output, the exit-code error type
+cmd/wtd       the coordinator: socket listener, protocol loop, graceful
+              shutdown; reads WT_HOME and WT_SOCKET, logs to stderr
+internal/cli  verb dispatch, flag parsing, output, the exit-code error
+              type, the one dial-and-request helper, the daemon verbs
 internal/spec the wt.yaml schema: parser, validator, template evaluator,
               the walk-up finder, the quoted YAML emitter
 internal/identity  M1: classification, root resolution, containment,
               slug validation, descriptor location, the guard engine
-internal/platform  M8b: path realisation and the mount's case-sensitivity
-              probe; the only package permitted to branch on GOOS
+internal/platform  M8: path realisation, the mount's case-sensitivity
+              probe, the socket path, peer credentials, the private-dir
+              permission model, the supervisor (launchd) seam; the only
+              package permitted to branch on GOOS
 internal/descriptor  M5 read side: the per-worktree allocation record and
               its reader (yaml and json); phase 5 writes the same type
+internal/protocol  the wire between the two binaries: message types,
+              newline-delimited JSON framing, version negotiation
+internal/store  the coordinator's state directory: root resolution,
+              atomic writes, the schema_version envelope, clients.json
+internal/coord  the coordinator's request core, socket server and the
+              in-process harness; one writer serialises here
 ```
 
 Import rules, fixed for the whole plan:
 
 - `cmd/wt` → `internal/cli` → `internal/spec`, `internal/identity`,
-  `internal/descriptor`. Nothing else.
+  `internal/descriptor`, `internal/platform`, `internal/protocol`.
+  Nothing else.
+- `cmd/wt` may **never** import `internal/store`, `internal/coord`,
+  `internal/driver` or `internal/fleet` — they are coordinator-only, and
+  that separation is what keeps `WT_HOME` unreadable by a client.
+  Enforced by `TestWtNeverImportsCoordinatorPackages` in `cmd/wt/`, which
+  runs `go list -deps` over the real dependency graph, so a transitive
+  import fails the suite too.
+- `internal/coord` → `internal/store`, `internal/protocol`,
+  `internal/platform`. Coordinator-only.
+- `internal/store` → `internal/platform` (the permission model is a
+  platform surface). Coordinator-only.
+- `internal/protocol` → standard library only; both binaries link it.
 - `internal/identity` → `internal/spec`, `internal/platform`,
   `internal/descriptor`. It contains no platform branch of its own.
 - `internal/descriptor` → `internal/spec` (the `spec.Resolved` shape of its
   resources map).
 - `internal/platform` imports only the standard library and is the only
-  package that may branch on `GOOS`; no `runtime.GOOS ==` and no `_darwin.go`
-  build tag exists anywhere else.
-- Both binaries link `internal/spec`; later phases add `internal/coord`,
-  `internal/store`, `internal/driver` and `internal/fleet`, which are
-  coordinator-only and which `cmd/wt` may never import.
+  package that may branch on `GOOS`; no `runtime.GOOS ==` and no
+  `_darwin.go` build tag exists anywhere else.
 - The one third-party dependency is the YAML package in `go.mod`. No CLI
   framework, validation library, logging framework or test framework —
   flags, validation, logging (`log/slog`, `wtd` only) and tests are the
@@ -129,6 +148,62 @@ Import rules, fixed for the whole plan:
   input surface, with `--cwd/--tool/--input/--path` carrying the same fields
   for hand use.
 
+## The protocol (`internal/protocol`)
+
+- The wire is newline-delimited JSON: one JSON object per message, each
+  terminated by a newline — no framing header, no length prefix, no
+  protobuf, no gRPC. One MiB cap per message.
+- The first exchange on a connection is a hello: the client's protocol
+  version **range** (`min_version`/`max_version`) and its identity
+  declaration. The coordinator replies with the agreed version (the
+  highest common one) or refuses; a non-overlapping pair refuses whole and
+  names the upgrade in whichever direction the ranges imply
+  (`protocol.Agree`, `UpgradeError`).
+- Requests carry a verb and its arguments; responses carry either a result
+  or an error with the exit code the client should use — that is what lets
+  codes 3, 4 and 5 originate in the coordinator and still reach the
+  process exit status unchanged.
+
+## The store (`internal/store`)
+
+- Root resolution: `WT_HOME` when set, else `$HOME/.wt`; with both unset
+  the coordinator stops and never invents a location. `WT_HOME` is read by
+  `wtd` alone, never by a client.
+- Directory `0700`, files `0600`, created by `platform.EnsurePrivateDir`
+  (the permission model is a platform surface; Windows refuses to write
+  credentials where the equivalent ACL cannot be set — 08-platform.md
+  §4.6, compiled but unverified in this phase).
+- The one write path is atomic: temp file in the same directory, fsync
+  the file, rename, fsync the directory — same directory because a rename
+  across filesystems is not atomic.
+- Every store file carries a `schema_version` field; a file written by a
+  newer schema is refused on read naming the upgrade, never written back.
+- JSON, never YAML: slugs match `^[a-z0-9][a-z0-9-]*$`, which admits `no`,
+  `on`, `off`, `yes` and `y`, and a YAML 1.1 parser turns all of those
+  into booleans.
+- This phase's one store file is `clients.json`: identity, kind, the
+  coordinator's own last-seen measurement, and the ephemeral flag.
+
+## The coordinator (`internal/coord`)
+
+- `Handler` is the request core — protocol messages in, protocol
+  responses out, a store path, no socket, no supervisor, no container —
+  which is the in-process harness of ARCHITECTURE.md §13.3. `Harness`
+  wraps it for the tests: a full request runs with no socket at all.
+- Identity is enforced, never claimed: a host client's identity is the
+  kernel's uid from peer credentials (`platform.PeerUID`: SO_PEERCRED on
+  Linux, LOCAL_PEERCRED on macOS, both via the standard library's
+  syscall), a named container's is its token, an ephemeral one's is a
+  session id the coordinator issues. Every connection is observed in
+  `clients.json`, so last-seen is measured rather than written.
+- One writer serialises here. There is no lock file, no generation
+  counter, no view identity and no view scoping — concurrent requests
+  serialise in this one process, and the handler's mutex makes that true
+  across its connection goroutines.
+- `Server` is the socket loop with graceful shutdown: context
+  cancellation (SIGINT/SIGTERM from `cmd/wtd`), in-flight requests
+  allowed to finish, socket file removed on exit.
+
 ## The client (`internal/cli`, `cmd/wt`)
 
 - One exported error type carries the exit code, the message and the
@@ -138,19 +213,45 @@ Import rules, fixed for the whole plan:
   structural, not a habit.
 - Exit codes are fixed: 0 success, 1 failure, 2 usage, 3 refused by a
   safety check, 4 required context unavailable, 5 coordinator unreachable.
-  Nothing in this phase exits 5: `guard` and `show` are the two verbs that
-  never call the coordinator, and no other verb exists yet.
+  Code 5 is wired in exactly one place: `dialCoordinator`, the client's
+  one dial-and-request helper, whose remedy is always the platform's
+  start command (`platform.CoordinatorStartCommand`) — every verb that
+  reaches the coordinator goes through it. `show` and `guard` never dial,
+  and `spec validate` and `spec explain` are pure functions of the spec
+  and their arguments, so all four work with the coordinator stopped.
+  `daemon status` dials as its reachability probe but treats failure as a
+  state, never as an error.
 - Results go to stdout; diagnostics to stderr. `--json` prints exactly one
   JSON object on stdout and nothing else. No colour, no spinner, no
   prompt.
 - Verbs are hand-dispatched with one `flag.FlagSet` per verb. This phase
-  has four: `spec validate`, `spec explain`, `guard` and `show`.
+  has six: `spec validate`, `spec explain`, `guard`, `show`,
+  `daemon status` and `daemon install`.
+- `daemon status` distinguishes four states — running, not registered,
+  registered but stopped, running but unreachable — and names a different
+  fix for each broken one. The state machine is a pure function of two
+  platform observations (registration file present, supervisor says
+  running) and the dial outcome, so the tests drive all four states on
+  any platform; the launchd-backed observations exist on macOS.
+- `daemon install` registers the coordinator with the platform's
+  supervisor and starts it: a launchd LaunchAgent at
+  `~/Library/LaunchAgents/com.mrgeoffrich.wtd.plist` (RunAtLoad and
+  KeepAlive — not socket activation, which needs the C-only
+  `launch_activate_socket` API this CGO_ENABLED=0 project cannot reach).
+  `--prefix` directs the registration at a temporary directory and loads
+  nothing, so no test ever touches the machine's launchd; Linux and
+  Windows refuse a real registration with exit 4 (phase 8 owns both).
+- The only environment variables read anywhere are `WT_SOCKET`,
+  `WT_HOME` (wtd alone), `WT_STANDALONE` and `WT_CLIENT_EPHEMERAL` (the
+  ephemeral declaration, `=1`). Adding a fifth is a scope question.
 
 ## Invariants (plan.md §3), as they bind this phase
 
 - Both binaries perform no inference.
 - The system refuses rather than partially honouring: a spec with a field
-  this schema does not know is refused whole.
+  this schema does not know is refused whole, and a client and coordinator
+  whose protocol version ranges do not overlap refuse to proceed and name
+  the upgrade — in either direction.
 - `unavailable` is distinct from failure; an absent `wt.yaml` is reported
   as not adopted (exit 4), never as an obscure error.
 - Hooks never run in the coordinator. The semantics of hooks and emission
@@ -158,6 +259,12 @@ Import rules, fixed for the whole plan:
 
 ## Gotchas
 
+- Unix socket paths are length-limited (104 bytes on macOS), so socket
+  paths under temp directories keep short basenames in tests.
+- A closure that returns a `*Error` (cli's exit-code type) as an `error`
+  hands callers a non-nil interface holding a nil pointer — the state
+  machine in `daemon status` depends on the dial probe returning a plain
+  `nil`, which is why `daemonDeps.reachable` normalises before returning.
 - YAML values that begin with `{` are flow mappings: a template must be
   quoted (`template: "{app}-{slug}"`), or it parses as a map and the
   string field fails to decode.

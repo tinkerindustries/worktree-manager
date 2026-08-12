@@ -49,14 +49,22 @@ configuration; neither binary branches on repo identity.
 - `internal/spec` — the `wt.yaml` schema: parser, validator, template
   evaluator, the walk-up `wt.yaml` finder, and the quoted YAML emitter.
 - `internal/cli` — verb dispatch, flag parsing, output, the exit-code error
-  type.
+  type, the one dial-and-request helper (exit 5 lives there), and the
+  `daemon status`/`daemon install` verbs.
 - `internal/identity` — M1: classification, root resolution, containment,
   slug validation, descriptor location, the guard engine.
-- `internal/platform` — M8b: symlink-resolved path realisation and the
-  mount's case-sensitivity probe. The only package permitted to branch on
-  `GOOS`.
+- `internal/platform` — M8: symlink-resolved path realisation, the mount's
+  case-sensitivity probe, the socket path, peer credentials, the private
+  store-dir permission model, and the launchd supervisor seam. The only
+  package permitted to branch on `GOOS`.
 - `internal/descriptor` — the per-worktree allocation record and its
   reader (yaml and json); phase 5 writes the same type.
+- `internal/protocol` — the wire between the two binaries: message types,
+  newline-delimited JSON framing, version negotiation.
+- `internal/store` — the coordinator's state directory: `WT_HOME`/`$HOME/.wt`
+  resolution, atomic writes, the `schema_version` envelope, `clients.json`.
+- `internal/coord` — the coordinator's request core, socket server and the
+  in-process harness; one writer serialises here.
 - `cmd/wt`, `cmd/wtd` — the two entry points.
 - `testdata/fixtures/` — the three fixture repositories; each has its own
   `wt.yaml`, which is what the walk-up resolution rule is tested against.
