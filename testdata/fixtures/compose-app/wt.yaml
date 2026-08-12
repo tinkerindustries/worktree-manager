@@ -13,16 +13,23 @@ slots:
   max: 32
 
 resources:
-  # api in stride form: port = base + slot.
-  - type: port
-    name: api
-  # proxy in group form at api − 1 (M2 §6.1's fixed-relationship case):
-  # port = base + slot × 1 + (−1).
+  # api and proxy are one group of size 2 off a single band base:
+  # port = base + slot × 2 + offset. The repo needs the proxy at api − 1
+  # (M2 §6.1's fixed-relationship case), and that relationship only holds
+  # when both ports come out of the same band. Two independent bases would
+  # put the proxy nowhere near the api; one shared base with a stride would
+  # interleave the two resources across slots, so slot n's api and slot n+1's
+  # proxy would be the same port.
   - type: port
     name: proxy
     form: group
-    size: 1
-    offset: -1
+    size: 2
+    offset: 0
+  - type: port
+    name: api
+    form: group
+    size: 2
+    offset: 1
   # The dev compose project, governing the dev and test files.
   - type: namespace
     name: compose

@@ -17,8 +17,8 @@ func testContext(slot int, slug string) Context {
 	}
 }
 
-func TestResolvePortsStrideAndGroup(t *testing.T) {
-	s := loadFixture(t, "compose-app")
+func TestResolvePortsStride(t *testing.T) {
+	s := loadFixture(t, "plain-app")
 	table, err := Resolve(s, testContext(7, "brisk-otter"))
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -27,9 +27,20 @@ func TestResolvePortsStrideAndGroup(t *testing.T) {
 	if got := table["api"].Value; got != 4207 {
 		t.Errorf("api = %v, want 4207", got)
 	}
-	// group: base + slot×1 + (−1) = api − 1
-	if got := table["proxy"].Value; got != 4206 {
-		t.Errorf("proxy = %v, want 4206 (api − 1)", got)
+}
+
+func TestResolvePortsGroup(t *testing.T) {
+	s := loadFixture(t, "compose-app")
+	table, err := Resolve(s, testContext(7, "brisk-otter"))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	// group of size 2: base + slot×2 + offset
+	if got := table["proxy"].Value; got != 4214 {
+		t.Errorf("proxy = %v, want 4214", got)
+	}
+	if got := table["api"].Value; got != 4215 {
+		t.Errorf("api = %v, want 4215 (proxy + 1)", got)
 	}
 	if table["compose"].Value != "compose-app-brisk-otter-7" {
 		t.Errorf("compose = %v", table["compose"].Value)
@@ -144,13 +155,50 @@ emit:
 	}
 }
 
+// isolatedNames returns the resources a spec isolates per worktree, which is
+// every resource except one declared `default: shared` (03-drivers.md §3.4).
+// A shared resource resolves to the same value in every slot by design, so it
+// is excluded from the disjointness check rather than exempted case by case.
+func isolatedNames(s *Spec) map[string]bool {
+	names := make(map[string]bool, len(s.Resources))
+	for _, r := range s.Resources {
+		if r.Default != nil && *r.Default == "shared" {
+			continue
+		}
+		names[r.Name] = true
+	}
+	return names
+}
+
+// assertTablesDisjoint checks exit criterion 3 as a set intersection over all
+// isolated values, not resource name by resource name. Comparing like-named
+// rows would pass a spec whose slot-1 api collides with its slot-2 proxy,
+// which is the collision two worktrees actually suffer.
+func assertTablesDisjoint(t *testing.T, s *Spec, table1, table2 map[string]Resolved) {
+	t.Helper()
+	isolated := isolatedNames(s)
+	seen := make(map[string]string, len(table1))
+	for name, r := range table1 {
+		if isolated[name] {
+			seen[fmt.Sprint(r.Value)] = name
+		}
+	}
+	for name, r := range table2 {
+		if !isolated[name] {
+			continue
+		}
+		if other, clash := seen[fmt.Sprint(r.Value)]; clash {
+			t.Errorf("slot-2 %q and slot-1 %q both resolve to %v; the tables are not disjoint", name, other, r.Value)
+		}
+	}
+}
+
 // TestExplainTablesDisjoint is exit criterion 3: `spec explain --slot 1` and
 // `--slot 2`, given the same bases, produce resource tables from a pure
-// function, and the two tables are disjoint — no resolved value appears in
-// both. The fixture templates embed {slot} precisely so the property holds
-// with the slug held constant, as the criterion reads it.
+// function, and the two tables are disjoint — no isolated value appears in
+// both.
 func TestExplainTablesDisjoint(t *testing.T) {
-	for _, fixture := range []string{"compose-app", "vm-app"} {
+	for _, fixture := range []string{"compose-app", "plain-app", "vm-app"} {
 		t.Run(fixture, func(t *testing.T) {
 			s := loadFixture(t, fixture)
 			table1, err := Resolve(s, testContext(1, "slot-one"))
@@ -164,16 +212,7 @@ func TestExplainTablesDisjoint(t *testing.T) {
 			if len(table1) != len(table2) {
 				t.Fatalf("tables differ in size: %d vs %d", len(table1), len(table2))
 			}
-			for name, r1 := range table1 {
-				r2, ok := table2[name]
-				if !ok {
-					t.Errorf("resource %q missing from slot-2 table", name)
-					continue
-				}
-				if fmt.Sprint(r1.Value) == fmt.Sprint(r2.Value) {
-					t.Errorf("resource %q resolves to %v in both tables; tables are not disjoint", name, r1.Value)
-				}
-			}
+			assertTablesDisjoint(t, s, table1, table2)
 		})
 	}
 }
@@ -182,18 +221,18 @@ func TestExplainTablesDisjoint(t *testing.T) {
 // 3: even with the slug held constant, slot 1 and slot 2 are disjoint,
 // because the fixture templates embed {slot}.
 func TestExplainTablesDisjointSameSlug(t *testing.T) {
-	s := loadFixture(t, "compose-app")
-	table1, err := Resolve(s, testContext(1, "brisk-otter"))
-	if err != nil {
-		t.Fatalf("Resolve slot 1: %v", err)
-	}
-	table2, err := Resolve(s, testContext(2, "brisk-otter"))
-	if err != nil {
-		t.Fatalf("Resolve slot 2: %v", err)
-	}
-	for name, r1 := range table1 {
-		if fmt.Sprint(r1.Value) == fmt.Sprint(table2[name].Value) {
-			t.Errorf("resource %q resolves to %v in both tables; tables are not disjoint", name, r1.Value)
-		}
+	for _, fixture := range []string{"compose-app", "plain-app", "vm-app"} {
+		t.Run(fixture, func(t *testing.T) {
+			s := loadFixture(t, fixture)
+			table1, err := Resolve(s, testContext(1, "brisk-otter"))
+			if err != nil {
+				t.Fatalf("Resolve slot 1: %v", err)
+			}
+			table2, err := Resolve(s, testContext(2, "brisk-otter"))
+			if err != nil {
+				t.Fatalf("Resolve slot 2: %v", err)
+			}
+			assertTablesDisjoint(t, s, table1, table2)
+		})
 	}
 }

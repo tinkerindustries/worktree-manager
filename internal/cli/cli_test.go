@@ -164,7 +164,8 @@ func TestRunSpecExplainTable(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("explain exit = %d, want 0; stderr: %s", code, stderr)
 	}
-	for _, want := range []string{"api", "port", "4201", "compose-app-alpha-1", "compose-app-alpha-1-test", "proxy", "4200"} {
+	// group of size 2 off base 4200: slot 1 gives proxy 4202, api 4203.
+	for _, want := range []string{"api", "port", "4203", "compose-app-alpha-1", "compose-app-alpha-1-test", "proxy", "4202"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("table lacks %q:\n%s", want, stdout)
 		}
@@ -195,8 +196,9 @@ func TestRunSpecExplainJSON(t *testing.T) {
 	if v.App != "compose-app" || v.Slug != "alpha" || v.Slot != 2 {
 		t.Errorf("header = %+v", v)
 	}
-	if v.Resources["api"].Value != float64(4202) {
-		t.Errorf("api = %v, want 4202", v.Resources["api"].Value)
+	// group of size 2 off base 4200: slot 2 gives proxy 4204, api 4205.
+	if v.Resources["api"].Value != float64(4205) {
+		t.Errorf("api = %v, want 4205", v.Resources["api"].Value)
 	}
 	if v.Resources["compose"].Value != "compose-app-alpha-2" {
 		t.Errorf("compose = %v", v.Resources["compose"].Value)
