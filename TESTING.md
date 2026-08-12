@@ -19,8 +19,15 @@ The driver contract runs the same conformance suite over every driver —
 of the table, not as new test files (plan.md §4). The drivers' behaviour
 tests live beside them: `internal/driver/port_test.go`,
 `namespace_test.go` (against a fake docker seam), `statepath_test.go`,
-and `order_test.go` (the sequencing: apply in dependency order, teardown
-in reverse, the reverse-order rollback).
+`order_test.go` (the sequencing: apply in dependency order with machine
+forced first, teardown in reverse, the reverse-order rollback),
+`cidr_test.go` (the /22-per-slot arithmetic out of 172.30.0.0/16, the
+overlap probe against the fake docker, the loud shared-pool fallback and
+the fail mode) and `machine_test.go` — the phase-8 capacity guard,
+ordering, keep flag and bypass command, proved against a fake
+`platform.MachineRunner` (the live Colima path cannot run on this Linux
+machine and is reported not_run; the seam's parsing half is pinned in
+`internal/platform/machine_test.go`).
 
 Run one test:
 
@@ -351,6 +358,26 @@ migration against it. It lives in `internal/coord`:
     for invisible paths) and `TestReclaimEphemeralSkipsWithoutSpec` (a
     skip stated, never a blind teardown);
   - `TestReapBinariesDefaultsToSpecField` and `TestSpecCacheRoundTrip`.
+- The coordinator's phase-8 machine and cidr wiring in
+  `internal/coord/machine_test.go` (`TestCoordMaterialiseCapacityRefusalExits3`,
+  `TestCoordMaterialiseCapacityReRunAllowed`, `TestCoordRmKeepVMLeavesTheInstanceUp`)
+  and `internal/coord/cidr_test.go` (`TestAllocateCIDRFallbackIsLoud`,
+  `TestAllocateCIDRProbeHoldsOverlappingSlot`), the doctor capacity
+  finding (`TestDoctorMachineCapacityFinding`), and the scheduled cleanup
+  sweep in `internal/coord/sweep_test.go` (`TestSweepCleanupGhUnavailableCleansNothing`,
+  `TestSweepCleanupCleansMergedCleanOwnEntry`,
+  `TestSweepCleanupSkipsEverySkipLogged`,
+  `TestSweepCleanupForeignEphemeralNeverAdopted` — the sweep never adopts
+  a view).
+- The client's phase-8 cleanup verb in `internal/cli/cleanup_test.go`
+  against a real in-process coordinator and real git worktrees with gh
+  faked on PATH: `TestRunCleanupDryRunPreviewsExactlyWhatTheRealRunDoes`
+  (exit criterion 2), `TestRunCleanupGhMissingCleansNothingExits4` and
+  `TestRunCleanupGhUnauthenticatedCleansNothingExits4` (gh missing or
+  unauthenticated cleans nothing, exit 4),
+  `TestRunCleanupSkipsAndAppliesFullChecksEvenWhenMerged` (the full rm
+  safety checks apply even when the PR is merged; unverifiable entries
+  are skipped), `TestRunCleanupSkipsUnpushedBranch`.
 - The client's phase-6 verbs in `internal/cli/fleet_test.go`:
   `TestRunListJSONAndTable`, `TestRunDoctorJSONAndClean`,
   `TestRunClientsJSONAndTable`, `TestRunReconcileDryRunAndReal` (dry-run
