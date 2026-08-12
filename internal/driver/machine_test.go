@@ -407,12 +407,14 @@ func TestMachineOrderingForcedFirst(t *testing.T) {
 		Version: 1, App: "vm-app",
 		Slots: spec.Slots{Max: intPtr(4)},
 		Resources: []spec.Resource{
-			// Declared first, but the machine must still apply before it:
-			// the cidr's network lives inside the VM's docker.
+			// Declared first — but the machine must still apply before
+			// them, whatever the declaration order: the db state path and
+			// the cidr's network (which lives inside the VM's docker) both
+			// expect the VM's daemon to exist.
+			{Type: "state-path", Name: "db", Template: strPtr("{home}/{slug}/db.sqlite")},
 			{Type: "cidr", Name: "egress", Pool: strPtr("172.30.0.0/16"), Size: intPtr(22)},
 			{Type: "machine", Name: "vm", Driver: strPtr("auto"),
 				Template: strPtr("{app}-{slug}-{slot}"), MaxConcurrent: intPtr(4)},
-			{Type: "state-path", Name: "db", Template: strPtr("{home}/{slug}/db.sqlite")},
 		},
 		Emit: spec.Emit{Descriptor: spec.Descriptor{Filename: "wt-env.yaml", Format: "yaml"}},
 	}
