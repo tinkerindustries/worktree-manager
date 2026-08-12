@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
@@ -35,7 +36,9 @@ func NewServer(h *Handler, log *slog.Logger) *Server {
 // cancelled, then lets in-flight requests finish and returns nil. The
 // socket file is removed on exit, so a crashed coordinator never blocks
 // the next one with a stale file (the stale check in ListenSocket covers
-// the hard-crash case).
+// the hard-crash case). The reserving-ageing sweeper runs for the life of
+// the process — a resident process needs no scheduler for it
+// (ARCHITECTURE.md §11.2).
 func (s *Server) Serve(ctx context.Context, socketPath string) error {
 	ln, err := platform.ListenSocket(socketPath)
 	if err != nil {
@@ -43,6 +46,7 @@ func (s *Server) Serve(ctx context.Context, socketPath string) error {
 	}
 	defer ln.Close()
 	defer os.Remove(socketPath)
+	s.startSweeper(ctx)
 
 	go func() {
 		<-ctx.Done()
@@ -65,6 +69,38 @@ func (s *Server) Serve(ctx context.Context, socketPath string) error {
 	}
 	s.wg.Wait() // in-flight requests allowed to finish
 	return nil
+}
+
+// sweepInterval is how often the resident coordinator ages reserving
+// entries out. A stale reservation blocks a slot for at most one interval,
+// which is the whole cost of not sweeping lazily inside allocate.
+const sweepInterval = time.Minute
+
+// startSweeper runs the reserving-ageing timer for the life of the process:
+// a reserving entry past its timeout is dropped, which covers a client that
+// died mid-sequence (ARCHITECTURE.md §11.2). It stops when ctx is done and
+// is deliberately not tracked by the wait group — it holds no in-flight
+// request.
+func (s *Server) startSweeper(ctx context.Context) {
+	go func() {
+		t := time.NewTicker(sweepInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				n, err := s.h.AgeReserving(time.Now(), ReservingTimeout)
+				if err != nil {
+					s.log.Warn("ageing reserving entries", "err", err)
+					continue
+				}
+				if n > 0 {
+					s.log.Info("aged out reserving entries", "count", n)
+				}
+			}
+		}
+	}()
 }
 
 // serveConn runs one connection's protocol loop: hello, then requests until

@@ -1,0 +1,314 @@
+package cli
+
+import (
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
+	"text/tabwriter"
+
+	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
+	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+)
+
+// runBands implements the two bands verbs: `wt bands list` and
+// `wt bands reserve` (with --host). Both reach the coordinator, so exit 5
+// is wired through dialCoordinator like every other coordinator verb.
+func runBands(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		WriteError(stderr, UsageError(
+			"run 'wt bands list' or 'wt bands reserve'",
+			"bands needs a verb"))
+		return ExitUsage
+	}
+	switch args[0] {
+	case "list":
+		return runBandsList(args[1:], stdout, stderr)
+	case "reserve":
+		return runBandsReserve(args[1:], stdout, stderr)
+	case "help", "-h", "--help":
+		fmt.Fprint(stdout, usageText)
+		return ExitOK
+	default:
+		WriteError(stderr, UsageError(
+			"run 'wt bands list' or 'wt bands reserve'",
+			"unknown bands verb %q", args[0]))
+		return ExitUsage
+	}
+}
+
+// runBandsList implements `wt bands list [--json]`: the band ledger — the
+// bases each app holds and the host-global reservations no app may allocate
+// from. It is the onboarding skill's read of the machine's port facts.
+func runBandsList(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("bands list", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	jsonOut := fs.Bool("json", false, "print exactly one JSON object on stdout")
+	if err := fs.Parse(args); err != nil {
+		return ExitUsage
+	}
+	if fs.NArg() > 0 {
+		WriteError(stderr, UsageError(
+			"run 'wt bands list' with no arguments",
+			"unexpected arguments: %v", fs.Args()))
+		return ExitUsage
+	}
+
+	sess, err := dialCoordinator()
+	if err != nil {
+		WriteError(stderr, err)
+		return err.Code
+	}
+	defer sess.Close()
+	raw, err := sess.request("bands.list", nil)
+	if err != nil {
+		WriteError(stderr, err)
+		return err.Code
+	}
+	var res protocol.BandsListResult
+	if err := json.Unmarshal(raw, &res); err != nil {
+		WriteError(stderr, New(ExitFailure, fmt.Sprintf("decoding the bands.list response: %v", err), ""))
+		return ExitFailure
+	}
+
+	if *jsonOut {
+		if err := WriteJSON(stdout, res); err != nil {
+			WriteError(stderr, New(ExitFailure, err.Error(), ""))
+			return ExitFailure
+		}
+		return ExitOK
+	}
+	return writeBandsTable(stdout, &res)
+}
+
+// writeBandsTable prints the ledger in text form: one line per app band,
+// one per host reservation, both sorted.
+func writeBandsTable(stdout io.Writer, res *protocol.BandsListResult) int {
+	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "BANDS\t")
+	fmt.Fprintln(w, "APP\tBASE")
+	if len(res.Bands) == 0 {
+		fmt.Fprintln(w, "(none)\t")
+	}
+	for _, b := range res.Bands {
+		names := make([]string, 0, len(b.Bases))
+		for name := range b.Bases {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		parts := make([]string, 0, len(names))
+		for _, name := range names {
+			parts = append(parts, fmt.Sprintf("%s=%d", name, b.Bases[name]))
+		}
+		fmt.Fprintf(w, "%s\t%s\n", b.App, strings.Join(parts, " "))
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "RESERVATIONS\t")
+	fmt.Fprintln(w, "PORTS\tNOTE")
+	if len(res.Reservations) == 0 {
+		fmt.Fprintln(w, "(none)\t")
+	}
+	for _, r := range res.Reservations {
+		fmt.Fprintf(w, "%s\t%s\n", joinPorts(r.Ports), r.Note)
+	}
+	return finish(w)
+}
+
+// joinPorts prints a sorted port list as "5319, 5320".
+func joinPorts(ports []int) string {
+	parts := make([]string, 0, len(ports))
+	for _, p := range ports {
+		parts = append(parts, strconv.Itoa(p))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// runBandsReserve implements the two registration forms:
+//
+//	wt bands reserve --base <name>=<port>...            register this repo's
+//	    [--json]                                        port band from its
+//	                                                    committed spec
+//	wt bands reserve --host --port <p>... --note <text> reserve host-global
+//	    [--json]                                        ports no app may
+//	                                                    allocate from
+//
+// Registration is explicit — nothing grabs a range on the fly — and a host
+// reservation carries a required note naming what holds the range
+// (02-coordination.md §6.2, plan.md §8 R6).
+func runBandsReserve(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("bands reserve", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	jsonOut := fs.Bool("json", false, "print exactly one JSON object on stdout")
+	host := fs.Bool("host", false, "reserve host-global ports instead of registering an app band")
+	var bases baseList
+	fs.Var(&bases, "base", "band base for one port resource, <name>=<port>; repeatable")
+	var ports intList
+	fs.Var(&ports, "port", "host-globally reserved port; repeatable")
+	note := fs.String("note", "", "what holds the reserved range (required with --host)")
+	if err := fs.Parse(args); err != nil {
+		return ExitUsage
+	}
+	if fs.NArg() > 0 {
+		WriteError(stderr, UsageError(
+			"run 'wt bands reserve' with no positional arguments",
+			"unexpected arguments: %v", fs.Args()))
+		return ExitUsage
+	}
+
+	var reqArgs protocol.ReserveBandArgs
+	if *host {
+		if len(bases) > 0 {
+			WriteError(stderr, UsageError(
+				"run 'wt bands reserve --host --port <p>... --note <text>'",
+				"--host takes --port, not --base"))
+			return ExitUsage
+		}
+		if len(ports) == 0 {
+			WriteError(stderr, UsageError(
+				"run 'wt bands reserve --host --port 5319 --port 5320 --note <text>'",
+				"--host requires at least one --port"))
+			return ExitUsage
+		}
+		if *note == "" {
+			WriteError(stderr, UsageError(
+				"re-run with --note naming what holds the range, e.g. --note \"compose-app production stack\"",
+				"--host requires --note; an unlabelled reservation is one nobody can later judge"))
+			return ExitUsage
+		}
+		reqArgs = protocol.ReserveBandArgs{Host: true, Ports: []int(ports), Note: *note}
+	} else {
+		if len(ports) > 0 {
+			WriteError(stderr, UsageError(
+				"run 'wt bands reserve --host --port <p>...' for host reservations",
+				"--port is only valid with --host"))
+			return ExitUsage
+		}
+		if *note != "" {
+			WriteError(stderr, UsageError(
+				"run 'wt bands reserve --host --port <p>... --note <text>' for host reservations",
+				"--note is only valid with --host"))
+			return ExitUsage
+		}
+		if len(bases) == 0 {
+			WriteError(stderr, UsageError(
+				"run 'wt bands reserve --base <name>=<port>...' with one base per port resource, e.g. --base api=4200",
+				"a band registration needs at least one --base"))
+			return ExitUsage
+		}
+
+		// The band's required size comes from the committed spec, so the
+		// skill chooses only where the bases sit — the spec comes from the
+		// walk-up rule, the same way spec explain finds it.
+		specPath, err := spec.FindSpecPath(".")
+		if err != nil {
+			var nae *spec.NotAdoptedError
+			if errors.As(err, &nae) {
+				WriteError(stderr, New(ExitUnavailable, nae.Error(),
+					"commit wt.yaml at the repository root, or run from inside the repository"))
+				return ExitUnavailable
+			}
+			WriteError(stderr, New(ExitFailure, err.Error(), ""))
+			return ExitFailure
+		}
+		data, err := os.ReadFile(specPath)
+		if err != nil {
+			WriteError(stderr, New(ExitFailure, fmt.Sprintf("reading %s: %v", specPath, err), ""))
+			return ExitFailure
+		}
+		parsed, err := spec.Parse(data)
+		if err == nil {
+			err = spec.Validate(parsed)
+		}
+		if err != nil {
+			var fe *spec.FieldError
+			if errors.As(err, &fe) {
+				WriteError(stderr, New(ExitFailure, fe.Error(),
+					fmt.Sprintf("edit %s, then re-run: wt bands reserve", specPath)))
+				return ExitFailure
+			}
+			WriteError(stderr, New(ExitFailure, err.Error(), ""))
+			return ExitFailure
+		}
+		baseMap, err := parseBases(parsed, bases)
+		if err != nil {
+			WriteError(stderr, err)
+			return ExitUsage
+		}
+		reqArgs = protocol.ReserveBandArgs{Spec: *parsed, Bases: baseMap}
+	}
+
+	sess, err := dialCoordinator()
+	if err != nil {
+		WriteError(stderr, err)
+		return err.Code
+	}
+	defer sess.Close()
+	raw, err := sess.request("bands.reserve", &reqArgs)
+	if err != nil {
+		WriteError(stderr, err)
+		return err.Code
+	}
+	var res protocol.ReserveBandResult
+	if err := json.Unmarshal(raw, &res); err != nil {
+		WriteError(stderr, New(ExitFailure, fmt.Sprintf("decoding the bands.reserve response: %v", err), ""))
+		return ExitFailure
+	}
+
+	if *jsonOut {
+		if err := WriteJSON(stdout, res); err != nil {
+			WriteError(stderr, New(ExitFailure, err.Error(), ""))
+			return ExitFailure
+		}
+		return ExitOK
+	}
+	return writeReserveTable(stdout, &res)
+}
+
+// writeReserveTable prints the registration result: the app's bases with
+// the span each must cover, or the host reservation with its note.
+func writeReserveTable(stdout io.Writer, res *protocol.ReserveBandResult) int {
+	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	if res.Host {
+		fmt.Fprintf(w, "reserved:\t%s\n", joinPorts(res.Ports))
+		fmt.Fprintf(w, "note:\t%s\n", res.Note)
+		return finish(w)
+	}
+	fmt.Fprintf(w, "app:\t%s\n", res.App)
+	names := make([]string, 0, len(res.Bases))
+	for name := range res.Bases {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		base := res.Bases[name]
+		span := res.Spans[name]
+		fmt.Fprintf(w, "base:\t%s=%d (span %d ports: %d..%d)\n",
+			name, base, span, base, base+span-1)
+	}
+	return finish(w)
+}
+
+// intList is the repeatable --port flag.
+type intList []int
+
+func (l *intList) String() string {
+	parts := make([]string, 0, len(*l))
+	for _, p := range *l {
+		parts = append(parts, strconv.Itoa(p))
+	}
+	return strings.Join(parts, ",")
+}
+
+func (l *intList) Set(v string) error {
+	p, err := strconv.Atoi(v)
+	if err != nil {
+		return fmt.Errorf("%q is not a port number: %v", v, err)
+	}
+	*l = append(*l, p)
+	return nil
+}

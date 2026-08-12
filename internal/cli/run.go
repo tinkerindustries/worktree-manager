@@ -6,8 +6,8 @@ import (
 )
 
 // usageText is the client's help. Every verb in the system offers --json;
-// phase 2 adds the two daemon verbs alongside phase 0's spec verbs and
-// phase 1's guard and show.
+// phase 3 adds the two bands verbs alongside phase 0's spec verbs, phase
+// 1's guard and show, and phase 2's daemon verbs.
 const usageText = `wt — worktree manager client
 
 usage:
@@ -31,6 +31,15 @@ usage:
                                      start it; --prefix writes the
                                      registration into a temp directory
                                      instead and loads nothing
+  wt bands list [--json]             the port band ledger: the bases each
+                                     app holds, and the host-global
+                                     reservations no app may allocate from
+  wt bands reserve --base <n>=<p>... register this repo's port band from its
+      [--json]                       committed spec (the walk-up wt.yaml);
+                                     one base per port resource
+  wt bands reserve --host            reserve host-global ports no app may
+      --port <p>... --note <text>    allocate from; the note names what
+      [--json]                       holds the range
   wt help                            this help
 
 every verb offers --json: exactly one JSON object on stdout, nothing else.
@@ -59,6 +68,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runShow(args[1:], stdout, stderr)
 	case "daemon":
 		return runDaemon(args[1:], stdout, stderr)
+	case "bands":
+		return runBands(args[1:], stdout, stderr)
 	default:
 		WriteError(stderr, UsageError(
 			"run 'wt help' for the verb list",
