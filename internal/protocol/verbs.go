@@ -157,6 +157,61 @@ type BandsListResult struct {
 	Reservations []ReservationInfo `json:"reservations"`
 }
 
+// --- Phase-7 verbs: ports.scan and bands.suggest -------------------------
+//
+// The two primitives the onboarding skill reads that phase 3 did not build:
+// what is listening on this machine right now, and where an app's band
+// could sit. Neither classifies anything: a listener is a fact, a
+// suggestion is a range that fits, and whether either belongs to a
+// production stack is the skill's judgement (plan.md §8, R6).
+
+// PortsScanEntry is one listener as ports.scan reports it: the port, the
+// owning pid, and the command name listener discovery reported. Port 0
+// means discovery could not report the port (an unusual lsof dialect); the
+// entry is still a fact — the process is listening on something.
+type PortsScanEntry struct {
+	Port    int    `json:"port"`
+	PID     int    `json:"pid"`
+	Command string `json:"command"`
+}
+
+// PortsScanResult is the whole scan: the listeners sorted by port, plus
+// the bounded-coverage notes — what the scan could not see and why (a
+// silent degrade reads as success, plan.md §3).
+type PortsScanResult struct {
+	Listeners []PortsScanEntry `json:"listeners"`
+	Notes     []string         `json:"notes,omitempty"`
+}
+
+// SuggestBandArgs is the bands.suggest request: the spec whose port
+// resources need bases. The client sends the parsed spec exactly as
+// bands.reserve does — the coordinator computes the required size from it
+// and proposes where the bases could sit against the current ledger.
+type SuggestBandArgs struct {
+	Spec spec.Spec `json:"spec"`
+}
+
+// BandSuggestion is one proposed base: the resource, the base, the span
+// the band must cover (slot ceiling × ports per slot, the coordinator's
+// required-size computation), and the inclusive range the base's band
+// occupies.
+type BandSuggestion struct {
+	Resource string `json:"resource"`
+	Base     int    `json:"base"`
+	Span     int    `json:"span"`
+	Low      int    `json:"low"`
+	High     int    `json:"high"`
+}
+
+// SuggestBandResult is the coordinator's answer: one suggestion per port
+// resource, in spec order, plus the bounded-coverage notes — a resource
+// with no free base anywhere in the port space, or a range skipped.
+type SuggestBandResult struct {
+	App         string           `json:"app"`
+	Suggestions []BandSuggestion `json:"suggestions"`
+	Notes       []string         `json:"notes,omitempty"`
+}
+
 // --- Phase-5 verbs: materialise (init's step 3) and rm (reap + teardown) --
 //
 // materialise is the coordinator half of init's seven-step sequence

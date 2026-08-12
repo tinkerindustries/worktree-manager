@@ -42,6 +42,17 @@ internal/descriptor  M5: the per-worktree allocation record, its reader
 internal/envfile  M5: the .env delivery channel — the wt-managed block,
               the duplicate strip, the first-write seed from the main
               checkout, and the unbalanced-marker refusal
+internal/managed  M7: the generated-artefact block convention — the .env
+              block's own markers, the `# wt-field:` records doctor
+              compares, replace-only-the-block regeneration, the
+              unbalanced-marker refusal, append-to-a-markerless-file
+internal/artefact  M7: the phase-7 generated artefacts, rendered per
+              repo from the templates under artefact/templates/ (the two
+              skills, the SessionStart tripwire, the opt-in PreToolUse
+              guard hook, the settings entries, the reference doc, the
+              CLAUDE.md tripwire) and the briefing renderer; not a verb —
+              the onboarding skill and the tests drive it, cmd/wt never
+              imports it
 internal/generate  M5: the generated Go descriptor reader — the source
               an adopted repo compiles into its own entry points, with an
               embedded YAML-subset parser (stdlib only)
@@ -88,7 +99,10 @@ Import rules, fixed for the whole plan:
   runs `go list -deps` over the real dependency graph, so a transitive
   import fails the suite too.
 - `internal/coord` → `internal/store`, `internal/protocol`,
-  `internal/platform`, `internal/driver`. Coordinator-only.
+  `internal/platform`, `internal/driver`, `internal/artefact` (the drift
+  check compares against `artefact.FieldsFor`, the renderer's own field
+  set — the recorded and compared sides cannot disagree).
+  Coordinator-only.
 - `internal/store` → `internal/platform` (the permission model is a
   platform surface). Coordinator-only.
 - `internal/protocol` → standard library plus `internal/spec` (the phase-3
@@ -108,6 +122,12 @@ Import rules, fixed for the whole plan:
   from) plus `go/format` from the standard library. The generated source
   itself imports only the standard library — it is copied into an adopted
   repository, so it can never add a dependency to that repo's go.mod.
+- `internal/artefact` → `internal/spec`, `internal/managed`, plus the
+  embedded templates under its own `templates/` directory (which carries
+  a nested CLAUDE.md stating the directory's rules). Not linked by any
+  binary.
+- `internal/managed` → the standard library. The block convention is
+  line-based text; nothing else to it.
 - `internal/platform` imports only the standard library and is the only
   package that may branch on `GOOS`; no `runtime.GOOS ==` and no
   `_darwin.go` build tag exists anywhere else.
@@ -279,6 +299,15 @@ Import rules, fixed for the whole plan:
   (refused by a safety check); a PreToolUse payload on stdin is the primary
   input surface, with `--cwd/--tool/--input/--path` carrying the same fields
   for hand use.
+- Phase 7's answer to the guard-caching question (plan.md §9.2): the
+  generated hook sets `WT_GUARD_CACHE`, and guard caches its
+  classification per session, keyed on the resolved cwd. The cache is
+  validated by the stat identity of the root's `.git` entry — the root
+  directory's own mtime is unusable because the case-sensitivity probe
+  creates one probe file per call in it, self-invalidating any entry that
+  keyed on it. A worktree removed mid-session drops the cache; the next
+  call reclassifies, failing open with a one-time note. The descriptor is
+  never cached: the shared-store denial reads it fresh every call.
 
 ## The protocol (`internal/protocol`)
 
@@ -466,6 +495,17 @@ stays atomic under a single rename. The entry's fields are
   for the rest. Eligibility — the caller's own entries plus ephemeral
   entries whose owner has aged out — is re-checked coordinator-side, and
   every other entry is reported as skipped with the reason.
+- The generated-artefact drift check (phase 7) runs inside doctor: every
+  repo reachable through the registry has its tracked files scanned for
+  the managed marker, and the recorded `# wt-field:` records are compared
+  against the current spec (walk-up from the main checkout) and the band
+  ledger — `artefact.FieldsFor` is the field set on both sides. A moved
+  band, a renamed resource, a changed descriptor filename or shared list
+  is a warning naming the generated file and the field that moved, with
+  the remedy naming the skill's generate phase (hand edits outside the
+  block survive regeneration). The scan is the convention, not
+  inference, and is bounded (10,000 files, 1 MiB each) with the bound
+  stated when it trips.
 - Reclamation runs on the coordinator's sweeper: every
   `ReclaimIntervalDefault` (24 hours — the R3 answer, chosen and reasoned
   in fleet.go) the aged-out ephemeral clients' entries are torn down by
@@ -575,9 +615,25 @@ The six rules of `docs/ARCHITECTURE.md` §8.6, stated as invariants:
   JSON object on stdout and nothing else. No colour, no spinner, no
   prompt.
 - Verbs are hand-dispatched with one `flag.FlagSet` per verb. This phase
-  has twelve: `spec validate`, `spec explain`, `guard`, `show`,
-  `daemon status`, `daemon install`, `bands list`, `bands reserve`,
-  `list`, `doctor`, `reconcile` and `clients`.
+  has fourteen: `spec validate`, `spec explain`, `guard`, `show`,
+  `daemon status`, `daemon install`, `bands list`, `bands suggest`,
+  `bands reserve`, `ports scan`, `list`, `doctor`, `reconcile` and
+  `clients`.
+- `ports scan` reports every LISTEN TCP socket in the coordinator's
+  network namespace — port, pid, command, sorted — as facts; it never
+  classifies what it finds and never reserves anything. Discovery is
+  `platform.AllListeners` (/proc on Linux, one `lsof -F pcn` run where
+  /proc is absent, netstat+tasklist on Windows), and a scan that cannot
+  see every listener says so, naming the missing tool; a coordinator
+  inside a container states that the scan sees the container's
+  namespaces only.
+- `bands suggest` proposes where the spec's port bases could sit: the
+  coordinator computes the required size (slot ceiling × ports per slot)
+  and finds the lowest base per resource whose range collides with no
+  existing band and no host-global reservation. Group-form resources
+  share one base (their derived port sets are disjoint); independent
+  resources keep disjoint ranges. The skill chooses only where the bases
+  go, never how large they are.
 - `bands list` prints the band ledger — the bases each app holds and the
   host-global reservations — and `bands reserve` registers either: an
   app's band from its committed spec (`--base <name>=<port>...`, the spec
@@ -674,7 +730,10 @@ The six rules of `docs/ARCHITECTURE.md` §8.6, stated as invariants:
   phase-0 exit criterion.
 - `testdata/` is excluded from `go build ./...`; the fixture repositories
   are ordinary file trees with no `.git`, because later phases copy them
-  into temp directories and initialise git there.
+  into temp directories and initialise git there. `plain-app` carries the
+  full adopted surface committed (skills, hooks, settings, reference doc,
+  tripwire, decision record), so copying it yields an already-adopted
+  repo; the specless case removes that surface in the test.
 - The classification tests in `internal/identity/` build real repositories
   with `git init`, `git worktree add` and `git clone` in `t.TempDir()`, so
   that layer needs git on PATH — the point of the layer is that git's real
@@ -698,6 +757,18 @@ The six rules of `docs/ARCHITECTURE.md` §8.6, stated as invariants:
   construction (`go/format` runs inside the generator), because it lands
   in an adopted repo where it must not be the one file that fails that
   repo's fmt check or drags in a dependency.
+- The fixture's canonical band is `api=8200` (the base the committed
+  artefacts record). Sandboxes are not guaranteed to honour it — this
+  container's own harness holds 8201–8208 — so the adoption acceptance
+  tests reserve a base from a free range (10000) and assert the
+  base-plus-slot derivation rather than a particular slot number: the
+  held-port skipping is the allocator's designed behaviour, and the tests
+  prove the derivation, not the luck.
+- A generated artefact reads its runtime facts from its own managed
+  block, never from a constant in its body: regeneration replaces only
+  the block, so a filename baked into the tripwire's body would go stale
+  while the block refreshed. The tripwire parses the descriptor filename
+  and the port resources out of its own `# wt-field:` lines.
 - The `.env` writer and the descriptor writer are 0600 for a fresh file
   (both may carry credentials), preserving an existing file's mode; the
   ignore fallback is 0644 — git's own info/exclude is not secret.

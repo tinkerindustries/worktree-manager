@@ -73,6 +73,34 @@ func Guard(cwd string, req GuardRequest) (*GuardVerdict, error) {
 	if err != nil {
 		return nil, err
 	}
+	return guardWithClassification(cwd, req, cls)
+}
+
+// GuardCached is Guard with the phase-7 per-session classification cache
+// (the plan.md §9.2 decision, 07-agent-surface.md §6.3): the
+// classification of one cwd cannot change while a session runs unless the
+// worktree is removed underneath it, so when cacheDir is non-empty the
+// classification is read from — and written to — a per-cwd cache file
+// there. The cache is validated by stat: the recorded worktree root must
+// still exist with the same dev, inode and mtime. A worktree removed
+// mid-session makes the root vanish, the cache drops, and the next call
+// reclassifies — failing open with a one-time note, because a session
+// whose worktree vanished must keep working elsewhere.
+//
+// The descriptor is never cached: the shared-store denial reads it fresh
+// on every call, so a changed descriptor is honoured the same call.
+func GuardCached(cwd, cacheDir string, req GuardRequest) (*GuardVerdict, string, error) {
+	cls, note, err := ClassifyCached(cwd, StandaloneDeclared(), cacheDir)
+	if err != nil {
+		return nil, note, err
+	}
+	v, err := guardWithClassification(cwd, req, cls)
+	return v, note, err
+}
+
+// guardWithClassification is the verdict engine over an already-computed
+// classification.
+func guardWithClassification(cwd string, req GuardRequest, cls *Classification) (*GuardVerdict, error) {
 	v := &GuardVerdict{
 		WorktreeRoot: cls.WorktreeRoot,
 		Outcome:      cls.Outcome.String(),

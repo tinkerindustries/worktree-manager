@@ -34,9 +34,21 @@ usage:
   wt bands list [--json]             the port band ledger: the bases each
                                      app holds, and the host-global
                                      reservations no app may allocate from
+  wt bands suggest [--spec <file>]   propose where the spec's port bases
+      [--json]                       could sit — the lowest base per port
+                                     resource whose required range fits
+                                     against the ledger (colliding with no
+                                     band and no host reservation); the
+                                     skill chooses only where bases go,
+                                     never how large they are
   wt bands reserve --base <n>=<p>... register this repo's port band from its
       [--json]                       committed spec (the walk-up wt.yaml);
                                      one base per port resource
+  wt ports scan [--json]             what is listening on this machine now:
+                                     every LISTEN socket, sorted by port,
+                                     with the owning pid and command; it
+                                     reports facts and never reserves
+                                     anything — the skill's phase-1 audit
   wt init --description <text>      attach to the current worktree:
       [--slug <s>] [--param <n>=<v>] allocate, materialise, emit the
       [--json] [--dry-run] [--cwd]   descriptor and .env, run the hooks,
@@ -109,6 +121,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runDaemon(args[1:], stdout, stderr)
 	case "bands":
 		return runBands(args[1:], stdout, stderr)
+	case "ports":
+		return runPorts(args[1:], stdout, stderr)
 	case "list":
 		return runList(args[1:], stdout, stderr)
 	case "doctor":

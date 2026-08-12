@@ -51,10 +51,27 @@ configuration; neither binary branches on repo identity.
 - `internal/cli` — verb dispatch, flag parsing, output, the exit-code error
   type, the one dial-and-request helper (exit 5 lives there), and the
   verbs: `spec validate`, `spec explain`, `guard`, `show`,
-  `daemon status`, `daemon install`, `bands list`, `bands reserve`,
-  `init`, `start`, `rm`, `list`, `doctor`, `reconcile` and `clients`.
+  `daemon status`, `daemon install`, `bands list`, `bands suggest`,
+  `bands reserve`, `ports scan`, `init`, `start`, `rm`, `list`, `doctor`,
+  `reconcile` and `clients`.
 - `internal/identity` — M1: classification, root resolution, containment,
-  slug validation, descriptor location, the guard engine.
+  slug validation, descriptor location, the guard engine, and the
+  per-session classification cache (`WT_GUARD_CACHE`) the generated guard
+  hook sets — keyed on cwd, validated by the stat identity of the root's
+  `.git` entry (the root dir's own mtime is unusable: the case-sensitivity
+  probe bumps it every call), dropped and reclassified with a one-time
+  note when the worktree is removed mid-session.
+- `internal/managed` — the generated-artefact block convention: the `.env`
+  block's own markers, `# wt-field:` records, replace-only-the-block
+  regeneration, the unbalanced-marker refusal, append-to-a-markerless-file
+  (the CLAUDE.md tripwire joining a repo's own text).
+- `internal/artefact` — the phase-7 generated artefacts, rendered per
+  repo: the `worktree-create`/`worktree-remove` skills, the SessionStart
+  tripwire, the opt-in PreToolUse guard hook, the settings entries, the
+  reference doc, the CLAUDE.md tripwire, and the briefing renderer (which
+  refuses with the descriptor missing). Bodies are stable; the managed
+  block records the spec fields each file came from. Not a verb — the
+  onboarding skill and the tests drive it; `cmd/wt` never imports it.
 - `internal/platform` — M8: symlink-resolved path realisation, the mount's
   case-sensitivity probe, the socket path, peer credentials, the private
   store-dir permission model, the atomic-write helper, and the launchd
@@ -80,10 +97,22 @@ configuration; neither binary branches on repo identity.
   writing nothing, `reconcile` reusing init's and rm's repair paths on
   entries, `clients list`), reclamation of aged-out ephemeral clients on a
   24-hour interval measured against real last-seen times, and the reaper
-  allowlist read from the spec's `reaper.binaries`.
+  allowlist read from the spec's `reaper.binaries`. Phase 7 adds the two
+  onboarding primitives (`ports scan` — every LISTEN socket, a fact;
+  `bands suggest` — the lowest bases whose required ranges fit the
+  ledger) and the generated-artefact drift check: `doctor` scans each
+  repo's tracked files for the managed marker, compares the recorded
+  `# wt-field:` records against the current spec and band ledger, and
+  reports the generated file and the field that moved.
 - `cmd/wt`, `cmd/wtd` — the two entry points.
+- `.claude/skills/onboarding/` — the onboarding skill (a document): the
+  eight phases, the primitives card, the plain-app walkthrough. It is the
+  judgment half of the system; the binaries expose facts and refuse.
 - `testdata/fixtures/` — the three fixture repositories; each has its own
   `wt.yaml`, which is what the walk-up resolution rule is tested against.
+  `plain-app` is the adopted showcase — phase 7 gave it runnable content
+  (`bin/server.go`, the build/start/health hooks) and the generated
+  artefacts are committed in it, so a clone is already adopted.
   The classification fixtures (plain repo, two linked worktrees, clone,
   removed worktree, symlink variants) are built with real git in
   `t.TempDir()` inside `internal/identity` tests — never mocked git output.
@@ -93,10 +122,12 @@ configuration; neither binary branches on repo identity.
 
 ## Environment
 
-The five variables are `WT_SOCKET`, `WT_HOME` (read by `wtd` alone),
-`WT_STANDALONE`, `WT_CLIENT_EPHEMERAL` (=1) and `WT_CLIENT_TOKEN` (phase 6:
+The six variables are `WT_SOCKET`, `WT_HOME` (read by `wtd` alone),
+`WT_STANDALONE`, `WT_CLIENT_EPHEMERAL` (=1), `WT_CLIENT_TOKEN` (phase 6:
 the named-container token; setting it together with the ephemeral
-declaration is refused as ambiguous).
+declaration is refused as ambiguous) and — phase 7's answer to the scope
+question — `WT_GUARD_CACHE`, the per-session classification cache
+directory the generated guard hook sets. A seventh is a scope question.
 
 ## Reading order
 

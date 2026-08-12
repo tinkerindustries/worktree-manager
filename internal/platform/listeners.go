@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -52,6 +53,42 @@ func Listeners(ports []int) ([]Holder, error) {
 		return nil, nil
 	}
 	return listeners(ports)
+}
+
+// AllListeners discovers every process with a LISTEN TCP socket in the
+// caller's network namespace — the fact `wt ports scan` reports, sorted by
+// port so the report is stable (08-platform.md §3). It never classifies
+// what it finds: a listener is a fact, and whether it belongs to a
+// production stack is a person's judgement (plan.md §8, R6).
+//
+// The error contract is the same availability contract as Listeners: a
+// missing discovery tool, or a run that cannot complete, is an error
+// naming the tool and the install command — never an empty report, which
+// would read as a successful scan of nothing.
+func AllListeners() ([]Holder, error) {
+	return allListeners()
+}
+
+// sortHolders orders a scan report: by port (unknown ports last), then
+// pid, then command — a stable report for `wt ports scan`.
+func sortHolders(holders []Holder) {
+	sort.Slice(holders, func(i, j int) bool {
+		a, b := holders[i], holders[j]
+		pa, pb := a.Port, b.Port
+		if pa == 0 {
+			pa = 1 << 30
+		}
+		if pb == 0 {
+			pb = 1 << 30
+		}
+		if pa != pb {
+			return pa < pb
+		}
+		if a.PID != b.PID {
+			return a.PID < b.PID
+		}
+		return a.Command < b.Command
+	})
 }
 
 // SignalTerm delivers the graceful signal: SIGTERM on unix, taskkill

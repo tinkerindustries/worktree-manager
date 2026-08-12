@@ -96,6 +96,94 @@ go test ./internal/generate/ -run TestGeneratedReaderCompilesAndRuns -v
 This layer needs a Go toolchain (the generated reader is built) and, for
 the reader tests, git (the resolution rows are real repositories).
 
+### The adoption layer (phase 7)
+
+The onboarding skill's exit criteria, in the layer each belongs to:
+
+- `internal/managed/managed_test.go` — the block convention:
+  `TestReplacePreservesHandEditsOutsideTheBlock` (criterion 4's core:
+  regeneration replaces only the block), `TestParseExtractsFieldRecords`
+  (the `# wt-field:` records doctor compares), `TestReplaceRefusesUnbalancedMarkers`
+  (the refusal names the line numbers), `TestReplaceAppendsBlockToMarkerlessFile`
+  (the CLAUDE.md tripwire joining a repo's own text, idempotently).
+- `internal/artefact/artefact_test.go` — the generated surface:
+  `TestRenderProducesEveryArtefact` (all seven files, the blocks carry
+  the field records, the hooks are executable, the PreToolUse entry only
+  with the developer's confirmation), `TestApplyRegeneratePreservesHandEdits`
+  (criterion 4 end to end through `Apply`), `TestRemoveSkillStopsAndAsksOnExit3`
+  (criterion 5: the skill's rule is to stop and ask on exit 3 and
+  `--force` never appears as a remedy), `TestBriefingRefusesWithDescriptorMissing`
+  (criterion 6: the briefing refuses to render, naming `wt init`),
+  `TestTripwireScriptRuntime` (the rendered SessionStart hook against a
+  real git worktree: the one-line summary from a descriptor, the sentence
+  naming `wt init` without one, silence in the primary checkout — reading
+  the facts from its own managed block), `TestGuardHookScriptRuntime`
+  (the rendered PreToolUse hook against a fake wt: deny → exit 2 with the
+  structured reason, allow → exit 0, missing wt → fail open and say so,
+  `WT_GUARD_CACHE` exported).
+- `internal/identity/guard_cache_test.go` — the plan.md §9.2 decision:
+  `TestGuardCacheReusesThenDropsOnRemoval` (a hit is reused without
+  rewriting the entry; a worktree removed mid-session drops the cache,
+  reclassifies, and the one-time note reaches the session),
+  `TestGuardCachedVerdictCarriesTheCache`.
+- `internal/coord/onboard_test.go` — the two primitives:
+  `TestPortsScanReportsFacts` (the scan sees the test's own listener as a
+  fact, sorted by port), `TestBandsSuggestFindsLowestFreeBase`,
+  `TestBandsSuggestSkipsBandsAndReservations`, `TestBandsSuggestGroupSharesOneBase`
+  (the group form: one base, interleaved port sets),
+  `TestBandsSuggestIndependentStridesGetDisjointBases`,
+  `TestBandsSuggestRefusesInvalidSpec`.
+- `internal/coord/drift_test.go` — criterion 3: `TestDoctorReportsMovedBandNamesFileAndField`
+  (doctor clean, band moves, the finding names the generated file and the
+  field that moved), `TestDoctorReportsRenamedResource`.
+- `internal/cli/ports_test.go` and the suggest/reserve cases there — the
+  verbs' client side: `--json` shapes, the notes to stderr, exit 4 when
+  discovery is unavailable, exit 5 with the coordinator stopped, exit 4
+  outside an adopted repository.
+- **The adoption layer proper** — `internal/cli/adoption_test.go`,
+  deliberately **untagged**: plain-app uses no compose, so the whole
+  skill flow runs under plain `go test ./...` with no docker, against a
+  real coordinator on a temp socket and real git worktrees (the fake gh
+  answers the no-PR contract):
+  - `TestAcceptancePlainAppAdoptedThroughTheSkill` — exit criterion 1:
+    the adopted fixture goes through the skill, proving state-path's
+    three seed modes and the `default: shared` resource end to end — the
+    db snapshot has the shared source's content, the cache is empty, the
+    shared_db is the same path in both worktrees with `isolated: false`
+    and a place in the descriptor's shared block, the `.env` seeded from
+    the main checkout's unmanaged content with the managed keys from the
+    worktree's own allocation — two worktrees side by side, both healthy
+    at once, disjoint tables, torn down with the reaper stopping the
+    servers, `wt doctor` clean; regeneration preserving a hand edit
+    (criterion 4 end to end) and the briefing rendering from `wt show`
+    values are exercised along the way.
+  - `TestAcceptanceSkillEightPhasesOnSpeclessFixture` — exit criterion 2:
+    a copy of plain-app with the spec and the adopted surface removed
+    goes through all eight phases — audit (committed default ports,
+    `$HOME` paths, what is listening), policy (the decision record),
+    bands (suggest, confirm, reserve), spec (written, validated, both
+    slot tables read and disjoint), generate (the artefacts, settings and
+    ignore line), patch (the serving entry point), prove (two worktrees,
+    both healthy, torn down, doctor clean), import (nothing pre-existed,
+    stated) — ending with two worktrees side by side.
+
+Run one test:
+
+```sh
+go test ./internal/managed/ -run TestReplacePreservesHandEditsOutsideTheBlock -v
+go test ./internal/coord/ -run TestDoctorReportsMovedBandNamesFileAndField -v
+go test ./internal/cli/ -run TestAcceptancePlainAppAdoptedThroughTheSkill -v
+```
+
+The adoption layer needs git and a Go toolchain (the build hook compiles
+the fixture's server). The band the adoption tests use is 10000, chosen
+from a range free on the machine the tests run on: the fixture's
+canonical 8200 can collide with whatever else listens on the machine
+(this sandbox runs its own service on 8080, and an interrupted run can
+leak a worktree's server), and the held-port skipping is the allocator's
+designed behaviour — the tests assert the base-plus-slot derivation,
+never a particular slot number.
+
 ## Layer 2 — real-repo fixtures
 
 Classification, root resolution and containment against real repositories,
@@ -437,6 +525,7 @@ and criterion 8's ordering and rollback:
 | Pure unit | nothing |
 | Real-repo fixtures | git, for the real repositories built in `t.TempDir()` |
 | In-process coordinator | nothing |
+| Adoption layer (phase 7, untagged) | git and a Go toolchain, no docker |
 | Live acceptance | docker, and a coordinator process for the gates (phase 5), `gh` for the gates that check PRs (phase 5/6) |
 
 ## Command surface

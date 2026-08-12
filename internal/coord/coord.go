@@ -187,6 +187,10 @@ func (h *Handler) Handle(ctx context.Context, s *Session, req *protocol.Request)
 		return h.reserveBand(s, req)
 	case verbBandsList:
 		return h.listBands(s, req)
+	case verbBandsSuggest:
+		return h.suggestBand(s, req)
+	case verbPortsScan:
+		return h.portsScan(s, req)
 	case verbList:
 		return h.list(s, req)
 	case verbDoctor:
