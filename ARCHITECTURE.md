@@ -15,17 +15,27 @@ cmd/wt        the client: verb dispatch into internal/cli, then os.Exit
 cmd/wtd       the coordinator: socket listener, protocol loop, graceful
               shutdown; reads WT_HOME and WT_SOCKET, logs to stderr
 internal/cli  verb dispatch, flag parsing, output, the exit-code error
-              type, the one dial-and-request helper, the daemon verbs
+              type, the one dial-and-request helper, the daemon verbs,
+              and the lifecycle verbs — init (the seven-step sequence
+              with rollback up to activation, the four attach outcomes),
+              start (the bring-up hooks, no coordinator), rm (the three
+              tree-reading safety checks, then reap + teardown + git
+              worktree remove), and the hook sequencer (sticky
+              parameters, health polling, process-group timeouts)
 internal/spec the wt.yaml schema: parser, validator, template evaluator,
               the walk-up finder, the quoted YAML emitter
 internal/identity  M1: classification, root resolution, containment,
-              slug validation, descriptor location, the guard engine
+              slug validation, descriptor location, the guard engine,
+              and the nested-worktree refusal
 internal/platform  M8: path realisation, the mount's case-sensitivity
               probe, the port-probe socket options (SO_REUSEADDR set on
               unix, unset on Windows — the one GOOS branch callers never
               see), the socket path, peer credentials, the private-dir
               permission model, the atomic-write helper, the supervisor
-              (launchd) seam; the only package permitted to branch on GOOS
+              (launchd) seam, listener discovery (lsof on macOS,
+              /proc/net on Linux, netstat+tasklist on Windows) and
+              signalling (TERM/KILL by pid, process groups); the only
+              package permitted to branch on GOOS
 internal/descriptor  M5: the per-worktree allocation record, its reader
               (yaml and json), its atomic writer, the shared-block and
               isolation-state builders, and the info/exclude ignore rule
@@ -37,12 +47,19 @@ internal/generate  M5: the generated Go descriptor reader — the source
               embedded YAML-subset parser (stdlib only)
 internal/protocol  the wire between the two binaries: message types,
               newline-delimited JSON framing, version negotiation, and
-              the phase-3 verb payloads (which carry the parsed spec)
+              the verb payloads — the phase-3 allocate/activate/release
+              and bands verbs, plus phase 5's materialise (init's step
+              3) and rm (reap + teardown), which carry the parsed spec
 internal/store  the coordinator's state directory: root resolution,
               atomic writes, the schema_version envelope, clients.json,
               registry.json and bands.json
 internal/coord  the coordinator's request core, socket server and the
-              in-process harness; one writer serialises here
+              in-process harness; one writer serialises here. Phase 5
+              adds the materialise verb (driver apply with the
+              reverse-order rollback), the rm verb (reap, then teardown,
+              then the entry drop) and the reaper, whose allowlist seam
+              (ReapBinaries) is empty because the spec has no field that
+              names binaries — reported to the plan rather than added
 internal/driver  M3: the six-operation driver contract, the port,
               namespace and state-path drivers, the docker CLI seam, and
               the sequencing (apply in dependency order, teardown in

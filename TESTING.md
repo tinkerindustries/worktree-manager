@@ -212,6 +212,77 @@ migration against it. It lives in `internal/coord`:
   resolving to a reserved name is refused, naming the reservation),
   `TestCoordTeardownCleanDropsTheEntry` and
   `TestCoordTeardownRequiresSpecAndOwnership`.
+- The coordinator's phase-5 tests in `internal/coord/p5_test.go`, one
+  named per rail and criterion: the materialise verb
+  (`TestCoordMaterialiseAppliesInDependencyOrder`,
+  `TestCoordMaterialiseFailureCleanRollbackLeavesEntryReleasable`,
+  `TestCoordMaterialiseFailureWithFailedRollbackMovesToTearingDown`,
+  `TestCoordMaterialiseRequiresOwnership`), the rebuild-from-descriptor
+  and rule-5 allocate halves (`TestAllocateRebuildsFromSlotHint`,
+  `TestAllocateSlotHintHeldSlotRefused`,
+  `TestAllocateResultCarriesExistedPathAndShared`), the rm verb
+  (`TestRmVerbEntryNotFoundIsDataOutcome`,
+  `TestRmVerbDryRunPreviewsWithoutTeardown`,
+  `TestRmVerbSequencesReapThenTeardownAndDropsEntry`,
+  `TestRmVerbForeignEntryRefused`, `TestRmVerbSurvivorsHoldTheSlot`), and
+  the reaper's rails against real processes and real discovery
+  (`TestCoordReapSignalsOnlyNamedBinaries`,
+  `TestCoordReapNeverSignalsANonSpecHolder`,
+  `TestCoordReapNeverTouchesReservedPorts` — both the spec's reserved
+  block and the ledger's host-global reservations,
+  `TestCoordReapInContainerReportsUnavailable`,
+  `TestCoordReapDryRunListsWithoutSignalling`,
+  `TestCoordReapKeepProcessesOptsOut`).
+- The reaper's platform half in `internal/platform/listeners_test.go`
+  against the real platform: discovery finds a real listener
+  (`TestListenersFindsARealListener`,
+  `TestListenersMultiplePortsFindsEachHolder`), the TERM-then-KILL
+  escalation and the process-group kill
+  (`TestSignalTermAndKill`, `TestKillGroupKillsTheWholeTree`).
+  On Linux, discovery reads `/proc/net/tcp` plus `/proc/<pid>/fd` —
+  the design table's Linux alternative, which is also what makes the
+  reaper work where lsof is a busybox applet that ignores its flags;
+  macOS uses the platform's lsof.
+- The client's lifecycle verbs in `internal/cli/`, driven through
+  `cli.Run` against real git worktrees (the fixture layer's builder) and
+  the recording fake coordinator (`recordingCoord` in init_test.go) plus
+  a fake `gh` on PATH (the real remote service is not part of the unit
+  layer; the no-PR contract is exit 1 with "no pull requests found",
+  exactly as real gh answers):
+  - the hook sequencer in `hooks_test.go`: resolution over resources and
+    sticky params, the run contract (cwd, environment, stderr, non-zero
+    stops), `--dry-run`, the timeout killing the process group, health
+    polling with the tail dump on timeout, and the missing-seed-
+    credentials warning-and-skip;
+  - `init` in `init_test.go`: the happy path through all seven steps
+    (`TestInitAllocatesEmitsActivates`), the required description
+    (`TestInitRequiresDescription`), the primary-checkout refusal
+    (`TestInitRefusesPrimaryCheckout`), the nested-worktree refusal
+    (`TestInitRefusesNestedWorktree`, real clone inside a worktree), the
+    slug-collision stop (`TestInitSlugCollisionWithDifferentPathStops`),
+    the rollback paths (`TestInitMaterialiseFailureReleasesTheEntry`,
+    `TestInitMaterialiseFailureWithFailedRollbackKeepsEntry`,
+    `TestInitHealthFailureKeepsTheWorktreeAllocated` — exit criterion 4
+    without docker), the two repair outcomes
+    (`TestInitReemitsDescriptorFromEntry`,
+    `TestInitRebuildsRegistryFromDescriptor` — the slot hint on the
+    wire), and `--dry-run`;
+  - `start` in `start_test.go`: the bring-up hooks from the descriptor,
+    the no-descriptor refusal naming `wt init`, never contacting the
+    coordinator, the health failure saying what failed, `--dry-run`, and
+    the sticky-param persistence;
+  - `rm` in `rm_test.go`, one test per safety check and partial state:
+    `TestRmStopsOnUncommittedChanges`, `TestRmStopsOnUnpushedCommits`,
+    `TestRmStopsOnAbsentUpstream`, `TestRmStopsOnOpenPR`,
+    `TestRmGhMissingExitsFour` (exit criterion 6), `TestRmGhUnauthenticatedExitsFour`,
+    `TestRmNoPRPasses`, `TestRmRefusesStandingInTheTarget`,
+    `TestRmBySlugWithDirectoryDeleted` (exit criterion 5),
+    `TestRmDryRunPreviewsAndChangesNothing`,
+    `TestRmDirectoryPresentNoEntry`, `TestRmNeitherIsAMessageAndAStop`,
+    `TestRmRequiresATarget`, `TestRmCoordinatorUnreachableExitsFive`;
+  - the nested-worktree detection itself against real repositories in
+    `internal/identity/nested_test.go` (`TestNestedInsideFindsACloneInsideAWorktree`,
+    `TestNestedInsideNegative`, `TestNestedInsideThroughSymlink`).
 - The store's own tests in `internal/store/store_test.go` (root
   resolution, 0700/0600, atomic writes, the schema_version refusal) and
   `internal/store/registry_test.go` (registry and bands round trips, the
@@ -266,6 +337,19 @@ its untagged twin:
 | `TestAcceptanceTeardownUnavailableMovesEntryToTearingDown` (`internal/coord`) | criterion 3: a teardown that leaves resources behind moves the entry to `tearing-down` and does not free the slot (here: the daemon genuinely unreachable via `DOCKER_HOST`) | `TestCoordTeardownLeavesTearingDownAndHoldsTheSlot`, `TestCoordTeardownUnavailableDoesNotFreeTheSlot` |
 | `TestAcceptanceCoordinatorProbeSeesPublishedPort` (`internal/coord`) | criterion 5: the probe run from the coordinator sees a port published by a container | `TestPortProbeFreeAndHeld` |
 | `TestAcceptanceTeardownContinuesPastFailure` (`internal/driver`) | criterion 6: teardown continues past a failure and reports everything that survived | `TestNamespaceTeardownContinuesPastFailure`, `TestTeardownAllReverseOrderContinuingPastFailure` |
+| `TestAcceptanceTwoWorktreesSideBySide` (`internal/cli`) | phase-5 criteria 1, 2 and 5: two compose-app worktrees run side by side, both healthy at once, disjoint resource tables, neither reaching the production stack; both tear down cleanly leaving no containers, no volumes and no registry entries; rm by slug with the directory already deleted | the untagged twins in `internal/cli/init_test.go`, `start_test.go`, `rm_test.go` and `internal/coord/p5_test.go` |
+
+The phase-5 gate runs the real client (`cli.Run`) against a real
+coordinator (`coord.Server` on a temp socket, the phase-6 CI arrangement)
+over real git worktrees and real docker. The one test double is `gh`: the
+gate's branches live on a local bare remote, and the real gh cannot answer
+"is there a PR" for a repository that is not on GitHub — a fake gh on PATH
+answers the no-PR contract the check reads (exit 1, "no pull requests
+found"), exactly as real gh does for a branch without a PR. The
+fail-closed side (missing or unauthenticated gh → exit 4) is exercised
+untagged in `rm_test.go`. Every container, network and volume the gate
+creates carries the worktrees' project labels and is removed before the
+test returns; nothing with another label is ever touched.
 
 The tagged probe tests publish a port into the coordinator's own network
 namespace (`--network container:<id>`): the test process runs inside a
