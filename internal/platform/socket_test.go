@@ -76,7 +76,7 @@ func TestListenSocket(t *testing.T) {
 		}
 		return
 	}
-	dir := tempDir(t) // resolved: on macOS the temp root is under /var → /private/var
+	dir := sockDir(t)
 	sock := filepath.Join(dir, "s")
 	ln, err := ListenSocket(sock)
 	if err != nil {
@@ -105,7 +105,7 @@ func TestListenSocketStaleReclaim(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("no unix sockets on windows")
 	}
-	dir := tempDir(t)
+	dir := sockDir(t)
 	sock := filepath.Join(dir, "s")
 	// Bind and close: the file remains, nothing answers it.
 	ln, err := net.Listen("unix", sock)
@@ -128,7 +128,7 @@ func TestPeerUID(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		return // the windows file reports the phase-8 refusal; nothing to assert here
 	}
-	dir := tempDir(t)
+	dir := sockDir(t)
 	sock := filepath.Join(dir, "s")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
@@ -175,7 +175,7 @@ func TestListenSocketSpeaksHello(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("no unix sockets on windows")
 	}
-	dir := tempDir(t)
+	dir := sockDir(t)
 	sock := filepath.Join(dir, "s")
 	ln, err := ListenSocket(sock)
 	if err != nil {
@@ -220,4 +220,27 @@ func TestListenSocketSpeaksHello(t *testing.T) {
 	if kind := <-reply; kind != "host" {
 		t.Errorf("server saw kind %q, want host", kind)
 	}
+}
+
+// sockDir is a directory short enough to hold a bindable socket path.
+// sun_path holds 104 bytes on macOS including the terminator, and t.TempDir()
+// spends about 56 of them on the per-user temp root under /var/folders before
+// the test's own name is added — so how much room is left depends on how long
+// the test is called. /tmp resolves to /private/tmp and costs 12.
+func sockDir(t *testing.T) string {
+	t.Helper()
+	root := "/tmp"
+	if runtime.GOOS == "windows" {
+		root = t.TempDir()
+	}
+	dir, err := os.MkdirTemp(root, "wt")
+	if err != nil {
+		t.Fatalf("creating a short temp dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("resolving the temp dir: %v", err)
+	}
+	return resolved
 }

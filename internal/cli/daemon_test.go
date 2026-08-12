@@ -15,16 +15,28 @@ import (
 	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 )
 
-// shortSock is a socket path under the resolved temp root with a short
-// basename: unix socket paths are length-limited (104 bytes on macOS), and
-// on macOS the temp root sits under /var, a symlink to /private/var.
+// shortSock is a socket path short enough to bind. sun_path holds 104 bytes
+// on macOS including the terminator, and t.TempDir() spends about 56 of them
+// on the per-user temp root under /var/folders before the test's own name is
+// added — so a test with a long name fails to bind while a shorter one in the
+// same package succeeds. The directory therefore comes from /tmp, which
+// resolves to /private/tmp and costs 12.
 func shortSock(t *testing.T, name string) string {
 	t.Helper()
-	dir, err := filepath.EvalSymlinks(t.TempDir())
+	root := "/tmp"
+	if runtime.GOOS == "windows" {
+		root = t.TempDir()
+	}
+	dir, err := os.MkdirTemp(root, "wt")
+	if err != nil {
+		t.Fatalf("creating a short temp dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	resolved, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		t.Fatalf("resolving the temp dir: %v", err)
 	}
-	return filepath.Join(dir, name)
+	return filepath.Join(resolved, name)
 }
 
 // fakeHelloServer listens on a temp socket and answers each hello with the

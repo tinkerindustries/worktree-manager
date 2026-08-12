@@ -17,6 +17,11 @@ const (
 	solLocal      = 0x0
 	localPeerCred = 0x001
 	xuNgroups     = 16
+
+	// XUCRED_VERSION in sys/ucred.h is 0. The kernel stamps it into every
+	// reply, so the check catches a future layout change rather than a
+	// failed call — a call that failed reports through errno.
+	xucredVersion = 0
 )
 
 type xucred struct {
@@ -48,8 +53,8 @@ func peerUID(uc *net.UnixConn) (int, error) {
 			credErr = errno
 			return
 		}
-		if cred.Version != 1 {
-			credErr = fmt.Errorf("unexpected xucred version %d", cred.Version)
+		if cred.Version != xucredVersion {
+			credErr = fmt.Errorf("unexpected xucred version %d, want %d", cred.Version, xucredVersion)
 			return
 		}
 		uid = int(cred.UID)
