@@ -31,7 +31,7 @@ OUT="$ROOT/dist/out"
 rm -rf "$OUT"
 mkdir -p "$OUT"
 
-cat >"$ROOT/dist/README.txt" <<EOF
+cat >"$OUT/README.txt" <<EOF
 Worktree Manager $VERSION
 
 One distribution per platform containing both binaries — the wt client and
@@ -75,7 +75,7 @@ stage_for() { # goos goarch ext bin-ext
 
 	CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -o "$STAGE/wt$BINEXT" ./cmd/wt
 	CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -o "$STAGE/wtd$BINEXT" ./cmd/wtd
-	cp "$ROOT/dist/README.txt" "$STAGE/README.txt"
+	cp "$OUT/README.txt" "$STAGE/README.txt"
 
 	case "$EXT" in
 	tar.gz)
