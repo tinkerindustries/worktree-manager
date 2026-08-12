@@ -104,7 +104,7 @@ const (
 // this is the honest rendering of a repo whose band is not on this
 // machine.
 func Render(sp *spec.Spec, band map[string]int, opts Options) ([]File, error) {
-	fields := fieldsFor(sp, band)
+	fields := FieldsFor(sp, band)
 
 	files := []File{
 		{
@@ -155,9 +155,11 @@ func Render(sp *spec.Spec, band map[string]int, opts Options) ([]File, error) {
 	return files, nil
 }
 
-// fieldsFor records the spec fields a generated file came from: the
+// FieldsFor records the spec fields a generated file came from: the
 // machine-compared provenance `wt doctor` checks (09-onboarding.md §5).
-func fieldsFor(sp *spec.Spec, band map[string]int) map[string]string {
+// The coordinator's drift check uses the same function, so the recorded
+// field set and the compared field set cannot disagree.
+func FieldsFor(sp *spec.Spec, band map[string]int) map[string]string {
 	fields := map[string]string{
 		"app":        sp.App,
 		"descriptor": sp.Emit.Descriptor.Filename,

@@ -418,7 +418,9 @@ func driftRemedy(f driver.Finding, res *spec.Resource, worktree string) string {
 
 // doctorRepos scans each repository reachable through the registry for
 // worktrees whose directory is present but that have no registry entry —
-// the "directory present, no entry" row, fixed by init in that directory.
+// the "directory present, no entry" row, fixed by init in that directory
+// — and runs the phase-7 generated-artefact drift check against the
+// repo's main checkout (drift.go).
 func (h *Handler) doctorRepos(reg store.RegistryFile, repos map[string]bool, findings *[]protocol.DoctorFinding, notes *[]string) {
 	for common := range repos {
 		out, err := exec.Command("git", "-C", common, "worktree", "list", "--porcelain").Output()
@@ -428,18 +430,21 @@ func (h *Handler) doctorRepos(reg store.RegistryFile, repos map[string]bool, fin
 		}
 		// The first entry of `git worktree list` is the main checkout —
 		// slot 0, never managed, never a finding (the classification rule,
-		// 01-identity.md §4.1).
+		// 01-identity.md §4.1). It is also where the repo's generated
+		// artefacts live, committed with the spec.
+		main := ""
 		first := true
 		for _, line := range strings.Split(string(out), "\n") {
 			path, ok := strings.CutPrefix(line, "worktree ")
 			if !ok {
 				continue
 			}
+			path = strings.TrimSpace(path)
 			if first {
 				first = false
+				main = path
 				continue
 			}
-			path = strings.TrimSpace(path)
 			if fi, serr := os.Stat(path); serr != nil || !fi.IsDir() {
 				continue // the directory is gone: not this finding
 			}
@@ -452,7 +457,20 @@ func (h *Handler) doctorRepos(reg store.RegistryFile, repos map[string]bool, fin
 				Remedy:  fmt.Sprintf("run 'wt init' in %s", path),
 			})
 		}
+		if main != "" {
+			h.doctorDrift(main, h.bandsForDrift(), findings, notes)
+		}
 	}
+}
+
+// bandsForDrift loads the band ledger for the drift check, or an empty
+// ledger when it cannot be read (the caller's notes carry the skip).
+func (h *Handler) bandsForDrift() store.BandsFile {
+	bands, err := h.st.ReadBands()
+	if err != nil {
+		return store.BandsFile{}
+	}
+	return bands
 }
 
 // registryHasPath reports whether any registry entry's recorded path names
