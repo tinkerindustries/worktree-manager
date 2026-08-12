@@ -12,6 +12,8 @@ The phase order comes from [`docs/ARCHITECTURE.md` §13.2](docs/ARCHITECTURE.md)
 
 Phases 0 to 5 are a straight line. Phase 5 is the first release worth using: one repo, one platform, two worktrees side by side.
 
+§9 records the decisions that were open when this plan was written and are now closed, with the reasoning behind each, because the reasoning is what a later reader needs in order to change one deliberately.
+
 ## 2. Which document is authoritative
 
 `docs/ARCHITECTURE.md` revision 2 wins on every point of conflict. It replaced the coordination model, and the nine module documents predate that change.
@@ -54,7 +56,7 @@ Four layers, established as the code that needs them lands. `TESTING.md` carries
 | Pure unit | Slug rules, template evaluation, band arithmetic, `.env` block editing | Nothing |
 | Real-repo fixtures | Classification, root resolution, containment | Real git repos in `t.TempDir()`, never mocked git output |
 | In-process coordinator | Allocation, authorisation, entry lifecycle, migration | A store path and protocol messages, no socket and no supervisor |
-| Live acceptance | The two gates in §6 | Docker, a real supervisor, in phases 5 and 6 |
+| Live acceptance | The two gates in §6 | Docker and a coordinator process, from phase 5; in CI from phase 6 |
 
 Classification is tested against real repositories because the bug M1 exists to prevent was a misreading of what git reports. A test built on a mock of the same misreading passes while the bug survives. The fixtures: a plain repository, a repository with two linked worktrees, a clone, a worktree whose directory has been removed, and one of each reached through a symlink.
 
@@ -66,13 +68,17 @@ Each driver runs the same contract conformance suite, so a new driver is a fixtu
 
 The schema is the contract between one conversational plane and two deterministic ones. Every generated artefact, every driver and every adoption decision resolves through it, and `ARCHITECTURE.md` §14.2 says it should carry the most review pressure before implementation starts. So it comes first, and it gets proved against real repositories rather than reviewed in the abstract.
 
-**Build.** One Go module, two entry points under `cmd/wt` and `cmd/wtd`, internal packages per module. `CGO_ENABLED=0` cross-compilation to macOS, Linux and Windows in CI, with lint and `go test ./...`. The spec parser and validator as a library both binaries link: types, template evaluation by topological sort with cycle detection, per-type constraint checks, and refusal of a version it does not understand.
+**Build.** One Go module at `github.com/mrgeoffrich/worktree-manager`, two entry points under `cmd/wt` and `cmd/wtd`, internal packages per module. `CGO_ENABLED=0` cross-compilation to macOS, Linux and Windows in CI, with lint and `go test ./...`. The spec parser and validator as a library both binaries link: types, template evaluation by topological sort with cycle detection, per-type constraint checks, and refusal of a version it does not understand.
+
+The spec is `wt.yaml`, at the repository root, committed, found by walking up from cwd to the worktree root and stopping there. `resources`, `reserved` and `shared` come from [`03-drivers.md` §3](docs/design/03-drivers.md). `hooks` and `emit` are stubs in that document and are fixed here instead, because every later phase builds against them: `emit` declares the descriptor's filename and format, the optional `.env` block and the reader's language; `hooks` declares the five commands in M4 §5, each with an optional timeout, and the sticky parameters in M4 §5.2. Only the field set is frozen now. The semantics stay in phases 4 and 5.
 
 **Exit criteria.**
 
-- Specs for `bacio`, `deepseek-harness` and `mini-infra` are written as fixtures and validate. Anything the schema cannot express is a schema change, made now.
-- `spec explain --slot 1` and `--slot 2` produce resource tables from a pure function, and the two tables are disjoint.
+- Specs for `bacio`, `deepseek-harness` and `mini-infra` are written from those repositories as they stand, committed under `testdata/specs/`, and validate. Anything the schema cannot express is a schema change, made now.
+- Every field in `hooks` and `emit` is exercised by at least one of the three fixtures, or deleted.
+- `spec explain --slot 1` and `--slot 2`, given bases with `--base <name>=<port>`, produce resource tables from a pure function, and the two tables are disjoint.
 - A template cycle, an unknown cross-resource reference, and a resolved name exceeding the length caps are each rejected at validation with the reason named.
+- A spec that emits a YAML descriptor round-trips a worktree slugged `no` without turning it into `false`.
 - CI produces binaries for all three platforms.
 
 **Docs.** `CLAUDE.md`, root `ARCHITECTURE.md` skeleton, `TESTING.md`.
@@ -101,7 +107,7 @@ Drop M1 §5 entirely. View identity does not exist in revision 2.
 
 Nothing crosses the socket until this exists.
 
-**Build.** `wtd` as a resident per-user process. Unix socket on macOS, registered as a launchd LaunchAgent with socket activation. The request protocol, with version negotiation that refuses a non-overlapping pair and names the upgrade. Client identity: peer credentials for host clients, a configured token for named containers, an ephemeral declaration for disposable ones, recorded in `clients.json`. `wt daemon status` and `wt daemon install`. Exit code 5 wired through every verb except `show` and `guard`.
+**Build.** `wtd` as a resident per-user process, able to run in the foreground against a `WT_SOCKET` path as well as under a supervisor, because the tests and the CI gates need a coordinator without needing launchd. Unix socket on macOS, registered as a launchd LaunchAgent with socket activation. The request protocol — newline-delimited JSON, one object per request and one per response — with version negotiation on connect that refuses a non-overlapping pair and names the upgrade. Client identity: peer credentials for host clients, a configured token for named containers, an ephemeral declaration for disposable ones, recorded in `clients.json`. `wt daemon status` and `wt daemon install`. Exit code 5 wired through every verb except `show` and `guard`.
 
 **Exit criteria.**
 
@@ -116,7 +122,7 @@ Nothing crosses the socket until this exists.
 
 M2, minus everything the coordinator model deleted.
 
-**Build.** The store at `~/.wt`, directory `0700` and files `0600`, written by the coordinator as the user. Atomic writes: temp file in the same directory, fsync, rename, fsync the directory. Registry entries carrying `owner`, `ephemeral`, `path_visible`, `state`, denormalised `resources` and a named `secrets` field. Lowest-free slot allocation per app, skipping exclusions and anything probing held, with an existing entry's slot authoritative. The band ledger, with registration explicit and required. Exclusions from both the spec's `reserved` block and the ledger's host-global reservations. The authorisation check on every mutating call. Entry states `reserving`, `active` and `tearing-down`, with `reserving` aged out on the coordinator's timer. Registry schema migration under the same atomic path.
+**Build.** The store at `~/.wt`, directory `0700` and files `0600`, written by the coordinator as the user. `WT_HOME` survives as a coordinator-side override so a test can point at a temp directory; it is read by `wtd` alone, and never by a client, which is what stops it becoming the container mount point revision 2 deleted. Atomic writes: temp file in the same directory, fsync, rename, fsync the directory. Registry entries carrying `owner`, `ephemeral`, `path_visible`, `state`, denormalised `resources` and a named `secrets` field. Lowest-free slot allocation per app, skipping exclusions and anything probing held, with an existing entry's slot authoritative. The band ledger, with registration explicit and required. Exclusions from both the spec's `reserved` block and the ledger's host-global reservations, the latter written by `bands reserve --host`, which carries a required note naming what holds the range. That is R6's answer: nothing infers a production stack, a person declares it once per machine, and `ports scan` is what shows them the listeners they have not declared. The authorisation check on every mutating call. Entry states `reserving`, `active` and `tearing-down`, with `reserving` aged out on the coordinator's timer. Registry schema migration under the same atomic path.
 
 Not built, and not to be added later: a lock file, a generation counter, view identity, view scoping.
 
@@ -131,9 +137,11 @@ Not built, and not to be added later: a lock file, a generation counter, view id
 
 **Docs.** Root `ARCHITECTURE.md` gains the store layout and the authority rules.
 
-### Phase 4 — Drivers: `port` and `namespace`
+### Phase 4 — Drivers: `port`, `namespace` and `state-path`
 
 **Build.** The six-operation contract, with `derive`, `probe`, `verify` and `blastRadius` required and `apply` and `teardown` independently optional. `port` in both stride and group form, with the stride form capping slots at 99 and `spec validate` enforcing that. `namespace` for compose: derived project name, probe by label, teardown by label in container-network-volume order across the project and every dependent project the spec declares.
+
+`state-path` lands here rather than with `machine` and `cidr`, for a structural reason rather than a scheduling one. `port` and `namespace` both have no `apply`, so without a third driver the optional half of the contract, the dependency ordering in M3 §5 and the reverse-order rollback that phase 5's `init` leans on are all unexercised until phase 8. It brings the three seed modes and the purge refusal, which runs M1's containment test on the resolved, symlink-realised path rather than on the template.
 
 Two rails are structural rather than advisory. A resolved namespace matching a host-global reservation is refused, because label-based teardown is the one operation that could otherwise reach a co-resident production stack. A held port is never remediated: the allocator skips the slot and says which slot it skipped.
 
@@ -147,6 +155,8 @@ Two rails are structural rather than advisory. A resolved namespace matching a h
 - A namespace resolving to a reserved name is refused, naming the reservation.
 - The probe run from the coordinator sees a port published to the host by a container.
 - Teardown continues past a failure and reports everything that survived.
+- A purge whose resolved path is the shared source, or an ancestor of it, is refused and names the path — reached through a symlink as well as directly.
+- `apply` runs in the order the templates imply, and a failure part-way through tears down in reverse.
 
 **Docs.** Root `ARCHITECTURE.md` gains the driver table and the discover-rather-than-create rule.
 
@@ -154,13 +164,15 @@ Two rails are structural rather than advisory. A resolved namespace matching a h
 
 M4 and M5. This phase produces something worth installing.
 
+The pilot is `deepseek-harness`. Its three compose files exercise `namespace` including the dependent test project and the pinned-`name:` finding, its co-resident production stack on 8180/8190/4522/8522 exercises the host-global reservations from phase 3, and it is Go, so its reader is the one this phase owes. Its spec is hand-written and committed to it, and its entry points are patched by hand, because the skill that would do both does not exist until phase 7. This repository dogfoods the tool from here as well, but it is not the proof: a tool that only manages itself has demonstrated nothing about a repo it did not grow up in.
+
 **Build.** `init` as the seven-step sequence with rollback covering everything up to activation, and the four attach outcomes that make it the repair path as well as the setup path. `start`. `rm`, with three safety checks in the client — uncommitted changes, unpushed commits with an absent upstream itself a stop, an open PR — and reap plus teardown in the coordinator. The reaper's rails, all of them, enforced coordinator-side. Hooks: install, prepull, build, seed, health, with cwd at the worktree root, output to stderr, non-zero stopping the sequence, and `--dry-run` printing the resolved command.
 
 Delivery: the descriptor written atomically at the worktree root, undotted, in the repo's format, with YAML emission quoting every string scalar. The gitignore line via `$GIT_COMMON_DIR/info/exclude` when adoption did not commit it, never by appending to a tracked `.gitignore` in a linked worktree. The `.env` managed block, with any managed key defined outside the block stripped rather than ordered. First-`init` seeding of `.env` from the main checkout, unmanaged content only. The generated descriptor reader for Go, honouring the four-row resolution table and reading nothing but the descriptor and the spec.
 
 **Exit criteria.**
 
-- Two worktrees of one repo run side by side, both healthy at once, with disjoint resource tables.
+- Two worktrees of `deepseek-harness` run side by side, both healthy at once, with disjoint resource tables, and neither reaches the production stack.
 - Both tear down cleanly, leaving no containers, no volumes and no registry entries.
 - A failed `init` at materialisation leaves the tree exactly as it was found, and no entry.
 - A failed health check leaves the worktree allocated and usable, and says what failed.
@@ -176,6 +188,8 @@ Delivery: the descriptor written atomically at the worktree root, undotted, in t
 M6. Orphaned entries are routine rather than exceptional, because the tool that created a worktree removes it and will not call `wt rm` first.
 
 **Build.** `list` across every repo, with stale and unverifiable kept as distinct markers and secrets redacted by default. `doctor`, reading everything and writing nothing, every finding naming its fix. `reconcile`, applying `init`'s repair path to entries, acting on the caller's own entries plus ephemeral entries whose owner has aged out, with `--dry-run` required. Reclamation of ephemeral clients on a configured interval measured against real last-seen times. `wt clients`.
+
+Both gates start running in CI here, on a Linux runner with docker, against a `wtd` started in the foreground. That is the only arrangement available: a hosted macOS runner has no docker daemon, and the Linux supervisor unit is phase 8 work. Splitting the coordinator's process lifecycle from its supervisor registration is what makes it possible, which is why phase 2 builds the foreground mode. The gates also run on macOS under launchd, locally, because that is the platform anyone actually uses this on and CI is not covering it.
 
 **Exit criteria.**
 
@@ -197,6 +211,7 @@ Every generated file carries a managed block recording the spec fields it came f
 
 **Exit criteria.**
 
+- `bacio` is adopted through the skill, which is what proves `state-path`'s seed modes and a shared-by-default resource end to end rather than against a fixture.
 - A repo none of the three source implementations covers is adopted end to end, and its phase 7 proof passes.
 - Moving a band and re-running `doctor` reports the generated file and the field that moved.
 - Regenerating an edited skill preserves the edits outside the managed block.
@@ -209,11 +224,13 @@ Every generated file carries a managed block recording the spec fields it came f
 
 **Build.** The `machine` driver: Colima profiles on macOS, WSL2 distros on Windows, with the capacity guard refusing a new instance past the limit and naming what is running, background warm-up outside the request, `--keep-vm`, and the documented bypass supplied by the driver so the doc cannot drift. `cidr`, slicing a pool by slot, with `on_exhaustion` falling back loudly or failing. `cleanup`, the only verb that destroys a worktree unattended, gated on `gh` and applying the full `rm` checks even when the PR is merged. The scheduled sweep on the coordinator's own timer, more conservative than the interactive verb and logging every skip.
 
-Platforms: the Linux systemd user unit with a paired socket unit, and the lingering caveat. Windows named pipe, and the service-versus-logon-task decision. `taskkill` reporting which of the two paths it took, because graceful termination is unreliable there. The Windows ACL path refusing to write credentials where the ACL cannot be set.
+`mini-infra` is the proof, since it is the repo both drivers came from: VM per worktree, a `/22` per worktree out of `172.30.0.0/16`, and the address-pool exhaustion that makes the capacity guard necessary.
+
+Platforms: the Linux systemd user unit with a paired socket unit, and the lingering caveat. CI has been running the gates on Linux since phase 6 without a supervisor, so what lands here is the registration and the lifecycle, not the platform. Windows named pipe, and the service-versus-logon-task decision. `taskkill` reporting which of the two paths it took, because graceful termination is unreliable there. The Windows ACL path refusing to write credentials where the ACL cannot be set.
 
 **Exit criteria.**
 
-- A VM-per-worktree repo runs two worktrees concurrently on macOS, and the capacity guard refuses the fifth.
+- `mini-infra` runs two worktrees concurrently on macOS, and the capacity guard refuses the fifth.
 - `cleanup --dry-run` previews exactly what the real run does, and `cleanup` with `gh` unavailable cleans nothing and exits 4.
 - Phases 1 to 6 pass on Linux and on Windows.
 - On Windows, a state directory whose ACL cannot be set refuses to hold credentials rather than writing them world-readable.
@@ -237,7 +254,9 @@ Two live tests matter more than the unit coverage, and both come from `ARCHITECT
 
 **Gate 2.** A container client and a host client allocate against the same app concurrently, and the container's slot is unavailable to the host.
 
-Gate 1 is partly reachable at phase 5 and complete at phase 6. Gate 2 needs ephemeral clients and reclamation, so it lands at phase 6. Both run in CI from that point on.
+Gate 1 is partly reachable at phase 5 and complete at phase 6. Gate 2 needs ephemeral clients and reclamation, so it lands at phase 6.
+
+Both run in CI from phase 6, on a Linux runner with docker, against a coordinator started in the foreground rather than by a supervisor. Neither gate tests supervisor registration, which is a separate concern with its own criteria in phases 2 and 8. On macOS the same two gates run locally, under launchd, because a hosted macOS runner has no docker daemon and the gate that cannot run in CI still has to run somewhere.
 
 ## 7. Documentation maintained alongside
 
@@ -272,7 +291,7 @@ Nested `CLAUDE.md` files come later and only where a project has its own rules: 
 | R3 | Reclamation interval for an ephemeral client | Phase 6 |
 | R4 | Is refusing to run in an un-initialised worktree too blunt | Phase 5, from the first real use |
 | R5 | Band ledger shared across machines | Phase 3, decided by deferring |
-| R6 | Who reserves a production stack's ports when no repo has a spec | Phase 3 |
+| R6 | Who reserves a production stack's ports when no repo has a spec | Phase 3, answered: a person, once per machine, with `bands reserve --host` |
 | R7 | Generated reader as a published per-language library | Phase 5 |
 | R8 | The agent surface without hooks and skills | Phase 7 |
 | R9 | Does `start` need a `stop` | Phase 5 |
@@ -280,10 +299,30 @@ Nested `CLAUDE.md` files come later and only where a project has its own rules: 
 | R11 | Where the adoption decision record lives | Phase 7 |
 | R12 | Two users on one machine | Phase 9, documented rather than solved |
 
-## 9. Decisions needed before their phase starts
+## 9. Decisions
 
-- The Go module path, and whether the repository name is final. Phase 0.
-- Whether the three fixture specs are committed to this repository or kept alongside each source repo. Phase 0.
+### 9.1 Closed
+
+**The module path is `github.com/mrgeoffrich/worktree-manager`**, matching the remote, and the repository name is final. The binaries are `wt` and `wtd` whatever the repository ends up called.
+
+**The spec is `wt.yaml`, at the repository root, committed.** No input document fixed this, and unlike the descriptor it cannot be the repo's choice. `ARCHITECTURE.md` §9.4 makes the committed spec the adoption signal, and M5 §4.2 requires the generated reader to find it by walking up from cwd with nothing installed and no registry read. A name that varied per repo would have to be configured, and the only place to configure it is the file being looked for. So it is constant everywhere, and the resolution rule is fixed in phase 0: walk from cwd to the worktree root and stop.
+
+YAML, because M9 writes it and a person maintains it, which carries M2 §3's hazard with it. Every string scalar is quoted on emission, in the spec and in any YAML descriptor, so a worktree slugged `no` does not come back as `false`.
+
+**Phase 0 fixes `hooks` and `emit` in full.** `03-drivers.md` is authoritative for the schema and leaves both as `{}`, with the fields scattered through M4 §5 and M5 §2 and §3 as prose. Deferring them to phases 4 and 5 would amend the schema after the fixture specs, the driver contract and the onboarding primitives had all been built against it, which is the amendment `ARCHITECTURE.md` §14.2 says to make before implementation rather than during it. `emit` is also the only place the descriptor's filename and format can be declared, and nothing in the design currently places them. Field set now, semantics in phases 4 and 5.
+
+**The three fixture specs are written from the source repositories as they stand, and committed here** under `testdata/specs/`. Writing them from the design documents' recollection of those repos would prove the schema against the same memory that produced it. A spec is committed into a source repository only when that repository becomes a pilot: `deepseek-harness` at phase 5, `bacio` at phase 7, `mini-infra` at phase 8.
+
+**`spec explain` takes its bases from the command line**, as a repeatable `--base <name>=<port>`, because the ledger that holds them is coordinator state and does not exist until phase 3. The derivation stays a pure function of slot, spec and bases. The flag survives after phase 3 as the onboarding skill's what-if, with the coordinator supplying the bases when it is not given.
+
+**`state-path` moves into phase 4**, for the reason stated there: without a third driver, the contract's optional half and the reverse-order rollback are unexercised until phase 8.
+
+**`deepseek-harness` is the phase 5 pilot**, `bacio` the first repo through the skill at phase 7, `mini-infra` the phase 8 proof. This repository dogfoods from phase 5 and proves nothing on its own.
+
+**The gates run in CI on Linux from phase 6**, against a foreground coordinator, and on macOS locally under launchd. §6 carries the reasoning.
+
+### 9.2 Still open, with a phase
+
 - The reclamation interval's default. Phase 6, and R3 says the coordinator now has a real signal to set it from.
 - Whether the guard hook caches its classification per session, and what happens when a worktree is removed mid-session. Phase 7.
 - Whether the tripwire hook belongs in a repo's committed settings or the user's own. Phase 7 — committing it makes an opt-in decision for everyone who clones.

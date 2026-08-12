@@ -15,6 +15,8 @@ One Go module, two static binaries. `wtd`, a per-user resident coordinator holdi
 
 **Generated per repo.** The `worktree-create` skill, the `worktree-remove` skill, the `SessionStart` tripwire, the `PreToolUse` guard hook, the reference doc with its `CLAUDE.md` tripwire, and the descriptor reader.
 
+**Committed per repo.** One spec, `wt.yaml`, at the repository root. Its name is the same in every repo, because the generated reader has to find it with nothing installed.
+
 **Platforms.** macOS and Linux primary, Windows supported with the reaper's graceful step and the permission model both weaker. A container is Linux with reduced capabilities.
 
 ## Where repo-specific behaviour goes
@@ -44,8 +46,9 @@ Reopening one of these is a scope change, not a design discussion.
 | 7 | Slot 0 is the primary checkout, never allocated and never managed. |
 | 8 | Neither binary performs inference. All judgment lives in the onboarding skill. |
 | 9 | Hooks never run in the coordinator. |
+| 10 | The spec is `wt.yaml` at the repository root. The descriptor's name and format are the repo's choice; the spec's are not, because the reader must find it with nothing installed. |
 
-Deleted by revision 2 and not to return: `wt schedule install`, `WT_HOME` as a container mount point, the state directory bind-mounted into a container, the host docker socket mounted into a client.
+Deleted by revision 2 and not to return: `wt schedule install`, `WT_HOME` as a container mount point, the state directory bind-mounted into a container, the host docker socket mounted into a client. `WT_HOME` survives only as a store-path override the coordinator reads and no client does, which is what tests point at a temp directory.
 
 ## The drift test
 
@@ -53,6 +56,6 @@ Three questions. Any yes means the scope moved and this file needs changing firs
 
 1. Does the work add a verb, a driver, a generated artefact, or a platform?
 2. Does it put repo-specific knowledge anywhere other than a driver, a hook, or an emitter?
-3. Does it reopen one of the nine closed decisions?
+3. Does it reopen one of the ten closed decisions?
 
 These are not drift, and need no amendment here: a new spec field, a new `doctor` finding, a driver's implementation for a platform it already claims, a failure message, a test, or an answer to one of the twelve risks in `plan.md` §8.
