@@ -70,7 +70,25 @@ func runGuard(args []string, stdout, stderr io.Writer) int {
 		return ExitFailure
 	}
 
-	verdict, err := identity.Guard(absDir, req)
+	// WT_GUARD_CACHE (the phase-7 sixth variable) names the per-session
+	// classification cache the generated guard hook sets: the
+	// classification of one cwd cannot change while a session runs unless
+	// the worktree is removed underneath it, so a hit skips the git
+	// subprocesses; a worktree removed mid-session drops the cache and the
+	// call reclassifies, failing open with a one-time note (plan.md §9.2,
+	// 07-agent-surface.md §6.3). Absent, the guard stays uncached.
+	var verdict *identity.GuardVerdict
+	if cacheDir := os.Getenv("WT_GUARD_CACHE"); cacheDir != "" {
+		v, note, gerr := identity.GuardCached(absDir, cacheDir, req)
+		verdict = v
+		if gerr != nil {
+			err = gerr
+		} else if note != "" {
+			fmt.Fprintf(stderr, "note: %s\n", note)
+		}
+	} else {
+		verdict, err = identity.Guard(absDir, req)
+	}
 	if err != nil {
 		e := identityError(err)
 		WriteError(stderr, e)
