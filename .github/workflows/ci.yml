@@ -72,6 +72,31 @@ jobs:
         run: |
           CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build ./...
 
+  windows:
+    # Phase 8b: the parts a hosted windows-latest runner can actually
+    # prove (plan.md §5, phase 8's exit criteria) — the build, the unit
+    # and in-process layers, the named pipe carrying a full request
+    # (internal/platform/pipe_windows_test.go,
+    # internal/coord/pipe_integration_test.go), the store ACL set and its
+    # refusal path (private_dir_windows_test.go), the task XML shape and
+    # status parsing (task_windows_test.go), and long-path and
+    # mapped-drive path realisation (realpath_windows_test.go). The
+    # interactive-desktop surfaces — registering the logon task against a
+    # real Task Scheduler, taskkill's escalation against a real desktop
+    # process, Docker Desktop pipe and WSL2 reachability — are not
+    # provable on a runner and are reported not_run.
+    name: windows unit and in-process tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+      - name: build
+        run: go build ./...
+      - name: go test
+        run: go test ./...
+
   acceptance:
     name: acceptance gates (docker)
     runs-on: ubuntu-latest

@@ -27,15 +27,25 @@ internal/spec the wt.yaml schema: parser, validator, template evaluator,
 internal/identity  M1: classification, root resolution, containment,
               slug validation, descriptor location, the guard engine,
               and the nested-worktree refusal
-internal/platform  M8: path realisation, the mount's case-sensitivity
+internal/platform  M8: path realisation (on Windows via
+              GetFinalPathNameByHandleW, which also canonicalises long
+              paths and mapped drives), the mount's case-sensitivity
               probe, the port-probe socket options (SO_REUSEADDR set on
               unix, unset on Windows — the one GOOS branch callers never
-              see), the socket path, peer credentials, the private-dir
-              permission model, the atomic-write helper, the supervisor
-              (launchd) seam, listener discovery (lsof on macOS,
+              see), the socket path, the named-pipe transport on Windows
+              (owner-only ACL), peer credentials (the pipe's ACL is the
+              whole of host identity on Windows), the private-dir
+              permission model (0700 on unix; the current-user ACL with
+              the refusal to hold credentials where it cannot be set on
+              Windows), the atomic-write helper (directory-fsync step
+              unix-only), the supervisor seam (launchd on macOS, the
+              systemd user unit with its paired .socket unit and
+              LISTEN_FDS socket activation on Linux, the logon scheduled
+              task on Windows), listener discovery (lsof on macOS,
               /proc/net on Linux, netstat+tasklist on Windows) and
-              signalling (TERM/KILL by pid, process groups); the only
-              package permitted to branch on GOOS
+              signalling (TERM/KILL by pid, process groups; on Windows
+              taskkill without /F then /F, the escalation reported); the
+              only package permitted to branch on GOOS
 internal/descriptor  M5: the per-worktree allocation record, its reader
               (yaml and json), its atomic writer, the shared-block and
               isolation-state builders, and the info/exclude ignore rule
@@ -333,15 +343,20 @@ Import rules, fixed for the whole plan:
   the coordinator stops and never invents a location. `WT_HOME` is read by
   `wtd` alone, never by a client.
 - Directory `0700`, files `0600`, created by `platform.EnsurePrivateDir`
-  (the permission model is a platform surface; Windows refuses to write
-  credentials where the equivalent ACL cannot be set — 08-platform.md
-  §4.6, compiled but unverified in this phase).
+  (the permission model is a platform surface). On Windows the
+  equivalent is an ACL granting the current user and denying everyone
+  else, set and read-back-verified at open; where that cannot be done
+  the coordinator refuses to write credentials rather than writing them
+  world-readable — 08-platform.md §4.6, the refusal made real in phase 8b.
 - The one write path is atomic: temp file in the same directory, fsync
-  the file, rename, fsync the directory — same directory because a rename
-  across filesystems is not atomic. The sequence lives in
-  `internal/platform` since phase 5 (the client-side emitters owe it and
-  never import the store); `store.AtomicWrite` delegates to it, and the
-  registry, the ledger and clients.json all go through it.
+  the file, rename, fsync the directory on unix — same directory because
+  a rename across filesystems is not atomic. On Windows the
+  directory-fsync step is a stated no-op (opening a directory handle
+  fails there; NTFS journaling plus MoveFileEx provides the durability).
+  The sequence lives in `internal/platform` since phase 5 (the
+  client-side emitters owe it and never import the store);
+  `store.AtomicWrite` delegates to it, and the registry, the ledger and
+  clients.json all go through it.
 - Every store file carries a `schema_version` field; a file written by a
   newer schema is refused on read naming the upgrade, never written back.
   The registry adds a second rail: `ReadRegistryList` decodes a newer file
@@ -411,9 +426,17 @@ stays atomic under a single rename. The entry's fields are
 - Identity is enforced, never claimed: a host client's identity is the
   kernel's uid from peer credentials (`platform.PeerUID`: SO_PEERCRED on
   Linux, LOCAL_PEERCRED on macOS, both via the standard library's
-  syscall), a named container's is its token, an ephemeral one's is a
-  session id the coordinator issues. Every connection is observed in
-  `clients.json`, so last-seen is measured rather than written.
+  syscall); on Windows the named pipe's owner-only ACL is the identity —
+  every connection the ACL admitted is the owning user
+  (`WindowsPipeOwnerUID`), stated rather than assumed. A named
+  container's identity is its token, an ephemeral one's is a session id
+  the coordinator issues. Every connection is observed in `clients.json`,
+  so last-seen is measured rather than written.
+- `Server.Serve` opens the platform listener (unix socket, or the named
+  pipe on Windows) and `ServeListener` serves an already-created one —
+  the descriptor systemd hands over under socket activation on Linux
+  (`wtd --activate`). Graceful shutdown: context cancellation, in-flight
+  requests allowed to finish.
 - One writer serialises here. There is no lock file, no generation
   counter, no view identity and no view scoping — concurrent requests
   serialise in this one process, and the handler's mutex makes that true
@@ -679,15 +702,32 @@ The six rules of `docs/ARCHITECTURE.md` §8.6, stated as invariants:
   fix for each broken one. The state machine is a pure function of two
   platform observations (registration file present, supervisor says
   running) and the dial outcome, so the tests drive all four states on
-  any platform; the launchd-backed observations exist on macOS.
+  any platform. The observations are per-platform: launchd on macOS,
+  `systemctl --user is-active` of the socket unit on Linux, `schtasks
+  /Query` on Windows. On Linux the result also carries the lingering
+  caveat (a systemd user unit stops at logout unless lingering is
+  enabled; the note names `loginctl enable-linger <user>`).
 - `daemon install` registers the coordinator with the platform's
-  supervisor and starts it: a launchd LaunchAgent at
-  `~/Library/LaunchAgents/com.mrgeoffrich.wtd.plist` (RunAtLoad and
-  KeepAlive — not socket activation, which needs the C-only
-  `launch_activate_socket` API this CGO_ENABLED=0 project cannot reach).
+  supervisor and starts it, one per platform (phase 8b):
+  - macOS: a launchd LaunchAgent at
+    `~/Library/LaunchAgents/com.mrgeoffrich.wtd.plist` (RunAtLoad and
+    KeepAlive — not socket activation, which needs the C-only
+    `launch_activate_socket` API this CGO_ENABLED=0 project cannot reach).
+  - Linux: a systemd user unit with its paired `.socket` unit under
+    `~/.config/systemd/user` — and socket activation IS used there,
+    because systemd's LISTEN_FDS/LISTEN_PID handoff is pure-Go readable:
+    the socket unit owns the listener (SocketMode 0700), wtd consumes
+    the descriptor with `--activate`, and the socket survives coordinator
+    crashes so clients queue while systemd restarts the service.
+  - Windows: a logon scheduled task (the R2 answer) registered from a
+    UTF-16 task XML under `%LOCALAPPDATA%\wt` via `schtasks /Create` and
+    started with `schtasks /Run` — the user's interactive session, no
+    elevation, RestartOnFailure as the partial replacement for the SCM's
+    restart handling; the service-under-the-user-account alternative
+    would cost elevation, session-0 reachability workarounds and stored
+    credentials.
   `--prefix` directs the registration at a temporary directory and loads
-  nothing, so no test ever touches the machine's launchd; Linux and
-  Windows refuse a real registration with exit 4 (phase 8 owns both).
+  nothing, so no test ever touches the machine's supervisor.
 - The five environment variables read anywhere are `WT_SOCKET`,
   `WT_HOME` (wtd alone), `WT_STANDALONE`, `WT_CLIENT_EPHEMERAL` (the
   ephemeral declaration, `=1`) and `WT_CLIENT_TOKEN` (the named-container

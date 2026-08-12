@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -60,7 +61,9 @@ func TestOpenCreatesPrivateDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o700 {
+	// Mode bits are the permission model on unix; on Windows the ACL is
+	// (asserted in internal/platform's TestEnsurePrivateDirWindowsACL).
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o700 {
 		t.Errorf("store dir mode = %v, want 0700", fi.Mode().Perm())
 	}
 }
@@ -109,7 +112,9 @@ func TestAtomicWriteRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o600 {
+	// Mode bits are the permission model on unix; on Windows the ACL on
+	// the store root is (08-platform.md §4.6).
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Errorf("store file mode = %v, want 0600", fi.Mode().Perm())
 	}
 	// Overwrite: the rename path replaces the existing file atomically.
