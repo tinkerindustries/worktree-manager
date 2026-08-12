@@ -37,6 +37,20 @@ usage:
   wt bands reserve --base <n>=<p>... register this repo's port band from its
       [--json]                       committed spec (the walk-up wt.yaml);
                                      one base per port resource
+  wt init --description <text>      attach to the current worktree:
+      [--slug <s>] [--param <n>=<v>] allocate, materialise, emit the
+      [--json] [--dry-run] [--cwd]   descriptor and .env, run the hooks,
+                                     activate; idempotent, and the repair
+                                     path for a worktree that drifted
+  wt start [--param <n>=<v>]        run the hooks that bring the stack up:
+      [--json] [--dry-run] [--cwd]   start, seed, health — no allocation,
+                                     no emission, no coordinator
+  wt rm --slug <s> [--json]         safety checks (dirty tree, unpushed
+      [--dry-run] [--keep-processes] commits, open PR), then reap, tear
+      [--purge <flag>]... [--cwd]    down and deallocate in the
+                                     coordinator, then git worktree
+                                     remove; works with the directory
+                                     already gone
   wt bands reserve --host            reserve host-global ports no app may
       --port <p>... --note <text>    allocate from; the note names what
       [--json]                       holds the range
@@ -62,6 +76,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return ExitOK
 	case "spec":
 		return runSpec(args[1:], stdout, stderr)
+	case "init":
+		return runInit(args[1:], stdout, stderr)
+	case "start":
+		return runStart(args[1:], stdout, stderr)
+	case "rm":
+		return runRm(args[1:], stdout, stderr)
 	case "guard":
 		return runGuard(args[1:], stdout, stderr)
 	case "show":

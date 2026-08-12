@@ -23,6 +23,7 @@ import (
 
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
 	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
+	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
 
@@ -78,6 +79,19 @@ type Handler struct {
 	// Docker is the docker seam the teardown path runs against. Nil means
 	// the real CLI runner (driver.NewDocker) is used; tests install fakes.
 	Docker driver.Docker
+
+	// ReapBinaries is the reaper's allowlist seam: the binaries the spec
+	// names, which are the only processes the reaper may signal
+	// (04-lifecycle.md §6). The spec schema has no field that names
+	// binaries in this phase — reported to the plan rather than added —
+	// so the default is empty and the reaper reports every holder without
+	// signalling any. A test installs a fake to drive the signalling path.
+	ReapBinaries func(sp *spec.Spec) []string
+
+	// InContainer is the reaper's container-detection seam. The default is
+	// the platform probe; a test running inside a container installs a
+	// fake so the reap's decision logic is testable on both sides.
+	InContainer func() bool
 
 	st  *store.Store
 	log *slog.Logger
@@ -156,10 +170,14 @@ func (h *Handler) Handle(ctx context.Context, s *Session, req *protocol.Request)
 		return &protocol.Response{Result: json.RawMessage(`{"ok":true}`)}
 	case verbAllocate:
 		return h.allocate(s, req)
+	case verbMaterialise:
+		return h.materialise(s, req)
 	case verbActivate:
 		return h.activate(s, req)
 	case verbRelease:
 		return h.release(s, req)
+	case verbRm:
+		return h.rm(s, req)
 	case verbBandsReserve:
 		return h.reserveBand(s, req)
 	case verbBandsList:
