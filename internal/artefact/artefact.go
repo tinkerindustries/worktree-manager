@@ -391,8 +391,3 @@ func writeFile(path string, content []byte, mode os.FileMode) error {
 	}
 	return os.WriteFile(path, content, perm)
 }
-
-// sortFiles orders the generated files for listing and tests.
-func sortFiles(files []File) {
-	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
-}
