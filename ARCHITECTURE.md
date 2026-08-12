@@ -21,7 +21,9 @@ internal/spec the wt.yaml schema: parser, validator, template evaluator,
 internal/identity  M1: classification, root resolution, containment,
               slug validation, descriptor location, the guard engine
 internal/platform  M8: path realisation, the mount's case-sensitivity
-              probe, the socket path, peer credentials, the private-dir
+              probe, the port-probe socket options (SO_REUSEADDR set on
+              unix, unset on Windows — the one GOOS branch callers never
+              see), the socket path, peer credentials, the private-dir
               permission model, the supervisor (launchd) seam; the only
               package permitted to branch on GOOS
 internal/descriptor  M5 read side: the per-worktree allocation record and
@@ -34,6 +36,10 @@ internal/store  the coordinator's state directory: root resolution,
               registry.json and bands.json
 internal/coord  the coordinator's request core, socket server and the
               in-process harness; one writer serialises here
+internal/driver  M3: the six-operation driver contract, the port,
+              namespace and state-path drivers, the docker CLI seam, and
+              the sequencing (apply in dependency order, teardown in
+              reverse, continuing past failures)
 ```
 
 Import rules, fixed for the whole plan:
@@ -48,12 +54,14 @@ Import rules, fixed for the whole plan:
   runs `go list -deps` over the real dependency graph, so a transitive
   import fails the suite too.
 - `internal/coord` → `internal/store`, `internal/protocol`,
-  `internal/platform`. Coordinator-only.
+  `internal/platform`, `internal/driver`. Coordinator-only.
 - `internal/store` → `internal/platform` (the permission model is a
   platform surface). Coordinator-only.
 - `internal/protocol` → standard library plus `internal/spec` (the phase-3
   verb payloads carry the parsed spec, per ARCHITECTURE.md §8.1); both
   binaries link it.
+- `internal/driver` → `internal/spec`, `internal/platform`,
+  `internal/identity`. Coordinator-only: `cmd/wt` may never import it.
 - `internal/identity` → `internal/spec`, `internal/platform`,
   `internal/descriptor`. It contains no platform branch of its own.
 - `internal/descriptor` → `internal/spec` (the `spec.Resolved` shape of its
@@ -226,7 +234,13 @@ stays atomic under a single rename. The entry's fields are
   spec's `reserved` block (a property of the repository) and the ledger's
   host-global reservations (a property of the machine). A host reservation
   carries a required note naming what holds the range — nothing infers a
-  production stack, a person declares it once per machine.
+  production stack, a person declares it once per machine. Since phase 4 a
+  reservation may also carry compose project names (`wt bands reserve
+  --host --name <project>...`): a resolved namespace matching one is
+  refused rather than torn down, naming the reservation, because
+  label-based teardown is the one operation that could otherwise reach a
+  co-resident stack the tool knows nothing else about (03-drivers.md §4.2,
+  B8.2).
 - This phase's store files are `clients.json`, `registry.json` and
   `bands.json`, each carrying the `schema_version` envelope.
 
@@ -268,9 +282,14 @@ stays atomic under a single rename. The entry's fields are
   entry belongs to another client.
 - The probe is the phase-4 seam: `Handler.Probe` reports `ProbeFree`,
   `ProbeHeld` or `ProbeUnavailable` for a candidate slot's derived
-  resources. This phase ships the no-probe probe (every slot free) —
-  explicitly, not pretending a probe ran — and the phase-4 port driver
-  replaces it. Held skips the slot; unavailable does not block allocation.
+  resources, and `InstallDrivers` builds it from the driver registry:
+  only the drivers that gate allocation are consulted (port, and cidr
+  from phase 8), a held port skips the slot — never remediated, the
+  allocator says which slot it skipped — and unavailable does not block
+  allocation, leaving a `probe_note` on the allocate result stating that
+  the registry was the only check performed (03-drivers.md §4.1). A
+  namespace hit is not consulted: it means a previous teardown was
+  incomplete, not that the slot is taken.
 - On exhaustion the message names the range, `wt cleanup`, and how many of
   the occupied slots the caller cannot free (the ones owned by other
   clients) — otherwise the remedy it names would appear to do nothing.
@@ -291,10 +310,63 @@ stays atomic under a single rename. The entry's fields are
   the coordinator's own timer.
 - `active` — fully materialised.
 - `tearing-down` — a resting state: teardown left resources behind, so the
-  slot stays held and the entry keeps a note listing what survived
-  (phase 4's teardown writes that note). `release` drops the entry
-  entirely — the rollback path a client drives when init fails before
-  activation.
+  slot stays held and the entry keeps a `teardown_note` listing exactly
+  what survived. A re-run that frees everything drops the entry; `release`
+  drops it directly — the rollback path a client drives when init fails
+  before activation.
+
+## The drivers (`internal/driver`)
+
+The six-operation contract of `docs/design/03-drivers.md` §2, in code:
+`derive`, `probe`, `verify` and `blastRadius` are required; `apply` and
+`teardown` are optional, independently of each other. The registry maps a
+resource type to its driver, and the conformance suite runs one table of
+checks over every driver, so phase 8's `cidr` and `machine` join as rows
+rather than as new test files (plan.md §4).
+
+| Driver | Apply | Teardown | What it does |
+|---|---|---|---|
+| `port` | — | — | derives from the band base via `spec.Resolve` (stride and group, the two forms of `docs/ARCHITECTURE.md` §8.4); probes by binding on loopback with `platform.ProbeBind`, which sets `SO_REUSEADDR` on unix and leaves it unset on Windows; verifies bound/free (naming the holder is phase-5 reaper work); never remediates a held port — the allocator skips the slot and says which one |
+| `namespace` | — | yes | derives a project name; probes by label (a hit means a previous teardown was incomplete, never that the slot is taken — so it does not gate allocation); tears down by label, containers then networks then volumes, for the project and every dependent project the spec declares, dependents first, continuing past failures; verifies a pinned `name:` in the governed compose files — the finding that catches the silent attach |
+| `state-path` | yes | yes (purge only) | applies by creating the directory and seeding per mode (seeded/empty/shared) with a marker recording when seeding occurred; tears down only when the purge flag is given, with the structural refusal — a purge whose resolved path is the shared source or an ancestor of it is refused, naming the path, checked with `identity.Contains` on the symlink-realised path; verifies exists/writable/seeded-at |
+
+Two rules bind every operation, both structural:
+
+- **A driver that does not create must discover.** The coordinator never
+  creates a container, so the namespace driver holds no handle from
+  creation and finds the project's objects again by asking the daemon for
+  everything carrying `com.docker.compose.project=<name>`. The rule
+  generalises to the whole contract (docs/ARCHITECTURE.md §7.1).
+- **A teardown handle comes from the registry, never from the working
+  tree.** People run `git worktree remove` by hand first, so every handle
+  a driver needs is derivable from slot and spec alone, which is what
+  makes the registry's denormalised `resources` field sufficient
+  (03-drivers.md §2.2).
+
+The docker seam shells out to the `docker` binary — no client library —
+honouring `DOCKER_HOST` and friends, and reports unavailable when the
+binary is absent or the daemon is unreachable. `unavailable` is a third
+result, distinct from success and failure, and the call sites treat it
+differently: an unavailable probe does not block allocation (the allocate
+result carries `probe_note` stating that the registry was the only check),
+whereas an unavailable teardown does block freeing the slot (exit 4).
+
+Sequencing (03-drivers.md §5): apply runs in dependency order derived from
+the template references (`Registry.ApplyOrder`; the phase-8 "machine first
+among its dependents" rule slots into the same keep predicate), and a
+failure part-way through tears the applied resources down in reverse —
+the rollback phase 5's `init` leans on. Teardown runs in reverse order,
+continuing past a failure and collecting what survived.
+
+The coordinator's teardown core (`Handler.Teardown`) drives the entry
+lifecycle: nothing survives → the entry drops and the slot frees; anything
+survives → `tearing-down` with a `teardown_note` listing exactly what
+survived, and the slot stays held until a re-run frees everything. The
+spec is required (the dependent projects and the purge refusal are computed
+from it); the host-global reservations come from the ledger at call time,
+so a namespace resolving to a reserved name is refused rather than torn
+down, naming the reservation (exit 3). Phase 5's `rm` sequences this core
+into the release verb.
 
 ## Authority rules, as invariants this code holds
 

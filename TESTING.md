@@ -13,10 +13,20 @@ Lives in `_test.go` files beside the code: `internal/spec/*_test.go` and
 `cli.Run`, which takes args and the two streams and returns the exit code,
 so the whole command surface is exercised in-process.
 
+The driver contract runs the same conformance suite over every driver —
+`internal/driver/conformance_test.go`, one table of checks per driver
+(`TestDriverConformance`), so phase 8's `cidr` and `machine` join as rows
+of the table, not as new test files (plan.md §4). The drivers' behaviour
+tests live beside them: `internal/driver/port_test.go`,
+`namespace_test.go` (against a fake docker seam), `statepath_test.go`,
+and `order_test.go` (the sequencing: apply in dependency order, teardown
+in reverse, the reverse-order rollback).
+
 Run one test:
 
 ```sh
 go test ./internal/spec/ -run TestExplainTablesDisjoint -v
+go test ./internal/driver/ -run TestDriverConformance -v
 ```
 
 ## Layer 2 — real-repo fixtures
@@ -114,6 +124,14 @@ migration against it. It lives in `internal/coord`:
   does not block), rule 5's idempotence (`TestAllocateIsIdempotentFor-
   ExistingSlug`), the ledger verbs (`TestBandReserveAndList`,
   `TestBandReserveValidations`), path visibility and secrets.
+- The coordinator's phase-4 tests in `internal/coord/p4_test.go`, one
+  named per exit criterion: `TestCoordTeardownLeavesTearingDownAndHoldsTheSlot`
+  (criterion 3: survivors move the entry to `tearing-down` and the slot is
+  not freed), `TestCoordTeardownUnavailableDoesNotFreeTheSlot`,
+  `TestCoordTeardownReservedNamespaceRefused` (criterion 4: a namespace
+  resolving to a reserved name is refused, naming the reservation),
+  `TestCoordTeardownCleanDropsTheEntry` and
+  `TestCoordTeardownRequiresSpecAndOwnership`.
 - The store's own tests in `internal/store/store_test.go` (root
   resolution, 0700/0600, atomic writes, the schema_version refusal) and
   `internal/store/registry_test.go` (registry and bands round trips, the
@@ -152,10 +170,49 @@ This layer needs nothing installed.
 
 ## Layer 4 — live acceptance
 
-The two gates in plan.md §6, run against a real docker daemon and a
-coordinator started in the foreground: `go test -tags acceptance ./...`.
-Tests carry `//go:build acceptance` so plain `go test ./...` stays green on
-a machine with neither docker nor `gh`. CI runs this layer from phase 6.
+The exit criteria that need a real docker daemon, run with
+`go test -tags acceptance ./...`. Tests carry `//go:build acceptance` so
+plain `go test ./...` stays green on a machine with neither docker nor
+`gh`. CI runs this layer from phase 6; a hosted macOS runner has no docker
+daemon, so it also runs locally on macOS.
+
+What the phase-4 tag covers, with the exit criterion each test proves and
+its untagged twin:
+
+| Test | Proves | Untagged twin |
+|---|---|---|
+| `TestAcceptanceTeardownByLabelWithWorktreeDeleted` (`internal/driver`) | criterion 1: teardown succeeds with the worktree directory deleted first | `TestNamespaceTeardownHandleFromRegistry` |
+| `TestAcceptanceVerifyPinnedNameAgainstLiveStack` (`internal/driver`) | criterion 2: verify reports a compose file that pins `name:`, against a real silent attach | `TestNamespaceVerifyPinnedName` |
+| `TestAcceptanceTeardownUnavailableMovesEntryToTearingDown` (`internal/coord`) | criterion 3: a teardown that leaves resources behind moves the entry to `tearing-down` and does not free the slot (here: the daemon genuinely unreachable via `DOCKER_HOST`) | `TestCoordTeardownLeavesTearingDownAndHoldsTheSlot`, `TestCoordTeardownUnavailableDoesNotFreeTheSlot` |
+| `TestAcceptanceCoordinatorProbeSeesPublishedPort` (`internal/coord`) | criterion 5: the probe run from the coordinator sees a port published by a container | `TestPortProbeFreeAndHeld` |
+| `TestAcceptanceTeardownContinuesPastFailure` (`internal/driver`) | criterion 6: teardown continues past a failure and reports everything that survived | `TestNamespaceTeardownContinuesPastFailure`, `TestTeardownAllReverseOrderContinuingPastFailure` |
+
+The tagged probe tests publish a port into the coordinator's own network
+namespace (`--network container:<id>`): the test process runs inside a
+container whose loopback is not the daemon's publishing loopback, so a
+host-published port is invisible from here — the documented limitation of
+03-drivers.md §4.1 — while a port a container publishes into the
+coordinator's namespace is exactly what revision 2 says the probe sees
+(ARCHITECTURE.md §8.4).
+
+Every object the tagged tests create carries a project label unique to the
+run (`wtp4-<random>`) and is removed in `t.Cleanup`; a failed test still
+leaves nothing behind.
+
+Run the layer:
+
+```sh
+go test -tags acceptance ./...
+```
+
+This layer needs docker. Criterion 4's refusal and criterion 7's purge
+refusal need no docker and run untagged:
+`TestNamespaceTeardownReservedNameRefused`,
+`TestCoordTeardownReservedNamespaceRefused`,
+`TestStatePathPurgeRefusalNamesThePath` (including through a symlink),
+and criterion 8's ordering and rollback:
+`TestDependencyOrderPinsApplyAndTeardownOrder`,
+`TestApplyAllOrderAndRollback`.
 
 ## Which layers need what
 
@@ -164,12 +221,12 @@ a machine with neither docker nor `gh`. CI runs this layer from phase 6.
 | Pure unit | nothing |
 | Real-repo fixtures | git, for the real repositories built in `t.TempDir()` |
 | In-process coordinator | nothing |
-| Live acceptance | docker and a coordinator process (phase 5), `gh` for the gates that check PRs (phase 5/6) |
+| Live acceptance | docker, and a coordinator process for the gates (phase 5), `gh` for the gates that check PRs (phase 5/6) |
 
 ## Command surface
 
 ```sh
-go test ./...                                   # layers 1 and 2, no docker, no gh
+go test ./...                                   # layers 1–3, no docker, no gh
 go test -tags acceptance ./...                  # layer 4 (from phase 6 in CI)
 go test ./internal/spec/ -run <TestName> -v     # one test
 ```
