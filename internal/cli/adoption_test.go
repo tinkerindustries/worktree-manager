@@ -47,10 +47,13 @@ import (
 )
 
 // adoptionBand is the base the tests reserve and the artefacts record.
-// The fixture's canonical 8200 is not usable in every sandbox (this
-// container's harness holds 8201-8208), so the tests choose a base from a
-// range that is free here and reserve it — the skill's phase 3 does the
-// same: the developer picks the base, not the tool.
+// The fixture's canonical 8200 is not usable in every sandbox — a machine
+// running the tests can hold other listeners (this sandbox runs its own
+// service on 8080, and an interrupted run can leak a worktree's server on
+// the low ranges) — so the tests choose a base from a range that is free
+// and reserve it, exactly as the skill's phase 3 does: the developer
+// picks the base, not the tool. The assertions therefore pin the
+// base-plus-slot derivation, never a particular slot number.
 const adoptionBand = 10000
 
 // adoptionEnv is the whole stage: the coordinator, the repository copy,

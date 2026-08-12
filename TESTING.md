@@ -178,9 +178,11 @@ go test ./internal/cli/ -run TestAcceptancePlainAppAdoptedThroughTheSkill -v
 The adoption layer needs git and a Go toolchain (the build hook compiles
 the fixture's server). The band the adoption tests use is 10000, chosen
 from a range free on the machine the tests run on: the fixture's
-canonical 8200 collides with this container's own listeners, and the
-held-port skipping is the allocator's designed behaviour — the tests
-assert the base-plus-slot derivation, never a particular slot number.
+canonical 8200 can collide with whatever else listens on the machine
+(this sandbox runs its own service on 8080, and an interrupted run can
+leak a worktree's server), and the held-port skipping is the allocator's
+designed behaviour — the tests assert the base-plus-slot derivation,
+never a particular slot number.
 
 ## Layer 2 — real-repo fixtures
 
