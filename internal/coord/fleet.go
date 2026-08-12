@@ -511,6 +511,12 @@ func (h *Handler) doctorBands(bands store.BandsFile, findings *[]protocol.Doctor
 			if a.hi < b.lo || b.hi < a.lo {
 				continue
 			}
+			if a.app == b.app {
+				// Two port resources of one app share the band by design —
+				// the group form derives every resource of the group from
+				// the same base. The finding is the cross-app collision.
+				continue
+			}
 			*findings = append(*findings, protocol.DoctorFinding{
 				Level: "error",
 				Message: fmt.Sprintf("the port bands of app %q (%s: %d..%d) and app %q (%s: %d..%d) overlap",
