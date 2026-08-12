@@ -505,13 +505,17 @@ func (h *Handler) checkOwner(s *Session, e *store.Entry) *protocol.Error {
 			}
 		}
 	}
+	// The owner's key is redacted for the non-owner reading the refusal: a
+	// named client's key is its token, and the refusal must not hand it to
+	// whoever triggered it (the security pass, phase 9).
+	owner := redactKey(e.OwnerKind, e.Owner)
 	return &protocol.Error{
 		Code: 3,
 		Msg: fmt.Sprintf("entry %q is owned by %s client %s, last seen %s; "+
 			"only the owning client may mutate it (ARCHITECTURE.md §4.3)",
-			e.Slug, e.OwnerKind, e.Owner, lastSeen),
+			e.Slug, e.OwnerKind, owner, lastSeen),
 		Remedy: fmt.Sprintf("run the operation as the owning %s client %s, or ask its owner to run it",
-			e.OwnerKind, e.Owner),
+			e.OwnerKind, owner),
 	}
 }
 

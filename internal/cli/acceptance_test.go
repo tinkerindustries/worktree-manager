@@ -815,8 +815,19 @@ wt rm --cwd "$REPO" --slug wt-c
 	for _, e := range listed.Entries {
 		if e.Slot == containerInit.Slot && e.App == gateApp {
 			found = true
-			if e.OwnerKind != "named" || e.Owner != token {
-				t.Errorf("container entry owner = %s/%s, want named/%s", e.OwnerKind, e.Owner, token)
+			// The entry belongs to the container's named identity. The host
+			// client reads the entry as foreign, so the owner key is the
+			// redacted form — never the raw token, which would hand the
+			// identity over (phase 9's security pass). The kind and the
+			// foreign marker are the identity's public face.
+			if e.OwnerKind != "named" || e.Owner == token {
+				t.Errorf("container entry owner = %s/%s, want the named kind with the token redacted", e.OwnerKind, e.Owner)
+			}
+			if len(e.Owner) == 0 || len(e.Owner) >= len(token) {
+				t.Errorf("container entry owner = %q, want a short redaction", e.Owner)
+			}
+			if !hasFlagT(e.Flags, "foreign") {
+				t.Errorf("the container's entry must be marked foreign to the host: %v", e.Flags)
 			}
 		}
 	}

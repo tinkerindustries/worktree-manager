@@ -166,3 +166,36 @@ func TestReadMessageRejectsGarbage(t *testing.T) {
 		t.Error("garbage accepted as a message")
 	}
 }
+
+// TestReadMessageCapHoldsWhileReading is the security pass's oversized-
+// message rail: a peer streaming bytes without a newline must not grow the
+// coordinator's memory past the cap. The read is bounded as it accumulates
+// (ReadSlice loops, capped at MaxMessageBytes), so an unbounded stream
+// fails fast with the cap error instead of buffering forever.
+func TestReadMessageCapHoldsWhileReading(t *testing.T) {
+	// A stream with no newline at all, far beyond the cap: the old code
+	// buffered it all before checking; the fixed code refuses at the cap.
+	r := bufio.NewReader(strings.NewReader(strings.Repeat("x", MaxMessageBytes+1)))
+	var v Hello
+	err := ReadMessage(r, &v)
+	if err == nil {
+		t.Fatal("an oversized message was accepted")
+	}
+	if !strings.Contains(err.Error(), "cap") {
+		t.Errorf("the refusal must name the cap: %v", err)
+	}
+
+	// A message just under the cap (the terminating newline counts toward
+	// the byte total, as it always has) still decodes — and fails on JSON,
+	// not on size.
+	r = bufio.NewReader(strings.NewReader(strings.Repeat(" ", MaxMessageBytes-1) + "\n"))
+	if err := ReadMessage(r, &v); err == nil || strings.Contains(err.Error(), "cap") {
+		t.Errorf("an at-cap message must fail on JSON, not on the size cap: %v", err)
+	}
+
+	// A newline inside a legit message passes the size gate and decodes.
+	r = bufio.NewReader(strings.NewReader(`{"kind":"host","min_version":1,"max_version":1}` + "\n"))
+	if err := ReadMessage(r, &v); err != nil {
+		t.Fatalf("a valid message refused: %v", err)
+	}
+}

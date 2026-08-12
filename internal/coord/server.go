@@ -263,8 +263,11 @@ func (s *Server) serveConn(ctx context.Context, conn net.Conn, tcp bool) {
 		s.log.Info("connection refused", "kind", hello.Kind, "err", reply.Error.Msg)
 		return
 	}
+	// The identity key is logged redacted: for a named client it is the
+	// token and for an ephemeral one a session id — a log line must not
+	// carry a credential (the security pass, phase 9).
 	s.log.Debug("connection established",
-		"kind", sess.Identity.Kind, "identity", sess.Identity.Key, "protocol", sess.Version)
+		"kind", sess.Identity.Kind, "identity", redactKey(sess.Identity.Kind, sess.Identity.Key), "protocol", sess.Version)
 
 	for {
 		var req protocol.Request

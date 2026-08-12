@@ -18,10 +18,24 @@ import (
 // (02-coordination.md §6.2). A host reservation requires the note naming
 // what holds the range — an unlabelled reservation is one nobody can later
 // judge (plan.md §8, R6).
+//
+// The verb is host-client-only: it changes machine-global policy, and the
+// grant a container client receives is "the ability to create entries and
+// mutate what it created" (ARCHITECTURE.md §12.2) — the ledger is neither.
+// The security pass (phase 9) makes that boundary real: an ephemeral or
+// named container cannot move the machine's port space or declare a
+// co-resident production stack.
 func (h *Handler) reserveBand(s *Session, req *protocol.Request) *protocol.Response {
 	var args protocol.ReserveBandArgs
 	if err := json.Unmarshal(req.Args, &args); err != nil {
 		return respErr(1, fmt.Sprintf("malformed bands.reserve request: %v", err), "upgrade wt: this coordinator expects bases or host ports and a note")
+	}
+	if s.Identity.Kind != protocol.KindHost {
+		return &protocol.Response{Error: &protocol.Error{
+			Code:   3,
+			Msg:    fmt.Sprintf("bands.reserve changes machine-global policy (the port ledger) and only a host client may do that; this connection is a %s client, whose grant is limited to creating entries and mutating what it created (ARCHITECTURE.md §12.2)", s.Identity.Kind),
+			Remedy: "run 'wt bands reserve' on the host, as the owning user",
+		}}
 	}
 
 	h.mu.Lock()

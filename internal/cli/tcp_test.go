@@ -44,8 +44,9 @@ func buildWtd(t *testing.T) string {
 
 // startWtdTCP starts the real coordinator with the TCP surface enabled and
 // returns the TCP address the client dials (parsed from the coordinator's
-// own log, so the test never races a guessed port) and the stop function.
-func startWtdTCP(t *testing.T) (string, func()) {
+// own log, so the test never races a guessed port), the unix socket path,
+// and the stop function.
+func startWtdTCP(t *testing.T) (tcpAddr, sockPath string, stop func()) {
 	t.Helper()
 	bin := buildWtd(t)
 	sock := shortSock(t, "tcp")
@@ -58,7 +59,7 @@ func startWtdTCP(t *testing.T) (string, func()) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("starting wtd: %v", err)
 	}
-	stop := func() {
+	stop = func() {
 		cmd.Process.Kill()
 		cmd.Wait()
 	}
@@ -91,7 +92,7 @@ func startWtdTCP(t *testing.T) (string, func()) {
 	if addr == "" {
 		t.Fatalf("wtd never logged its TCP address; log:\n%s", logBuf.String())
 	}
-	return "tcp://" + addr, stop
+	return "tcp://" + addr, sock, stop
 }
 
 // copyFixtureTreeRecursive copies the compose-app fixture tree into dst
@@ -128,10 +129,9 @@ func copyFixtureTreeRecursive(t *testing.T, dst string) {
 	}
 }
 
-// intPtr is the pointer helper for the TCP test's spec (strPtr already
-// exists in init_test.go; the acceptance layer's copies are behind the
-// acceptance build tag).
-func intPtr(i int) *int { return &i }
+// tcpIntPtr is the pointer helper for the TCP test's spec (intPtr and
+// strPtr exist untagged in init_test.go and behind the acceptance tag).
+func tcpIntPtr(i int) *int { return &i }
 
 // tcpRepo builds the fixture repository with a ports-only spec (no docker
 // anywhere in this layer) and one worktree on a pushed branch.
@@ -143,10 +143,10 @@ func tcpRepo(t *testing.T) (main, worktree string) {
 	max := 32
 	sp := &spec.Spec{
 		Version: 1, App: "compose-app",
-		Slots: spec.Slots{Max: &max},
+		Slots: spec.Slots{Max: tcpIntPtr(max)},
 		Resources: []spec.Resource{
-			{Type: "port", Name: "proxy", Form: strPtr("group"), Size: intPtr(2), Offset: intPtr(0)},
-			{Type: "port", Name: "api", Form: strPtr("group"), Size: intPtr(2), Offset: intPtr(1)},
+			{Type: "port", Name: "proxy", Form: strPtr("group"), Size: tcpIntPtr(2), Offset: tcpIntPtr(0)},
+			{Type: "port", Name: "api", Form: strPtr("group"), Size: tcpIntPtr(2), Offset: tcpIntPtr(1)},
 		},
 		Reaper: spec.Reaper{Binaries: []string{"compose-app-dev"}},
 		Emit:   spec.Emit{Descriptor: spec.Descriptor{Filename: "wt-env.yaml", Format: "yaml"}},
@@ -204,18 +204,18 @@ func readTcpDescriptor(t *testing.T, worktree string) *descriptor.Descriptor {
 // TestLoopbackTCPEndToEndAgainstRealWtd is the phase-9 verification of the
 // TCP path end to end: a real wtd process, the real wire, the real client.
 func TestLoopbackTCPEndToEndAgainstRealWtd(t *testing.T) {
-	addr, _ := startWtdTCP(t)
+	tcpAddr, sockPath, _ := startWtdTCP(t)
 	main, worktree := tcpRepo(t)
-	t.Setenv("WT_SOCKET", addr)
+	t.Setenv("WT_SOCKET", tcpAddr)
 	t.Setenv("WT_CLIENT_TOKEN", tcpTestToken)
 	fakeGhAnswersNoPR(t)
 
 	// A full lifecycle over TCP: the named client allocates, materialises
 	// (ports-only: no docker), activates and emits through the real wire.
-	// The band is registered over the same TCP surface first — bands
-	// reserve finds the committed spec by the walk-up rule, so the process
-	// cwd stands in the repository (no test in this package runs in
-	// parallel).
+	// The band is registered first — bands.reserve is host-client-only (it
+	// changes machine-global policy), so it runs over the socket as the
+	// host client while the process cwd stands in the repository (no test
+	// in this package runs in parallel).
 	oldwd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
@@ -224,10 +224,14 @@ func TestLoopbackTCPEndToEndAgainstRealWtd(t *testing.T) {
 		t.Fatalf("chdir %s: %v", main, err)
 	}
 	defer os.Chdir(oldwd)
+	t.Setenv("WT_SOCKET", sockPath)
+	os.Unsetenv("WT_CLIENT_TOKEN")
 	code, _, stderr := runCLI(t, "bands", "reserve", "--base", "api=10000", "--base", "proxy=10000")
 	if code != ExitOK {
-		t.Fatalf("bands reserve over TCP exit = %d; stderr:\n%s", code, stderr)
+		t.Fatalf("bands reserve exit = %d; stderr:\n%s", code, stderr)
 	}
+	t.Setenv("WT_SOCKET", tcpAddr)
+	t.Setenv("WT_CLIENT_TOKEN", tcpTestToken)
 
 	code, _, stderr = runCLI(t, "init", "--cwd", worktree, "--description", "the TCP test's worktree")
 	if code != ExitOK {
@@ -282,7 +286,7 @@ func TestLoopbackTCPEndToEndAgainstRealWtd(t *testing.T) {
 // the listener is not an oracle — with exit code 3 carried through the
 // wire.
 func TestLoopbackTCPRejectsWrongAndMissingToken(t *testing.T) {
-	addr, _ := startWtdTCP(t)
+	addr, _, _ := startWtdTCP(t)
 	t.Setenv("WT_SOCKET", addr)
 
 	for _, tc := range []struct {
