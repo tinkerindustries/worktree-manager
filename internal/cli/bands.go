@@ -29,6 +29,8 @@ func runBands(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "list":
 		return runBandsList(args[1:], stdout, stderr)
+	case "suggest":
+		return runBandsSuggest(args[1:], stdout, stderr)
 	case "reserve":
 		return runBandsReserve(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
@@ -36,10 +38,109 @@ func runBands(args []string, stdout, stderr io.Writer) int {
 		return ExitOK
 	default:
 		WriteError(stderr, UsageError(
-			"run 'wt bands list' or 'wt bands reserve'",
+			"run 'wt bands list', 'wt bands suggest' or 'wt bands reserve'",
 			"unknown bands verb %q", args[0]))
 		return ExitUsage
 	}
+}
+
+// runBandsSuggest implements `wt bands suggest [--spec <file>] [--json]`:
+// propose where the spec's port bases could sit. The coordinator computes
+// the required size from the spec (slot ceiling × ports per slot) and
+// finds the lowest base per resource whose range fits — colliding with no
+// existing band and no host-global reservation — so the skill chooses only
+// where the bases go, not how large they are (02-coordination.md §6.2,
+// 09-onboarding.md phase 3). The skill shows the suggestion, the developer
+// confirms, and `wt bands reserve` claims it.
+func runBandsSuggest(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("bands suggest", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	jsonOut := fs.Bool("json", false, "print exactly one JSON object on stdout")
+	specPath := fs.String("spec", "", "the spec file to suggest bases for (default: the walk-up wt.yaml)")
+	if err := fs.Parse(args); err != nil {
+		return ExitUsage
+	}
+	if fs.NArg() > 0 {
+		WriteError(stderr, UsageError(
+			"run 'wt bands suggest' with no positional arguments",
+			"unexpected arguments: %v", fs.Args()))
+		return ExitUsage
+	}
+
+	path := *specPath
+	if path == "" {
+		// The walk-up rule, exactly as spec explain and bands reserve find
+		// the spec: the committed wt.yaml from cwd to the worktree root.
+		found, err := spec.FindSpecPath(".")
+		if err != nil {
+			var nae *spec.NotAdoptedError
+			if errors.As(err, &nae) {
+				WriteError(stderr, New(ExitUnavailable, nae.Error(),
+					"commit wt.yaml at the repository root, or run from inside the repository, or pass --spec <file>"))
+				return ExitUnavailable
+			}
+			WriteError(stderr, New(ExitFailure, err.Error(), ""))
+			return ExitFailure
+		}
+		path = found
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		WriteError(stderr, New(ExitFailure, fmt.Sprintf("reading %s: %v", path, err), ""))
+		return ExitFailure
+	}
+	parsed, err := spec.Parse(data)
+	if err == nil {
+		err = spec.Validate(parsed)
+	}
+	if err != nil {
+		var fe *spec.FieldError
+		if errors.As(err, &fe) {
+			WriteError(stderr, New(ExitFailure, fe.Error(),
+				fmt.Sprintf("edit %s, then re-run: wt bands suggest", path)))
+			return ExitFailure
+		}
+		WriteError(stderr, New(ExitFailure, err.Error(), ""))
+		return ExitFailure
+	}
+
+	sess, cerr := dialCoordinator()
+	if cerr != nil {
+		WriteError(stderr, cerr)
+		return cerr.Code
+	}
+	defer sess.Close()
+	raw, rerr := sess.request("bands.suggest", &protocol.SuggestBandArgs{Spec: *parsed})
+	if rerr != nil {
+		WriteError(stderr, rerr)
+		return rerr.Code
+	}
+	var res protocol.SuggestBandResult
+	if err := json.Unmarshal(raw, &res); err != nil {
+		WriteError(stderr, New(ExitFailure, fmt.Sprintf("decoding the bands.suggest response: %v", err), ""))
+		return ExitFailure
+	}
+
+	if *jsonOut {
+		if err := WriteJSON(stdout, res); err != nil {
+			WriteError(stderr, New(ExitFailure, err.Error(), ""))
+			return ExitFailure
+		}
+		return ExitOK
+	}
+	for _, n := range res.Notes {
+		fmt.Fprintf(stderr, "note: %s\n", n)
+	}
+	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintf(w, "app\t%s\n", res.App)
+	fmt.Fprintln(w, "RESOURCE\tBASE\tSPAN\tRANGE")
+	for _, s := range res.Suggestions {
+		fmt.Fprintf(w, "%s\t%d\t%d\t%d..%d\n", s.Resource, s.Base, s.Span, s.Low, s.High)
+	}
+	if len(res.Suggestions) == 0 {
+		fmt.Fprintln(w, "(no port resources to suggest bases for)\t")
+	}
+	return finish(w)
 }
 
 // runBandsList implements `wt bands list [--json]`: the band ledger — the

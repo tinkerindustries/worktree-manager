@@ -54,6 +54,20 @@ func Listeners(ports []int) ([]Holder, error) {
 	return listeners(ports)
 }
 
+// AllListeners discovers every process with a LISTEN TCP socket in the
+// caller's network namespace — the fact `wt ports scan` reports, sorted by
+// port so the report is stable (08-platform.md §3). It never classifies
+// what it finds: a listener is a fact, and whether it belongs to a
+// production stack is a person's judgement (plan.md §8, R6).
+//
+// The error contract is the same availability contract as Listeners: a
+// missing discovery tool, or a run that cannot complete, is an error
+// naming the tool and the install command — never an empty report, which
+// would read as a successful scan of nothing.
+func AllListeners() ([]Holder, error) {
+	return allListeners()
+}
+
 // SignalTerm delivers the graceful signal: SIGTERM on unix, taskkill
 // without /F on Windows (08-platform.md §3: Windows has no reliable
 // equivalent of the graceful step; the weakness is documented, and the
