@@ -144,3 +144,39 @@ func TestStartPersistsChosenStickyParams(t *testing.T) {
 		t.Errorf("persisted seed_profile = %q, want dev", got)
 	}
 }
+
+// TestStartPersistedParamsMergeAcrossRuns: a run that chooses one new
+// sticky parameter must not drop the choices earlier runs persisted — two
+// runs with different params leave both in the descriptor.
+func TestStartPersistedParamsMergeAcrossRuns(t *testing.T) {
+	worktree, sp := startFixture(t)
+	sp.Hooks.Seed = &spec.Hook{
+		Run: "echo seeding {seed_profile} on {stack}",
+		Params: map[string]spec.Param{
+			"seed_profile": {Sticky: true, Default: "dev"},
+			"stack":        {Sticky: true, Default: "blue"},
+		},
+	}
+	writeT(t, filepath.Join(worktree, "wt.yaml"), string(mustYAML(t, sp)))
+
+	// First run: the defaults are chosen and persisted.
+	if code, _, stderr := runCLI(t, "start", "--cwd", worktree); code != ExitOK {
+		t.Fatalf("first start exit = %d; stderr: %s", code, stderr)
+	}
+	// Second run: an explicit override chooses a different value for one
+	// parameter; the other must survive.
+	if code, _, stderr := runCLI(t, "start", "--cwd", worktree, "--param", "stack=green"); code != ExitOK {
+		t.Fatalf("second start exit = %d; stderr: %s", code, stderr)
+	}
+	d, err := descriptor.Read(filepath.Join(worktree, "wt-env.yaml"), "yaml")
+	if err != nil {
+		t.Fatalf("reading the descriptor: %v", err)
+	}
+	got := stickyParamsOf(d)
+	if got["seed_profile"] != "dev" {
+		t.Errorf("seed_profile = %q, want dev (persisted by the first run)", got["seed_profile"])
+	}
+	if got["stack"] != "green" {
+		t.Errorf("stack = %q, want green (the second run's choice)", got["stack"])
+	}
+}
