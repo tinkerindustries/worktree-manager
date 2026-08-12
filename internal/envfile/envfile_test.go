@@ -286,3 +286,47 @@ func TestNewFileModeIsPrivate(t *testing.T) {
 		t.Errorf("new .env mode = %o, want 600", fi.Mode().Perm())
 	}
 }
+
+// TestOutsideBlockKeys is doctor's read-only half of the duplicate strip:
+// the managed keys defined outside the managed block are reported without
+// touching the file, and a key defined only inside the block is not.
+func TestOutsideBlockKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	keys := map[string]string{"API_PORT": "{api}", "DB_PATH": "{db}"}
+
+	// A key above the block, one below it, and one inside it.
+	content := "API_PORT=9999\nOTHER=keep\n" + StartMarker + "\nDB_PATH=/x\n" + EndMarker + "\nDB_PATH=/dup\n"
+	writeTestFile(t, path, content)
+	outside, err := OutsideBlockKeys(path, keys)
+	if err != nil {
+		t.Fatalf("OutsideBlockKeys: %v", err)
+	}
+	if len(outside) != 2 || outside[0] != "API_PORT" || outside[1] != "DB_PATH" {
+		t.Errorf("outside = %v, want [API_PORT DB_PATH] sorted", outside)
+	}
+
+	// A missing file has no keys outside any block.
+	missing := filepath.Join(dir, "absent.env")
+	outside, err = OutsideBlockKeys(missing, keys)
+	if err != nil || len(outside) != 0 {
+		t.Errorf("missing file = %v, %v; want none, nil", outside, err)
+	}
+
+	// The file is byte-identical afterwards: doctor's check writes nothing.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != content {
+		t.Errorf("the .env changed under a read-only check")
+	}
+}
+
+// writeTestFile writes a test file.
+func writeTestFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("writing %s: %v", path, err)
+	}
+}

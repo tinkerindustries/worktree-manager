@@ -13,10 +13,14 @@ const BandsFileName = "bands.json"
 // Band is one app's registration: a map from port resource name to the band
 // base that resource derives from (spec.Context.Bases has the same shape —
 // this is where the ledger's bases feed into resolution). One app, one band;
-// re-registration replaces in place.
+// re-registration replaces in place. Spans carries the required size of each
+// base's range — slot ceiling × ports per slot, computed by the coordinator
+// at registration — recorded so phase 6's doctor can detect overlap between
+// two apps' bands without reading either app's spec.
 type Band struct {
 	App   string         `json:"app"`
 	Bases map[string]int `json:"bases"`
+	Spans map[string]int `json:"spans,omitempty"`
 }
 
 // Reservation is one host-global reservation: ports no app may allocate

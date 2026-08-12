@@ -288,3 +288,130 @@ type RmResult struct {
 	Removed      bool     `json:"removed"`
 	TeardownNote string   `json:"teardown_note,omitempty"`
 }
+
+// --- Phase-6 verbs: the fleet surface -----------------------------------
+//
+// list, doctor, reconcile and clients.list are phase 6's fleet verbs
+// (06-fleet.md, ARCHITECTURE.md §9.3). The coordinator is the only
+// component that can see every repo and the only one that holds host
+// privilege, so the cross-repo reads and the reclamation writes are
+// coordinator verbs; the client renders.
+
+// ListArgs is the list request. Wide asks for the owning client's seed
+// credentials — served to the owning client alone and redacted for every
+// other client either way (ARCHITECTURE.md §12.2): a --wide form may show
+// them to the owner, never to anyone else.
+type ListArgs struct {
+	Wide bool `json:"wide,omitempty"`
+}
+
+// ListEntry is one registry entry as list reports it. The flags are the
+// distinct markers of 06-fleet.md §3 and ARCHITECTURE.md §9.3, and the
+// whole point of the phase is that the first two stay distinct:
+//
+//   - stale: the coordinator can stat the recorded path and the directory
+//     is gone — actionable from here;
+//   - unverifiable: the path exists only inside a container the coordinator
+//     cannot stat — never called stale, because calling it that would
+//     invite destroying live work;
+//   - reclaimable: the entry's ephemeral owner has aged out past the
+//     reclamation interval, so the entry may be reclaimed by handle;
+//   - foreign: the entry belongs to another client.
+//
+// Secrets are present only when the caller is the owning client and asked
+// with --wide; every other combination is redacted structurally.
+type ListEntry struct {
+	App         string                   `json:"app"`
+	Slug        string                   `json:"slug"`
+	Slot        int                      `json:"slot"`
+	Description string                   `json:"description,omitempty"`
+	State       string                   `json:"state"`
+	Path        string                   `json:"path"`
+	PathVisible bool                     `json:"path_visible"`
+	Owner       string                   `json:"owner"`
+	OwnerKind   string                   `json:"owner_kind"`
+	Ephemeral   bool                     `json:"ephemeral"`
+	CreatedAt   string                   `json:"created_at"`
+	LastSeen    string                   `json:"last_seen"`
+	Resources   map[string]spec.Resolved `json:"resources"`
+	Secrets     map[string]string        `json:"secrets,omitempty"`
+	Flags       []string                 `json:"flags,omitempty"`
+}
+
+// ListResult is the whole registry as list reports it, across every repo.
+type ListResult struct {
+	Entries []ListEntry `json:"entries"`
+}
+
+// DoctorFinding is one row of a doctor report: a level, the message, and —
+// for every finding that reports a problem — the exact command that fixes
+// it (06-fleet.md §4, a hard rule). Info-level rows are observations
+// (unverifiable, port free) and carry no remedy because there is nothing
+// to fix.
+type DoctorFinding struct {
+	App     string `json:"app,omitempty"`
+	Slug    string `json:"slug,omitempty"`
+	Level   string `json:"level"` // info | warning | error
+	Message string `json:"message"`
+	Remedy  string `json:"remedy,omitempty"`
+}
+
+// DoctorResult is the whole report: the findings plus the bounded-coverage
+// notes — what doctor could not check and why (a silent degrade reads as
+// success, plan.md §3).
+type DoctorResult struct {
+	Findings []DoctorFinding `json:"findings"`
+	Notes    []string        `json:"notes,omitempty"`
+}
+
+// ReconcileArgs is the reconcile request: the app, the spec (reap and
+// teardown need it, exactly as rm does), and the refs the caller believes
+// are its own or reclaimable. The coordinator re-checks every ref against
+// the ownership and aged-out rules — the caller's claim is never trusted.
+type ReconcileArgs struct {
+	App  string     `json:"app"`
+	Spec spec.Spec  `json:"spec"`
+	Refs []EntryRef `json:"refs"`
+}
+
+// ReconcileOutcome is one entry's repair outcome:
+//
+//   - torn-down: reap plus driver teardown by handle ran and the entry
+//     dropped (or moved to tearing-down with the note, when something
+//     survived — the note says so);
+//   - rolled-back: a reserving entry past its timeout was dropped, the
+//     allocation rolled back;
+//   - skipped: not this caller's to repair (a live client's entry, or a
+//     reserving entry still within its timeout); the note says why;
+//   - not-found: no registry entry for the ref.
+type ReconcileOutcome struct {
+	App    string `json:"app"`
+	Slug   string `json:"slug"`
+	Action string `json:"action"`
+	Note   string `json:"note,omitempty"`
+}
+
+// ReconcileResult is the whole batch outcome.
+type ReconcileResult struct {
+	Outcomes []ReconcileOutcome `json:"outcomes"`
+}
+
+// ClientInfo is one row of the client table as clients.list reports it:
+// identity, kind, the coordinator's own measurement of when it was last
+// seen (never a timestamp a client wrote), how many registry entries the
+// client owns, and — for an ephemeral client whose last seen is older than
+// the reclamation interval — that it has aged out and its entries are
+// reclaimable.
+type ClientInfo struct {
+	Identity  string `json:"identity"`
+	Kind      string `json:"kind"`
+	Ephemeral bool   `json:"ephemeral"`
+	LastSeen  string `json:"last_seen"`
+	Entries   int    `json:"entries"`
+	AgedOut   bool   `json:"aged_out,omitempty"`
+}
+
+// ClientsListResult is the whole client table.
+type ClientsListResult struct {
+	Clients []ClientInfo `json:"clients"`
+}

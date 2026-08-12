@@ -58,6 +58,14 @@ shared:
   - name: "{home}/.compose-app/db.sqlite"
     impact: writes are visible to every worktree and the main checkout
 
+# The reaper's allowlist (04-lifecycle §6): the only processes the
+# coordinator may signal are these binaries — the build hook's own output
+# (compose-app-dev, built by `go build -o {worktree}/compose-app-dev`).
+# A spec that names nothing signals nothing; naming the dev server is what
+# opens the rail for this app.
+reaper:
+  binaries: [compose-app-dev]
+
 # All six hooks, in run order (04-lifecycle §4 and §5). install uses the
 # shorthand form, equivalent to {run: "go mod download"}.
 hooks:

@@ -7,14 +7,12 @@ package coord
 //
 // The rails, all enforced here:
 //
-//   - Only binaries the spec names are signalled. The spec has no field
-//     that names them in this phase — the plan's rule is to report a
-//     missing spec field rather than add one, so this is reported in the
-//     phase-5 pull request — and the seam ReapBinaries is where a named
-//     list plugs in. With nothing named, every holder is reported and
-//     nothing is signalled, which is the safe side of the rail: a process
-//     that merely grabbed the port is probably the developer's own
-//     instance (B1.6 applied to processes).
+//   - Only binaries the spec names are signalled. The spec's reaper.binaries
+//     field (added in phase 6) is the allowlist, read through the ReapBinaries
+//     seam; it defaults to empty, so a spec that names nothing signals
+//     nothing — the safe side of the rail: a process that merely grabbed the
+//     port is probably the developer's own instance (B1.6 applied to
+//     processes).
 //   - SIGTERM, wait about three seconds, then SIGKILL.
 //   - Reserved and legacy default ports are never touched: the exclusion
 //     list is the spec's reserved block plus the ledger's host-global
@@ -52,18 +50,20 @@ var reapGraceWait = 3 * time.Second
 
 // ReapBinaries is the seam where the spec's named binaries plug into the
 // reaper: "only binaries the spec names are signalled" (04-lifecycle.md
-// §6). The spec schema has no field that names binaries in this phase —
-// adding one is a schema change, and the plan's rule is to report a missing
-// field rather than add it, which the phase-5 pull request does — so the
-// default returns nothing and the reaper reports every holder without
-// signalling any. A later phase that adds the field implements this seam.
-// The returned names are compared against the base name of each holder's
-// command; a test can install a fake to drive the signalling path.
+// §6). The default reads reaper.binaries from the spec — the field phase 6
+// added — and a spec that names nothing signals nothing, which is the safe
+// side of the rail: a process that merely grabbed the port is probably the
+// developer's own instance (B1.6 applied to processes). The returned names
+// are compared against the base name of each holder's command; a test can
+// install a fake to drive the signalling path without touching the spec.
 func (h *Handler) reapBinaries(sp *spec.Spec) []string {
 	if h.ReapBinaries != nil {
 		return h.ReapBinaries(sp)
 	}
-	return nil
+	if sp == nil {
+		return nil
+	}
+	return sp.Reaper.Binaries
 }
 
 // reap runs the reaper over one entry: collect the entry's port values,

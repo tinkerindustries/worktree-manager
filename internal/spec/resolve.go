@@ -1,6 +1,7 @@
 package spec
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"regexp"
@@ -26,6 +27,34 @@ type Context struct {
 type Resolved struct {
 	Type  string `json:"type"`
 	Value any    `json:"value"` // int for port resources, string otherwise
+}
+
+// UnmarshalJSON normalises a port resource's value to int on decode. The
+// registry and the wire both round-trip Resolved through encoding/json,
+// which decodes a bare number as float64, and every consumer of a port
+// value — the probe, the verify, the reaper's discovery input — switches
+// on int. A value that came back as float64 would silently disable the
+// reaper (it would see no ports) and report verify errors; the descriptor
+// reader normalises the same way for the same reason (descriptor.Read),
+// and this is the registry's half of that rule.
+func (r *Resolved) UnmarshalJSON(data []byte) error {
+	type plain Resolved
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	*r = Resolved(p)
+	if r.Type == "port" {
+		switch v := r.Value.(type) {
+		case float64:
+			r.Value = int(v)
+		case json.Number:
+			if i, err := v.Int64(); err == nil {
+				r.Value = int(i)
+			}
+		}
+	}
+	return nil
 }
 
 // Resolve computes the resource table for one slot. It checks the same

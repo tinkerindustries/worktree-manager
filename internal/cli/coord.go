@@ -53,8 +53,14 @@ func dialCoordinator() (*coordSession, *Error) {
 	}
 	bw := bufio.NewWriter(conn)
 	br := bufio.NewReader(conn)
+	kind, token, kerr := clientIdentity()
+	if kerr != nil {
+		conn.Close()
+		return nil, kerr
+	}
 	hello := &protocol.Hello{
-		Kind:   clientKind(),
+		Kind:   kind,
+		Token:  token,
 		MinVer: protocol.VersionMin,
 		MaxVer: protocol.VersionMax,
 	}
@@ -122,15 +128,31 @@ func (s *coordSession) request(verb string, args any) (json.RawMessage, *Error) 
 	return resp.Result, nil
 }
 
-// clientKind is the client's identity declaration. WT_CLIENT_EPHEMERAL=1
-// declares the ephemeral kind — it passes the ambient-value test of
-// ARCHITECTURE.md §12.3 because every process in a disposable-clone image
-// is in a disposable clone. Otherwise the client is a host client, whose
-// identity the coordinator reads from peer credentials; nothing a client
-// writes can claim that.
-func clientKind() string {
-	if os.Getenv("WT_CLIENT_EPHEMERAL") == "1" {
-		return protocol.KindEphemeral
+// clientIdentity is the client's identity declaration: the kind and, for a
+// named container, the token. WT_CLIENT_TOKEN (the fifth environment
+// variable, added in phase 6) declares the named kind — a token the
+// operator configures into the image, which names a capability rather than
+// a policy, so it passes the ambient-value test of ARCHITECTURE.md §12.3:
+// a child process inheriting it is still the same named container.
+// WT_CLIENT_EPHEMERAL=1 declares the ephemeral kind — every process in a
+// disposable-clone image is in a disposable clone, which is the same test
+// passing for the same reason. Setting both is ambiguous — the two kinds
+// grant different reclamation lives — and the system refuses rather than
+// partially honouring, so the client stops with a usage error naming the
+// choice. Otherwise the client is a host client, whose identity the
+// coordinator reads from peer credentials; nothing a client writes can
+// claim that.
+func clientIdentity() (kind, token string, err *Error) {
+	if t := os.Getenv("WT_CLIENT_TOKEN"); t != "" {
+		if os.Getenv("WT_CLIENT_EPHEMERAL") == "1" {
+			return "", "", New(ExitUsage,
+				"WT_CLIENT_TOKEN and WT_CLIENT_EPHEMERAL=1 are both set: a token names a persistent client and the ephemeral declaration marks its entries reclaimable — the two cannot both be true",
+				"unset one of WT_CLIENT_TOKEN or WT_CLIENT_EPHEMERAL, then re-run")
+		}
+		return protocol.KindNamed, t, nil
 	}
-	return protocol.KindHost
+	if os.Getenv("WT_CLIENT_EPHEMERAL") == "1" {
+		return protocol.KindEphemeral, "", nil
+	}
+	return protocol.KindHost, "", nil
 }

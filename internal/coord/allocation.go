@@ -87,6 +87,12 @@ func (h *Handler) allocate(s *Session, req *protocol.Request) *protocol.Response
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	// Record the spec for reclamation: a dead ephemeral client's entry has
+	// no visible path for the walk-up lookup, and the cached spec is what
+	// its teardown computes dependent projects and purge refusals from.
+	// Best-effort — a cache failure is logged, never a refusal.
+	h.cacheSpec(args.Spec.App, &args.Spec)
+
 	reg, err := h.st.ReadRegistry()
 	if err != nil {
 		return h.storeErr("reading the registry", err)

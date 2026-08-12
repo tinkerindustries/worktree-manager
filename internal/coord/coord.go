@@ -82,16 +82,21 @@ type Handler struct {
 
 	// ReapBinaries is the reaper's allowlist seam: the binaries the spec
 	// names, which are the only processes the reaper may signal
-	// (04-lifecycle.md §6). The spec schema has no field that names
-	// binaries in this phase — reported to the plan rather than added —
-	// so the default is empty and the reaper reports every holder without
-	// signalling any. A test installs a fake to drive the signalling path.
+	// (04-lifecycle.md §6). The default reads reaper.binaries from the
+	// spec; a test installs a fake to drive the signalling path without
+	// touching the spec.
 	ReapBinaries func(sp *spec.Spec) []string
 
 	// InContainer is the reaper's container-detection seam. The default is
 	// the platform probe; a test running inside a container installs a
 	// fake so the reap's decision logic is testable on both sides.
 	InContainer func() bool
+
+	// ReclaimInterval is how long an ephemeral client may go unseen before
+	// its entries become reclaimable. Zero means ReclaimIntervalDefault
+	// (24 hours, the phase-6 choice — plan.md §9.2, R3); a test shortens
+	// it to exercise reclamation without waiting a day.
+	ReclaimInterval time.Duration
 
 	st  *store.Store
 	log *slog.Logger
@@ -182,6 +187,14 @@ func (h *Handler) Handle(ctx context.Context, s *Session, req *protocol.Request)
 		return h.reserveBand(s, req)
 	case verbBandsList:
 		return h.listBands(s, req)
+	case verbList:
+		return h.list(s, req)
+	case verbDoctor:
+		return h.doctor(s, req)
+	case verbReconcile:
+		return h.reconcile(s, req)
+	case verbClients:
+		return h.clientsList(s, req)
 	default:
 		return &protocol.Response{Error: &protocol.Error{
 			Code: 1,

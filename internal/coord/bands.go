@@ -88,9 +88,10 @@ func (h *Handler) reserveApp(s *Session, args *protocol.ReserveBandArgs, bands *
 
 	band := findBand(*bands, app)
 	if band == nil {
-		bands.Bands = append(bands.Bands, store.Band{App: app, Bases: args.Bases})
+		bands.Bands = append(bands.Bands, store.Band{App: app, Bases: args.Bases, Spans: spans})
 	} else {
 		band.Bases = args.Bases // one app, one band: re-registration replaces
+		band.Spans = spans      // the spans are phase 6's overlap-check input
 	}
 	if err := h.st.WriteBands(*bands); err != nil {
 		return h.storeErr("writing the band ledger", err)

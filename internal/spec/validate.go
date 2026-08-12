@@ -91,6 +91,9 @@ func validateStatic(s *Spec) error {
 	if err := validateHooks(&s.Hooks, resourceSet); err != nil {
 		return err
 	}
+	if err := validateReaper(&s.Reaper); err != nil {
+		return err
+	}
 	return validateEmit(&s.Emit, resourceSet)
 }
 
@@ -508,6 +511,25 @@ func hookByName(h *Hooks, name string) *Hook {
 		return h.Seed
 	case "health":
 		return h.Health
+	}
+	return nil
+}
+
+// validateReaper checks the reaper's allowlist. The list defaults to empty
+// and empty is the safe direction — a spec that names nothing signals
+// nothing — so there is nothing to require; the checks are that what is
+// named is name-shaped: non-empty, no whitespace, no path separators (the
+// match is against the base name of the holder's command, and a name with a
+// path or whitespace could never match one).
+func validateReaper(r *Reaper) error {
+	for i, b := range r.Binaries {
+		field := fmt.Sprintf("reaper.binaries[%d]", i)
+		if strings.TrimSpace(b) == "" {
+			return &FieldError{Field: field, Reason: "a binary name cannot be empty"}
+		}
+		if strings.ContainsAny(b, " \t/\\") {
+			return &FieldError{Field: field, Reason: fmt.Sprintf("%q is not a binary name: names are matched against the holder's command base name, so no path or whitespace is allowed", b)}
+		}
 	}
 	return nil
 }

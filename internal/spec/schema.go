@@ -115,7 +115,20 @@ type Spec struct {
 	Reserved  Reserved   `yaml:"reserved"`
 	Shared    []Shared   `yaml:"shared"`
 	Hooks     Hooks      `yaml:"hooks"`
+	Reaper    Reaper     `yaml:"reaper"`
 	Emit      Emit       `yaml:"emit"`
+}
+
+// Reaper is the coordinator-side reaper's configuration (04-lifecycle.md
+// §6's first rail): the binaries the reaper may signal. Only binaries the
+// spec names are signalled — a process that merely grabbed a port is
+// reported and never signalled, because it is probably the developer's own
+// instance. The list defaults to empty, so a spec that names nothing
+// signals nothing: that is the safe direction and it must remain the
+// default. Names are matched against the base name of each holder's
+// command as listener discovery reports it.
+type Reaper struct {
+	Binaries []string `yaml:"binaries,omitempty"`
 }
 
 // Slots is the slot namespace ceiling. Slots run from 1 to Max; slot 0 is

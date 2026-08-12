@@ -233,6 +233,44 @@ migration against it. It lives in `internal/coord`:
   `TestCoordReapInContainerReportsUnavailable`,
   `TestCoordReapDryRunListsWithoutSignalling`,
   `TestCoordReapKeepProcessesOptsOut`).
+- The coordinator's phase-6 tests in `internal/coord/fleet_test.go`, one
+  named per marker, criterion and rail:
+  - `TestListStaleAndUnverifiableStayDistinct` — exit criterion 4's
+    marker half: an invisible path is unverifiable, never stale, and a
+    visible gone directory is stale, never unverifiable;
+  - `TestListForeignAndReclaimableMarkers` and
+    `TestListSecretsRedactedExceptOwnerWide` — foreign/reclaimable
+    markers, and the security rail: seed credentials are served to the
+    owning client alone and only under `--wide`;
+  - `TestDoctorFindingsEachNameACommand` — exit criterion 5: every
+    `06-fleet.md` §4 finding this phase produces is made by a fixture and
+    names the exact command that fixes it (stale, uninitialised worktree,
+    .env duplicate, port drift, band overlap, slot ceiling, reaper
+    allowlist), plus `TestDoctorReservingAndTearingDownFindings`,
+    `TestDoctorDescriptorMissingAndSpecMissing`,
+    `TestDoctorUnverifiableIsObservationNotFinding`,
+    `TestDoctorReportsNewerRegistry`;
+  - `TestDoctorWritesNothing` — the whole doctor contract: the store's
+    files are byte-identical before and after a run that produced
+    findings;
+  - `TestReconcileTearsDownStaleEntryAndDropsIt` — exit criterion 3's
+    coordinator half — and `TestReconcileEligibility` — a live client's
+    entry is skipped naming the owner, an aged-out ephemeral owner's is
+    torn down by handle, a reserving entry is rolled back only past its
+    timeout;
+  - `TestClientsListShowsEntriesAndAgedOut`,
+    `TestReclaimEphemeralReclaimsAgedOutOnly` (the spec-cache fallback
+    for invisible paths) and `TestReclaimEphemeralSkipsWithoutSpec` (a
+    skip stated, never a blind teardown);
+  - `TestReapBinariesDefaultsToSpecField` and `TestSpecCacheRoundTrip`.
+- The client's phase-6 verbs in `internal/cli/fleet_test.go`:
+  `TestRunListJSONAndTable`, `TestRunDoctorJSONAndClean`,
+  `TestRunClientsJSONAndTable`, `TestRunReconcileDryRunAndReal` (dry-run
+  previews and sends nothing), `TestRunReconcileTearsDownDeletedWorktree`
+  (exit criterion 3 end to end without docker: a real in-process
+  coordinator, a real git worktree deleted by hand, reconcile from the
+  main checkout dropping the entry, doctor clean afterwards),
+  `TestRunListUnreachableExitsFive` and `TestRunReconcileNotAdopted`.
 - The reaper's platform half in `internal/platform/listeners_test.go`
   against the real platform: discovery finds a real listener
   (`TestListenersFindsARealListener`,
@@ -337,19 +375,33 @@ its untagged twin:
 | `TestAcceptanceTeardownUnavailableMovesEntryToTearingDown` (`internal/coord`) | criterion 3: a teardown that leaves resources behind moves the entry to `tearing-down` and does not free the slot (here: the daemon genuinely unreachable via `DOCKER_HOST`) | `TestCoordTeardownLeavesTearingDownAndHoldsTheSlot`, `TestCoordTeardownUnavailableDoesNotFreeTheSlot` |
 | `TestAcceptanceCoordinatorProbeSeesPublishedPort` (`internal/coord`) | criterion 5: the probe run from the coordinator sees a port published by a container | `TestPortProbeFreeAndHeld` |
 | `TestAcceptanceTeardownContinuesPastFailure` (`internal/driver`) | criterion 6: teardown continues past a failure and reports everything that survived | `TestNamespaceTeardownContinuesPastFailure`, `TestTeardownAllReverseOrderContinuingPastFailure` |
-| `TestAcceptanceTwoWorktreesSideBySide` (`internal/cli`) | phase-5 criteria 1, 2 and 5: two compose-app worktrees run side by side, both healthy at once, disjoint resource tables, neither reaching the production stack; both tear down cleanly leaving no containers, no volumes and no registry entries; rm by slug with the directory already deleted | the untagged twins in `internal/cli/init_test.go`, `start_test.go`, `rm_test.go` and `internal/coord/p5_test.go` |
+| `TestAcceptanceTwoWorktreesSideBySide` (`internal/cli`) | phase-5 criteria 1, 2 and 5, and phase-6 gate 1 in full: two compose-app worktrees run side by side, both healthy at once, disjoint resource tables, neither reaching the production stack; both tear down cleanly leaving no containers, no volumes and no registry entries; rm by slug with the directory already deleted; `wt doctor` clean afterwards | the untagged twins in `internal/cli/init_test.go`, `start_test.go`, `rm_test.go` and `internal/coord/p5_test.go` |
+| `TestAcceptanceGate2ContainerAndHostAllocate` (`internal/cli`) | phase-6 gate 2: a real docker container running the real wt binary (built `CGO_ENABLED=0`) allocates against the same app as a host client, and the container's slot is unavailable to the host; the container's entry is owned by its `WT_CLIENT_TOKEN` identity, the container removes its own entry, and the host then reuses the freed slot | `TestListForeignAndReclaimableMarkers`, `TestReconcileEligibility` (`internal/coord/fleet_test.go`) |
 
-The phase-5 gate runs the real client (`cli.Run`) against a real
-coordinator (`coord.Server` on a temp socket, the phase-6 CI arrangement)
-over real git worktrees and real docker. The one test double is `gh`: the
-gate's branches live on a local bare remote, and the real gh cannot answer
-"is there a PR" for a repository that is not on GitHub — a fake gh on PATH
+The gates run the real client (`cli.Run`) against a real coordinator
+(`coord.Server` on a temp socket, the phase-6 CI arrangement) over real
+git worktrees and real docker. The one test double is `gh`: the gates'
+branches live on a local bare remote, and the real gh cannot answer "is
+there a PR" for a repository that is not on GitHub — a fake gh on PATH
 answers the no-PR contract the check reads (exit 1, "no pull requests
 found"), exactly as real gh does for a branch without a PR. The
 fail-closed side (missing or unauthenticated gh → exit 4) is exercised
-untagged in `rm_test.go`. Every container, network and volume the gate
-creates carries the worktrees' project labels and is removed before the
+untagged in `rm_test.go`. Every container, network and volume the gates
+create carries the worktrees' project labels and is removed before the
 test returns; nothing with another label is ever touched.
+
+Gate 2's container client runs the real wt binary inside a docker
+container with the coordinator's socket shared into it and
+`WT_CLIENT_TOKEN` set. The file sharing is chosen by a runtime probe
+(`containerTransport` in `acceptance_test.go`): bind mounts of the
+workspace paths on a CI runner, where the daemon and the workspace share
+one filesystem; or the docker volume mounted at `/data` on a dev machine
+whose daemon cannot bind-mount the workspace and whose virtiofs mounts
+cannot carry live unix sockets. A listener-socket dial from inside the
+container proves the chosen transport before the gate runs; without a
+working transport the gate skips with the reason stated. On macOS the
+gate runs locally under Docker Desktop, whose `/tmp` file-sharing root is
+where the transport's bind-mode base lives.
 
 The tagged probe tests publish a port into the coordinator's own network
 namespace (`--network container:<id>`): the test process runs inside a

@@ -18,6 +18,7 @@ go build ./...
 go test ./...
 go vet ./...
 gofmt -l cmd internal        # must print nothing
+go test -tags acceptance ./...   # the live gates, from phase 6 in CI; needs docker
 ```
 
 The module is `github.com/mrgeoffrich/worktree-manager` and requires
@@ -30,11 +31,10 @@ Windows, exercised by the workflow in `.github/workflows/ci.yml`.
 
 `cmd/wt` is the client: it runs once per operation, prints results to
 stdout and diagnostics to stderr, and exits 0–5 (see `internal/cli`).
-`cmd/wtd` is the coordinator, a resident per-user process; in this phase it
-is a skeleton that prints its version line. Both link `internal/spec`.
-The coordinator-only packages (`internal/store`, `internal/coord`,
-`internal/driver`, `internal/fleet`) arrive in later phases and `cmd/wt`
-never imports them.
+`cmd/wtd` is the coordinator, a resident per-user process owning the store
+and every privileged operation. Both link `internal/spec`. The
+coordinator-only packages (`internal/store`, `internal/coord`,
+`internal/driver`, `internal/fleet`) are never imported by `cmd/wt`.
 
 ## The no-inference rule
 
@@ -50,7 +50,9 @@ configuration; neither binary branches on repo identity.
   evaluator, the walk-up `wt.yaml` finder, and the quoted YAML emitter.
 - `internal/cli` — verb dispatch, flag parsing, output, the exit-code error
   type, the one dial-and-request helper (exit 5 lives there), and the
-  `daemon status`/`daemon install` verbs.
+  verbs: `spec validate`, `spec explain`, `guard`, `show`,
+  `daemon status`, `daemon install`, `bands list`, `bands reserve`,
+  `init`, `start`, `rm`, `list`, `doctor`, `reconcile` and `clients`.
 - `internal/identity` — M1: classification, root resolution, containment,
   slug validation, descriptor location, the guard engine.
 - `internal/platform` — M8: symlink-resolved path realisation, the mount's
@@ -68,9 +70,17 @@ configuration; neither binary branches on repo identity.
 - `internal/protocol` — the wire between the two binaries: message types,
   newline-delimited JSON framing, version negotiation.
 - `internal/store` — the coordinator's state directory: `WT_HOME`/`$HOME/.wt`
-  resolution, atomic writes, the `schema_version` envelope, `clients.json`.
+  resolution, atomic writes, the `schema_version` envelope, `clients.json`,
+  `registry.json`, `bands.json` (with per-base spans) and `specs.json`
+  (the per-app spec cache reclamation falls back to).
 - `internal/coord` — the coordinator's request core, socket server and the
-  in-process harness; one writer serialises here.
+  in-process harness; one writer serialises here. Since phase 6: the fleet
+  verbs (`list` with the stale/unverifiable/reclaimable/foreign markers
+  and owner-only secret redaction, `doctor` reading everything and
+  writing nothing, `reconcile` reusing init's and rm's repair paths on
+  entries, `clients list`), reclamation of aged-out ephemeral clients on a
+  24-hour interval measured against real last-seen times, and the reaper
+  allowlist read from the spec's `reaper.binaries`.
 - `cmd/wt`, `cmd/wtd` — the two entry points.
 - `testdata/fixtures/` — the three fixture repositories; each has its own
   `wt.yaml`, which is what the walk-up resolution rule is tested against.
@@ -80,6 +90,13 @@ configuration; neither binary branches on repo identity.
 - `testdata/specs/` — invalid specs, one per required validation refusal.
 - `ARCHITECTURE.md` (root) — the as-built codemap; read it before touching
   package boundaries. `TESTING.md` — how the test layers work.
+
+## Environment
+
+The five variables are `WT_SOCKET`, `WT_HOME` (read by `wtd` alone),
+`WT_STANDALONE`, `WT_CLIENT_EPHEMERAL` (=1) and `WT_CLIENT_TOKEN` (phase 6:
+the named-container token; setting it together with the ephemeral
+declaration is refused as ambiguous).
 
 ## Reading order
 
