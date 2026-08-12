@@ -487,6 +487,39 @@ func (tr *containerTransport) runArgs() []string {
 	return args
 }
 
+// ensureMountSources creates every bind-mount source before docker sees it.
+//
+// Docker creates a missing bind-mount source itself, as a root-owned
+// directory. runArgs mounts nine fixed paths, and the transport probe runs
+// before src, repo and remote.git exist — so the probe left three root-owned
+// directories behind, and the fixture copy into src then failed with
+// "permission denied" as the unprivileged test user. It reproduced on every
+// CI runner and never on macOS, where this gate skips for want of a socket
+// the daemon can share.
+//
+// sock is deliberately absent: it is a unix socket the listener creates, and
+// pre-creating it as a regular file would stop the bind from working.
+func (tr *containerTransport) ensureMountSources(t *testing.T) {
+	t.Helper()
+	if tr.volume != "" {
+		return
+	}
+	for _, name := range []string{"src", "repo", "remote.git"} {
+		if err := os.MkdirAll(filepath.Join(tr.base, name), 0o755); err != nil {
+			t.Fatalf("creating the mount source %s: %v", name, err)
+		}
+	}
+	for _, name := range []string{"wt", "gh", "init.sh", "rm.sh", "probe"} {
+		path := filepath.Join(tr.base, name)
+		if _, err := os.Stat(path); err == nil {
+			continue
+		}
+		if err := os.WriteFile(path, nil, 0o755); err != nil {
+			t.Fatalf("creating the mount source %s: %v", name, err)
+		}
+	}
+}
+
 // containerSock returns the socket path the container dials.
 func (tr *containerTransport) containerSock() string {
 	return tr.containerPath(filepath.Join(tr.base, "sock"))
@@ -546,6 +579,7 @@ func probeTransport(t *testing.T) *containerTransport {
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
+		tr.ensureMountSources(t)
 		args := tr.runArgs()
 		probe := tr.containerPath(filepath.Join(tr.base, "probe"))
 		sock := tr.containerPath(filepath.Join(tr.base, "sock"))
