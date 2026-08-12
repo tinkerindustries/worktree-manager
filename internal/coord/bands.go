@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
@@ -100,17 +101,22 @@ func (h *Handler) reserveApp(s *Session, args *protocol.ReserveBandArgs, bands *
 }
 
 // reserveHost writes a host-global reservation: ports no app may allocate
-// from, with the required note. Production stacks and anything else the
-// machine runs are a property of the machine, so they live in the ledger,
-// not in any repo's spec (ARCHITECTURE.md §8.4).
+// from and compose project names no teardown may reach, with the required
+// note. Production stacks and anything else the machine runs are a property
+// of the machine, so they live in the ledger, not in any repo's spec
+// (ARCHITECTURE.md §8.4). The reserved names are the phase-4 rail behind
+// the namespace driver's teardown refusal (03-drivers.md §4.2, B8.2): a
+// person declares the co-resident stack's compose project name once per
+// machine, and label-based teardown is refused when a resolved name matches
+// it.
 func (h *Handler) reserveHost(s *Session, args *protocol.ReserveBandArgs, bands *store.BandsFile) *protocol.Response {
 	if args.Note == "" {
 		return respErr(3, "a host reservation must carry a note naming what holds the range",
-			"re-run with --note, e.g. wt bands reserve --host --port 5319 --port 5320 --note \"compose-app production stack\"")
+			"re-run with --note, e.g. wt bands reserve --host --port 5319 --port 5320 --name compose-app-prod --note \"compose-app production stack\"")
 	}
-	if len(args.Ports) == 0 {
-		return respErr(3, "a host reservation must name at least one port",
-			"pass the ports, e.g. wt bands reserve --host --port 5319 --note \"...\"")
+	if len(args.Ports) == 0 && len(args.Names) == 0 {
+		return respErr(3, "a host reservation must name at least one port or one compose project name",
+			"pass the ports (--port) or the project names (--name), e.g. wt bands reserve --host --name compose-app-prod --note \"...\"")
 	}
 	seen := make(map[int]bool, len(args.Ports))
 	ports := make([]int, 0, len(args.Ports))
@@ -126,12 +132,33 @@ func (h *Handler) reserveHost(s *Session, args *protocol.ReserveBandArgs, bands 
 		ports = append(ports, p)
 	}
 	sort.Ints(ports)
-	bands.Reservations = append(bands.Reservations, store.Reservation{Ports: ports, Note: args.Note})
+	seenNames := make(map[string]bool, len(args.Names))
+	names := make([]string, 0, len(args.Names))
+	for _, n := range args.Names {
+		if n == "" {
+			return respErr(3, "a reserved compose project name must not be empty",
+				"give the project name, e.g. --name compose-app-prod")
+		}
+		if strings.ContainsAny(n, " \t\n") {
+			return respErr(3, fmt.Sprintf("reserved compose project name %q contains whitespace", n),
+				"give the exact project name, e.g. --name compose-app-prod")
+		}
+		if len(n) > spec.NamespaceMaxLen {
+			return respErr(3, fmt.Sprintf("reserved compose project name %q is %d characters; cap is %d", n, len(n), spec.NamespaceMaxLen),
+				"give a shorter project name")
+		}
+		if !seenNames[n] {
+			seenNames[n] = true
+			names = append(names, n)
+		}
+	}
+	sort.Strings(names)
+	bands.Reservations = append(bands.Reservations, store.Reservation{Ports: ports, Names: names, Note: args.Note})
 	if err := h.st.WriteBands(*bands); err != nil {
 		return h.storeErr("writing the band ledger", err)
 	}
 	return &protocol.Response{Result: mustJSON(protocol.ReserveBandResult{
-		Host: true, Ports: ports, Note: args.Note,
+		Host: true, Ports: ports, Names: names, Note: args.Note,
 	})}
 }
 
@@ -159,11 +186,36 @@ func (h *Handler) listBands(s *Session, req *protocol.Request) *protocol.Respons
 	}
 	resv := make([]store.Reservation, len(bands.Reservations))
 	copy(resv, bands.Reservations)
-	sort.Slice(resv, func(i, j int) bool { return resv[i].Ports[0] < resv[j].Ports[0] })
+	// Sort by the lowest port when the reservation has ports, else by its
+	// first reserved name — a name-only reservation must not panic the sort.
+	sort.Slice(resv, func(i, j int) bool {
+		pi, pj := firstPort(resv[i]), firstPort(resv[j])
+		if pi != pj {
+			return pi < pj
+		}
+		return firstReservedName(resv[i]) < firstReservedName(resv[j])
+	})
 	for _, r := range resv {
-		out.Reservations = append(out.Reservations, protocol.ReservationInfo{Ports: r.Ports, Note: r.Note})
+		out.Reservations = append(out.Reservations, protocol.ReservationInfo{Ports: r.Ports, Names: r.Names, Note: r.Note})
 	}
 	return &protocol.Response{Result: mustJSON(out)}
+}
+
+// firstPort is a reservation's lowest port, or a value that sorts name-only
+// reservations apart from ported ones.
+func firstPort(r store.Reservation) int {
+	if len(r.Ports) == 0 {
+		return 1 << 30
+	}
+	return r.Ports[0]
+}
+
+// firstReservedName is a reservation's first reserved name, or "".
+func firstReservedName(r store.Reservation) string {
+	if len(r.Names) == 0 {
+		return ""
+	}
+	return r.Names[0]
 }
 
 // bandSpan computes, per port resource, the number of consecutive ports one

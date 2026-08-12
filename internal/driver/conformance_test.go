@@ -149,6 +149,7 @@ func conformanceCases(t *testing.T) []conformanceCase {
 			wantGates:    true,
 		},
 		statePathConformanceCase(t),
+		namespaceConformanceCase(t),
 	}
 }
 
@@ -217,6 +218,44 @@ func statePathConformanceCase(t *testing.T) conformanceCase {
 		},
 		resource:     "db",
 		wantApply:    true,
+		wantTeardown: true,
+		wantGates:    false,
+	}
+}
+
+// namespaceConformanceCase is the namespace row: a clean fake docker, so
+// the suite's probe reads free and the teardown finds nothing.
+func namespaceConformanceCase(t *testing.T) conformanceCase {
+	s := &spec.Spec{
+		Version: 1, App: "conformance",
+		Slots: spec.Slots{Max: intPtr(32)},
+		Resources: []spec.Resource{
+			{Type: "namespace", Name: "compose", Kind: strPtr("compose"),
+				Template: strPtr("{app}-{slug}-{slot}")},
+		},
+		Emit: spec.Emit{Descriptor: spec.Descriptor{Filename: "wt-env.yaml", Format: "yaml"}},
+	}
+	ctx := spec.Context{
+		App: "conformance", Slug: "wt-1", Slot: 1,
+		Home: "/home/wt", Worktree: "/home/wt/worktrees/wt-1",
+	}
+	table, err := spec.Resolve(s, ctx)
+	if err != nil {
+		t.Fatalf("resolving the namespace conformance spec: %v", err)
+	}
+	return conformanceCase{
+		name: "namespace",
+		d:    &Namespace{},
+		spec: s,
+		ctx:  ctx,
+		env: Env{
+			Spec: s, App: "conformance", Slug: "wt-1", Slot: 1,
+			Home: "/home/wt", Worktree: "/home/wt/worktrees/wt-1",
+			Resolved: table,
+			Docker:   newFakeDocker(),
+		},
+		resource:     "compose",
+		wantApply:    false,
 		wantTeardown: true,
 		wantGates:    false,
 	}

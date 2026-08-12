@@ -20,12 +20,17 @@ type Band struct {
 }
 
 // Reservation is one host-global reservation: ports no app may allocate
-// from, with the required note naming what holds the range. Nothing infers
-// a production stack — a person declares it once per machine, and the note
-// is what lets anyone later judge it (plan.md §8, R6).
+// from and compose project names no teardown may reach, with the required
+// note naming what holds the range. Nothing infers a production stack — a
+// person declares it once per machine, and the note is what lets anyone
+// later judge it (plan.md §8, R6). Names joined in phase 4: the namespace
+// driver's B8.2 rail refuses to tear down a project whose resolved name
+// matches a reserved name, and a name has to be declared somewhere — the
+// ledger is where the machine's facts live.
 type Reservation struct {
-	Ports []int  `json:"ports"`
-	Note  string `json:"note"`
+	Ports []int    `json:"ports"`
+	Names []string `json:"names,omitempty"`
+	Note  string   `json:"note"`
 }
 
 // BandsFile is bands.json.

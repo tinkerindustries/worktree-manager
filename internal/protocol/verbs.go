@@ -74,14 +74,15 @@ type ReleaseResult struct {
 // resource, so the coordinator can compute the band's required size from
 // the spec — the onboarding skill chooses only where the bases sit, not how
 // large they are (02-coordination.md §6.2). Host mode carries the ports no
-// app may allocate from and the required note naming what holds the range
-// (plan.md §8, R6): nothing infers a production stack, a person declares it
-// once per machine.
+// app may allocate from, the compose project names no teardown may reach,
+// and the required note naming what holds the range (plan.md §8, R6):
+// nothing infers a production stack, a person declares it once per machine.
 type ReserveBandArgs struct {
 	Spec  spec.Spec      `json:"spec,omitempty"`
 	Bases map[string]int `json:"bases,omitempty"`
 	Host  bool           `json:"host,omitempty"`
 	Ports []int          `json:"ports,omitempty"`
+	Names []string       `json:"names,omitempty"`
 	Note  string         `json:"note,omitempty"`
 }
 
@@ -94,6 +95,7 @@ type ReserveBandResult struct {
 	Spans map[string]int `json:"spans,omitempty"`
 	Host  bool           `json:"host,omitempty"`
 	Ports []int          `json:"ports,omitempty"`
+	Names []string       `json:"names,omitempty"`
 	Note  string         `json:"note,omitempty"`
 }
 
@@ -105,8 +107,9 @@ type BandInfo struct {
 
 // ReservationInfo is one host-global reservation as bands.list reports it.
 type ReservationInfo struct {
-	Ports []int  `json:"ports"`
-	Note  string `json:"note"`
+	Ports []int    `json:"ports"`
+	Names []string `json:"names,omitempty"`
+	Note  string   `json:"note"`
 }
 
 // BandsListResult is the whole ledger: the app bands and the machine-wide

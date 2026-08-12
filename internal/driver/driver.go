@@ -28,6 +28,8 @@ package driver
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 )
@@ -167,6 +169,15 @@ type Reservation struct {
 	Note  string   `json:"note"`
 }
 
+// PortsStrings renders the reservation's ports for a message.
+func (r Reservation) PortsStrings() []string {
+	out := make([]string, len(r.Ports))
+	for i, p := range r.Ports {
+		out[i] = strconv.Itoa(p)
+	}
+	return out
+}
+
 // ProbeResult is the probe's three-way answer. Unavailable is distinct from
 // success and failure and the distinction is load-bearing at the call site:
 // an unavailable probe does not block allocation, whereas an unavailable
@@ -242,3 +253,34 @@ const (
 type RefusalError struct{ Reason string }
 
 func (e *RefusalError) Error() string { return e.Reason }
+
+// Survivor names one object a teardown could not remove: what it is, which
+// resource was being torn down, and why it survived. The coordinator
+// reports exactly the survivors and keeps the slot held while any remain
+// (B2.3, 03-drivers.md §5).
+type Survivor struct {
+	Kind     string `json:"kind"`     // container, network, volume, path
+	Name     string `json:"name"`     // the object's id or name
+	Resource string `json:"resource"` // the resource being torn down
+	Reason   string `json:"reason"`
+}
+
+// TeardownError is what a teardown returns when it did not get everything.
+// The driver continues past a failure rather than stopping at the first one
+// — stopping early would leave more behind than continuing does
+// (03-drivers.md §5) — and reports what survived. ErrUnavailable is not a
+// TeardownError: an unreachable daemon means nothing was attempted, which
+// the coordinator reports differently (exit 4).
+type TeardownError struct {
+	Resource  string
+	Survivors []Survivor
+}
+
+func (e *TeardownError) Error() string {
+	parts := make([]string, len(e.Survivors))
+	for i, s := range e.Survivors {
+		parts[i] = fmt.Sprintf("%s %s", s.Kind, s.Name)
+	}
+	return fmt.Sprintf("teardown of %s left %d object(s) behind: %s",
+		e.Resource, len(e.Survivors), strings.Join(parts, ", "))
+}
