@@ -193,7 +193,7 @@ func copyFixtureTree(t *testing.T, dst string, withSpec bool) {
 		}
 		target := filepath.Join(dst, rel)
 		if fi.IsDir() {
-			return os.MkdirAll(target, fi.Mode().Perm())
+			return os.MkdirAll(target, 0o755)
 		}
 		if !fi.Mode().IsRegular() {
 			return nil
@@ -202,7 +202,7 @@ func copyFixtureTree(t *testing.T, dst string, withSpec bool) {
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(target, data, fi.Mode().Perm())
+		return writeFixtureFile(target, data, fi.Mode())
 	}); err != nil {
 		t.Fatalf("copying the fixture: %v", err)
 	}

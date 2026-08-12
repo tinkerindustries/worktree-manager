@@ -249,13 +249,13 @@ func copyFixture(t *testing.T, dst string) {
 		target := filepath.Join(dst, rel)
 		switch {
 		case fi.IsDir():
-			return os.MkdirAll(target, fi.Mode().Perm())
+			return os.MkdirAll(target, 0o755)
 		case fi.Mode().IsRegular():
 			data, err := os.ReadFile(p)
 			if err != nil {
 				return err
 			}
-			return os.WriteFile(target, data, fi.Mode().Perm())
+			return writeFixtureFile(target, data, fi.Mode())
 		default:
 			return nil
 		}

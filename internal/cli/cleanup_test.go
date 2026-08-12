@@ -127,16 +127,10 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then echo '{"number":7,"state":"MERGED"
 echo "gh: unexpected call: $*" >&2; exit 1`)
 }
 
-// stripGh removes every gh executable from PATH, the "gh missing" shape.
+// stripGh gives the test a PATH with no gh on it, the "gh missing" shape.
 func stripGh(t *testing.T) {
 	t.Helper()
-	keep := []string{}
-	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
-		if _, err := os.Stat(filepath.Join(dir, "gh")); err != nil {
-			keep = append(keep, dir)
-		}
-	}
-	t.Setenv("PATH", strings.Join(keep, string(os.PathListSeparator)))
+	setPathWithoutGh(t)
 }
 
 // cleanupRows decodes the --json output's cleanup rows.

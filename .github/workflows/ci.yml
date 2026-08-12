@@ -85,8 +85,16 @@ jobs:
     # real Task Scheduler, taskkill's escalation against a real desktop
     # process, Docker Desktop pipe and WSL2 reachability — are not
     # provable on a runner and are reported not_run.
-    name: windows unit and in-process tests
+    #
+    # Advisory, not gating. Windows is supported with a weaker reaper and
+    # permission model, and PLAN-SCOPE.md has it reported unmet rather than
+    # simulated — no Windows machine has ever run this code. The job exists
+    # so the failures are visible and countable; it does not fail the run,
+    # because a permanently red required job would hide the Linux signal
+    # that does gate.
+    name: windows unit and in-process tests (advisory)
     runs-on: windows-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7

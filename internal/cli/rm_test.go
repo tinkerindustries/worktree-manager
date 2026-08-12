@@ -9,6 +9,7 @@ package cli
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -167,14 +168,7 @@ func TestRmGhMissingExitsFour(t *testing.T) {
 	main, worktree, _ := rmFixture(t)
 	sock := rmCoord(t, worktree, nil)
 	t.Setenv("WT_SOCKET", sock)
-	// A PATH without gh: keep git and sh, drop everything else's gh.
-	keep := []string{}
-	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
-		if _, err := os.Stat(filepath.Join(dir, "gh")); err != nil {
-			keep = append(keep, dir)
-		}
-	}
-	t.Setenv("PATH", strings.Join(keep, string(os.PathListSeparator)))
+	setPathWithoutGh(t)
 
 	code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1")
 	if code != ExitUnavailable {
@@ -356,5 +350,33 @@ func TestRmCoordinatorUnreachableExitsFive(t *testing.T) {
 	// named at all.
 	if !strings.Contains(stderr, "wtd") && !strings.Contains(stderr, "daemon install") {
 		t.Errorf("stderr = %q, want a command that starts the coordinator", stderr)
+	}
+}
+
+// setPathWithoutGh points PATH at a directory holding only the tools the
+// safety checks legitimately need, so `gh` is absent by construction.
+//
+// The obvious approach — drop every PATH directory that contains gh — is
+// wrong on a machine where gh and git share a directory. On the CI runner
+// both live in /usr/bin, so dropping it took git away too and rm failed for
+// a different reason before it ever reached the open-PR check.
+func setPathWithoutGh(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	for _, tool := range []string{"git", "sh", "env"} {
+		src, err := exec.LookPath(tool)
+		if err != nil {
+			continue // sh and env are conveniences; git is found or the test fails below
+		}
+		if err := os.Symlink(src, filepath.Join(dir, tool)); err != nil {
+			t.Fatalf("linking %s into the test PATH: %v", tool, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "git")); err != nil {
+		t.Fatalf("the test PATH needs git: %v", err)
+	}
+	t.Setenv("PATH", dir)
+	if _, err := exec.LookPath("gh"); err == nil {
+		t.Fatal("gh is still on PATH; the test cannot prove the missing-gh path")
 	}
 }
