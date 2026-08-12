@@ -158,20 +158,14 @@ func installSystemdUnits(prefix, wtdPath string) (InstallSupervisorResult, error
 // served (it activates the service on demand), which is what "the
 // coordinator is running" means under socket activation. A test prefix
 // never loaded anything, so the answer is false without consulting
-// systemd.
+// systemd; any failure to get an answer (systemctl missing, the unit
+// inactive) also reports false — the launchd precedent, and safe: the
+// state machine's fixes are harmless under a misreport.
 func systemdRunning(prefix string) (bool, error) {
 	if prefix != "" {
 		return false, nil
 	}
-	err := systemctl("is-active", "--quiet", SystemdSocketFilename)
-	if err == nil {
-		return true, nil
-	}
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		return false, nil // inactive or unknown: not running
-	}
-	return false, err // systemctl itself could not run
+	return systemctl("is-active", "--quiet", SystemdSocketFilename) == nil, nil
 }
 
 // systemdLinger reports whether user lingering is enabled for the
