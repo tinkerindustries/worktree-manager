@@ -1072,3 +1072,63 @@ func hasFlag(flags []string, want string) bool {
 	}
 	return false
 }
+
+// TestDoctorPinnedNameFinding: a governed compose file that pins name: is
+// the finding that catches the silent-attach failure (D2, M3 §4.2) — the
+// namespace driver's verify reports it and doctor surfaces it with the
+// edit-then-init remedy.
+func TestDoctorPinnedNameFinding(t *testing.T) {
+	max := 8
+	sp := &spec.Spec{
+		Version: 1, App: "pins-app",
+		Slots: spec.Slots{Max: &max},
+		Resources: []spec.Resource{
+			{Type: "namespace", Name: "compose", Kind: strPtr("compose"),
+				Template: strPtr("{app}-{slug}-{slot}"), Files: []string{"compose.yaml"}},
+		},
+		Emit: spec.Emit{Descriptor: spec.Descriptor{Filename: "wt-env.yaml", Format: "yaml"}},
+	}
+	if err := spec.Validate(sp); err != nil {
+		t.Fatalf("pins spec: %v", err)
+	}
+	_, worktree := gitFleetRepo(t, sp)
+	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
+	h.H.InstallDrivers(driver.NewRegistry(&driver.Port{}, &driver.Namespace{}, &driver.StatePath{}))
+	sess, reply := h.Connect(protocol.KindHost, "")
+	if reply.Error != nil {
+		t.Fatalf("hello refused: %+v", reply.Error)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	fleetEntry(t, h, &store.Entry{
+		App: sp.App, Slug: "wt-1", Slot: 1,
+		Owner: "4242", OwnerKind: protocol.KindHost,
+		Path: worktree, PathVisible: true, State: store.StateActive,
+		DescriptorPath: filepath.Join(worktree, "wt-env.yaml"),
+		Resources:      map[string]spec.Resolved{"compose": {Type: "namespace", Value: "pins-app-wt-1-1"}},
+		CreatedAt:      now, LastSeen: now,
+	})
+	if err := descriptor.Write(filepath.Join(worktree, "wt-env.yaml"), "yaml", &descriptor.Descriptor{
+		Version: descriptor.Version, App: sp.App, Slug: "wt-1", Slot: 1,
+		Path: worktree, Description: "pins fixture",
+		Resources: map[string]spec.Resolved{"compose": {Type: "namespace", Value: "pins-app-wt-1-1"}},
+		State:     descriptor.BuildState(sp), Extras: map[string]any{},
+	}); err != nil {
+		t.Fatalf("writing the descriptor: %v", err)
+	}
+	// The governed compose file pins name: — the silent-attach trap.
+	if err := os.WriteFile(filepath.Join(worktree, "compose.yaml"),
+		[]byte("name: pinned\nservices:\n  api:\n    image: nginx\n"), 0o644); err != nil {
+		t.Fatalf("writing the compose file: %v", err)
+	}
+
+	res := runDoctor(t, h, sess)
+	for _, f := range res.Findings {
+		if strings.Contains(f.Message, "pins name") {
+			if !strings.Contains(f.Remedy, "wt init") {
+				t.Errorf("pinned-name remedy = %q, want an edit plus 'wt init'", f.Remedy)
+			}
+			return
+		}
+	}
+	t.Errorf("no pinned-name finding: %s", findingsDump(res))
+}
