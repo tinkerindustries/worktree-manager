@@ -222,9 +222,12 @@ func resolvePort(ctx Context, r *Resource) (int, error) {
 
 // resolveCIDR slices the pool by slot: slot 1 takes the first block, each
 // block is 2^(32-size) addresses (M3 §4.3). Exhaustion is an allocation
-// concern with on_exhaustion semantics in phase 4, not a validation failure;
-// this pure function refuses a slice outside the pool rather than inventing
-// one.
+// concern with on_exhaustion semantics (03-drivers.md §4.3), not a
+// validation failure: `shared-pool` (the default) falls back to the shared
+// pool itself — the whole pool, unisolated, reached by every fallen-back
+// worktree — and `fail` stops with a refusal. The loud warning that must
+// accompany a fallback is the driver's (FallbackNote), so this pure
+// function only decides the value.
 func resolveCIDR(s *Spec, ctx Context, r *Resource) (string, error) {
 	_, poolNet, err := net.ParseCIDR(*r.Pool)
 	if err != nil {
@@ -237,12 +240,23 @@ func resolveCIDR(s *Spec, ctx Context, r *Resource) (string, error) {
 	poolSize := uint64(1) << (32 - poolBits)
 	offset := uint64(ctx.Slot-1) * block
 	if offset+block > poolSize {
-		return "", &FieldError{
-			Field: "resources",
-			Reason: fmt.Sprintf(
-				"cidr resource %q: pool %s exhausted at slot %d (block %d of %d); on_exhaustion handling lands with the driver in phase 4",
-				r.Name, *r.Pool, ctx.Slot, offset/block+1, poolSize/block),
+		if exhaustionMode(r) == "fail" {
+			return "", &FieldError{
+				Field: "resources",
+				Reason: fmt.Sprintf(
+					"cidr resource %q: pool %s exhausted at slot %d (block %d of %d); on_exhaustion: fail stops the allocation",
+					r.Name, *r.Pool, ctx.Slot, offset/block+1, poolSize/block),
+			}
 		}
+		// shared-pool fallback: the value is the shared pool itself, with
+		// the pool's mask. Nothing reallocates a fallen-back cidr when a
+		// slot later frees, so the warning this fallback emits persists
+		// for the life of the worktree (03-drivers.md §4.3, §8).
+		value := poolNet.IP.String() + "/" + strconv.Itoa(poolBits)
+		if err := checkResolvedCap(s, r, value); err != nil {
+			return "", err
+		}
+		return value, nil
 	}
 	start := ip4FromUint32(poolStart + offset)
 	value := start.String() + "/" + strconv.Itoa(size)

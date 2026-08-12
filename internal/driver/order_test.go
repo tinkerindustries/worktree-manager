@@ -178,7 +178,7 @@ func TestTeardownAllReverseOrderContinuingPastFailure(t *testing.T) {
 
 	d := &scriptedDriver{typ: "state-path", apply: true, teardown: true,
 		teardownErr: map[string]error{"b": errScripted("b is stuck")}}
-	rep := NewRegistry(d).TeardownAll(s, values, env, nil)
+	rep := NewRegistry(d).TeardownAll(s, values, env, nil, nil)
 
 	// Reverse order: c, b (fails), a — and the failure does not stop a.
 	if len(d.tornDown) != 3 || d.tornDown[0] != "c" || d.tornDown[1] != "b" || d.tornDown[2] != "a" {
@@ -209,7 +209,7 @@ func TestTeardownAllRefusalAndUnavailable(t *testing.T) {
 			"c": &RefusalError{Reason: "refusing to purge /x: it is the shared source"},
 			"b": &ErrUnavailable{Reason: "the docker daemon is unreachable"},
 		}}
-	rep := NewRegistry(d).TeardownAll(s, values, env, nil)
+	rep := NewRegistry(d).TeardownAll(s, values, env, nil, nil)
 
 	if rep.Clean() {
 		t.Fatal("the report must not be clean")
@@ -237,7 +237,7 @@ func TestTeardownAllRegistryHandleWithoutSpecRow(t *testing.T) {
 	env := Env{Spec: s, Home: home, Worktree: home + "/wt-1"}
 
 	d := &scriptedDriver{typ: "state-path", apply: true, teardown: true}
-	rep := NewRegistry(d).TeardownAll(s, values, env, nil)
+	rep := NewRegistry(d).TeardownAll(s, values, env, nil, nil)
 	if rep.Clean() {
 		t.Fatal("a recorded handle with no spec row must keep the slot held")
 	}

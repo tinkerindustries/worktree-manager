@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
+	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
@@ -80,6 +81,11 @@ type Handler struct {
 	// the real CLI runner (driver.NewDocker) is used; tests install fakes.
 	Docker driver.Docker
 
+	// Machine is the VM runner seam the machine driver runs against. Nil
+	// means the platform's real runner (platform.Machine) is used; tests
+	// install fakes.
+	Machine platform.MachineRunner
+
 	// ReapBinaries is the reaper's allowlist seam: the binaries the spec
 	// names, which are the only processes the reaper may signal
 	// (04-lifecycle.md §6). The default reads reaper.binaries from the
@@ -97,6 +103,17 @@ type Handler struct {
 	// (24 hours, the phase-6 choice — plan.md §9.2, R3); a test shortens
 	// it to exercise reclamation without waiting a day.
 	ReclaimInterval time.Duration
+
+	// SweepInterval is how often the coordinator's own cleanup sweep runs.
+	// Zero means SweepIntervalDefault (an hour, the phase-8 choice); a
+	// test shortens it to exercise the sweep without waiting an hour.
+	SweepInterval time.Duration
+
+	// Gh is the scheduled sweep's gh seam: the coordinator shells out to
+	// gh with the given working directory ("" for none), the way the
+	// interactive verb does. Nil means the real gh runner; tests install
+	// fakes.
+	Gh func(dir string, args ...string) ([]byte, error)
 
 	st  *store.Store
 	log *slog.Logger

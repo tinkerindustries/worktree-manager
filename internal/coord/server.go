@@ -79,15 +79,18 @@ const sweepInterval = time.Minute
 // startSweeper runs the coordinator's own timers for the life of the
 // process: the reserving-ageing timer (a reserving entry past its timeout
 // is dropped, which covers a client that died mid-sequence,
-// ARCHITECTURE.md §11.2) and reclamation — aged-out ephemeral clients'
+// ARCHITECTURE.md §11.2), reclamation — aged-out ephemeral clients'
 // entries are torn down by handle on the reclamation interval
-// (ARCHITECTURE.md §10.2, phase 6). Both stop when ctx is done and neither
-// is tracked by the wait group — they hold no in-flight request.
+// (ARCHITECTURE.md §10.2, phase 6) — and the scheduled cleanup sweep, the
+// resident process's replacement for an OS scheduler job (06-fleet.md
+// §7.2, revision 2). All three stop when ctx is done and none is tracked
+// by the wait group — they hold no in-flight request.
 func (s *Server) startSweeper(ctx context.Context) {
 	go func() {
 		t := time.NewTicker(sweepInterval)
 		defer t.Stop()
 		lastReclaim := time.Now()
+		lastSweep := time.Now()
 		for {
 			select {
 			case <-ctx.Done():
@@ -113,6 +116,19 @@ func (s *Server) startSweeper(ctx context.Context) {
 						s.log.Info("reclaimed aged-out ephemeral clients' entries", "count", reclaimed)
 					}
 					lastReclaim = now
+				}
+				// The cleanup sweep runs on its own interval, more
+				// conservatively than the interactive verb: it never
+				// touches another client's entries, and it logs every
+				// skip (06-fleet.md §7.2).
+				if now.Sub(lastSweep) >= s.h.sweepInterval() {
+					cleaned, serr := s.h.SweepCleanup()
+					if serr != nil {
+						s.log.Warn("scheduled cleanup", "err", serr)
+					} else if cleaned > 0 {
+						s.log.Info("scheduled cleanup cleaned entries", "count", cleaned)
+					}
+					lastSweep = now
 				}
 			}
 		}

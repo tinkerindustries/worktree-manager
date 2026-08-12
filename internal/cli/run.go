@@ -85,6 +85,15 @@ usage:
   wt clients [--json]                the known clients: kind, last seen,
                                      entries owned, and which ephemeral
                                      clients have aged out
+  wt cleanup [--json] [--dry-run]    the only verb that destroys a
+      [--cwd <dir>]                  worktree unattended: gated on gh
+                                     (missing or unauthenticated gh cleans
+                                     nothing and exits 4), asks gh whether
+                                     each branch's PR is merged, applies
+                                     the full rm safety checks even then,
+                                     and never touches an unverifiable
+                                     entry; --dry-run previews exactly
+                                     what the real run does
   wt help                            this help
 
 every verb offers --json: exactly one JSON object on stdout, nothing else.
@@ -131,6 +140,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runReconcile(args[1:], stdout, stderr)
 	case "clients":
 		return runClients(args[1:], stdout, stderr)
+	case "cleanup":
+		return runCleanup(args[1:], stdout, stderr)
 	default:
 		WriteError(stderr, UsageError(
 			"run 'wt help' for the verb list",

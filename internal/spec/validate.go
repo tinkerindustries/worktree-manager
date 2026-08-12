@@ -128,6 +128,16 @@ func portForm(r *Resource) string {
 	return "stride"
 }
 
+// exhaustionMode returns the cidr resource's exhaustion behaviour,
+// applying the shared-pool default (M3 §4.3: "B5.2 requires a fallback to
+// the shared pool rather than an outright failure").
+func exhaustionMode(r *Resource) string {
+	if r.OnExhaustion != nil {
+		return *r.OnExhaustion
+	}
+	return DefaultCIDRExhaustion
+}
+
 // validateResourceFields checks the per-type field set and the per-type
 // constraints. A field that is not valid for the declared type is refused,
 // so a state-path carrying `pool:` cannot be silently ignored.

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/driver"
 	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
@@ -120,10 +121,14 @@ func (h *Handler) allocate(s *Session, req *protocol.Request) *protocol.Response
 		if serr != nil {
 			return &protocol.Response{Error: serr}
 		}
+		// The cidr fallback warning persists for the life of the worktree
+		// (nothing reallocates a fallen-back cidr), so a re-run reports it
+		// again, loudly.
 		return &protocol.Response{Result: mustJSON(protocol.AllocateResult{
 			App: app, Slug: e.Slug, Slot: e.Slot, State: e.State,
 			Resources: e.Resources, PathVisible: e.PathVisible, Secrets: e.Secrets,
 			Path: e.Path, Existed: true, Shared: shared,
+			Notes: cidrFallbackNotes(&args.Spec, e.Resources, e.Slot),
 		})}
 	}
 
@@ -243,7 +248,36 @@ func (h *Handler) allocate(s *Session, req *protocol.Request) *protocol.Response
 		App: app, Slug: entry.Slug, Slot: entry.Slot, State: entry.State,
 		Resources: entry.Resources, PathVisible: entry.PathVisible, Secrets: entry.Secrets,
 		ProbeNote: probeNote, Skipped: skipped, Shared: shared,
+		Notes: cidrFallbackNotes(&args.Spec, entry.Resources, entry.Slot),
 	})}
+}
+
+// cidrFallbackNotes returns the loud shared-pool fallback warning for
+// every cidr resource whose recorded value fell back — the allocation
+// path's half of the 03-drivers.md §4.3 rule that a fallback is never
+// silent. The driver's Verify reports the same warning for the life of the
+// worktree, because nothing reallocates a fallen-back cidr when a slot
+// later frees.
+func cidrFallbackNotes(sp *spec.Spec, resources map[string]spec.Resolved, slot int) []string {
+	var notes []string
+	for i := range sp.Resources {
+		r := &sp.Resources[i]
+		if r.Type != "cidr" {
+			continue
+		}
+		v, ok := resources[r.Name]
+		if !ok {
+			continue
+		}
+		value, ok := v.Value.(string)
+		if !ok {
+			continue
+		}
+		if note := driver.FallbackNote(r, value, slot); note != "" {
+			notes = append(notes, fmt.Sprintf("%s: %s", r.Name, note))
+		}
+	}
+	return notes
 }
 
 // ctxFor builds the template context for one existing entry: the entry's
@@ -579,6 +613,19 @@ func (h *Handler) AgeReserving(now time.Time, timeout time.Duration) (int, error
 // storeErr turns a store failure into the wire error with the exit code and
 // remedy. An unparseable registry is reported, never truncated and
 // recreated (02-coordination.md §14).
+//
+// The 06-fleet.md §5 row "registry unparseable | rebuild from every
+// descriptor this view can see" is answered here, in phase 8, and the
+// answer is that the rebuild still cannot happen: the registry is the only
+// source of repository locations on the machine (doctorRepos states the
+// same bound), so a rebuild could only discover the descriptors of the one
+// repository the caller happens to stand in. Rebuilding from that one
+// repo's worktrees would silently drop every other repo's entries — and
+// the rebuild cannot know which entries were this view's, so every
+// descriptor-visible worktree would be re-registered under the caller's
+// ownership, stealing other clients' slots and resources. A7's "rebuilding
+// the registry from descriptors must always be safe" is exactly what that
+// would violate, so the refusal stands, naming the restore.
 func (h *Handler) storeErr(action string, err error) *protocol.Response {
 	var ve *store.VersionError
 	if errors.As(err, &ve) {
@@ -587,7 +634,7 @@ func (h *Handler) storeErr(action string, err error) *protocol.Response {
 	msg := fmt.Sprintf("%s: %v", action, err)
 	remedy := "check the coordinator's store (WT_HOME) is readable and writable, then re-run"
 	if strings.Contains(err.Error(), "not a readable store file") {
-		remedy = "restore the store file from a backup; an unparseable store file is never truncated and recreated (rebuild-from-descriptors lands in a later phase)"
+		remedy = "restore the store file from a backup; an unparseable registry is never truncated and recreated — rebuilding it from descriptors is not possible, because the registry is the only source of repository locations and a rebuild from one repo's worktrees would silently drop every other repo's (and every other client's) entries"
 	}
 	return respErr(1, msg, remedy)
 }

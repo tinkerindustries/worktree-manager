@@ -28,9 +28,19 @@ resources:
 
 hooks:
   install:
-    run: ./scripts/provision.sh --profile {vm}
+    # The machine driver created the profile; this hook waits for its
+    # dockerd (the warm-up is measured in minutes) and creates the
+    # worktree's egress network on it with the worktree's /22 — the
+    # network that makes the cidr allocation real.
+    run: ./scripts/provision.sh --profile {vm} --subnet {egress}
+  build:
+    run: go build -o {worktree}/vm-app-check ./bin/server.go
+    timeout: 5m
   health:
-    run: ./scripts/health.sh --profile {vm}
+    # The VM is up and its egress network carries exactly this worktree's
+    # /22 — a second worktree's network with a different subnet fails this
+    # check, which is how a collision would surface.
+    run: ./scripts/health.sh --profile {vm} --subnet {egress}
 
 emit:
   descriptor:

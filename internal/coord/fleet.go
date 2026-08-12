@@ -145,7 +145,7 @@ func (h *Handler) doctor(s *Session, req *protocol.Request) *protocol.Response {
 		findings = append(findings, protocol.DoctorFinding{
 			Level:   "error",
 			Message: fmt.Sprintf("the registry is not readable: %v", err),
-			Remedy:  "restore the store file from a backup (an unparseable registry is never truncated and recreated), then re-run 'wt doctor'",
+			Remedy:  "restore the store file from a backup; an unparseable registry is never truncated and recreated — rebuilding it from descriptors is not possible, because the registry is the only source of repository locations and a rebuild from one repo's worktrees would silently drop every other repo's (and every other client's) entries",
 		})
 		return &protocol.Response{Result: mustJSON(protocol.DoctorResult{Findings: findings})}
 	}
@@ -193,6 +193,7 @@ func (h *Handler) doctor(s *Session, req *protocol.Request) *protocol.Response {
 	h.doctorBands(bands, &findings, &notes)
 	h.doctorCeilings(appSpecs, occupiedByApp, &findings)
 	h.doctorReapers(appSpecs, &findings)
+	h.doctorMachines(appSpecs, &findings, &notes)
 
 	if len(notes) > 0 {
 		sort.Strings(notes)
@@ -351,13 +352,18 @@ func (h *Handler) doctorEntry(e *store.Entry, clients store.ClientsFile, specs s
 			continue
 		}
 		for _, f := range vf {
-			if f.Level != driver.LevelInfo {
-				*findings = append(*findings, protocol.DoctorFinding{
-					App: app, Slug: slug, Level: f.Level,
-					Message: f.Message,
-					Remedy:  driftRemedy(f, res, e.Path),
-				})
+			if f.Level == driver.LevelInfo {
+				// An observation — the machine driver's "cannot be
+				// checked from here" bound — is a note, never a finding
+				// and never a silent drop (bounded coverage, plan.md §3).
+				*notes = append(*notes, fmt.Sprintf("%s/%s: %s", app, slug, f.Message))
+				continue
 			}
+			*findings = append(*findings, protocol.DoctorFinding{
+				App: app, Slug: slug, Level: f.Level,
+				Message: f.Message,
+				Remedy:  driftRemedy(f, res, e.Path),
+			})
 		}
 		// The compose-project-gone check: an active entry whose compose
 		// project has no objects at all has lost its stack (drift row:
@@ -667,7 +673,7 @@ func (h *Handler) reconcile(s *Session, req *protocol.Request) *protocol.Respons
 		// teardown works from a handle held in the registry
 		// (ARCHITECTURE.md §10.2).
 		reap := h.reap(e, &args.Spec, false, false)
-		tresp := h.teardownEntry(s, e, reg, &args.Spec, nil)
+		tresp := h.teardownEntry(s, e, reg, &args.Spec, nil, nil)
 		if tresp.Error != nil {
 			out = append(out, protocol.ReconcileOutcome{
 				App: ref.App, Slug: ref.Slug, Action: "torn-down",
@@ -770,7 +776,7 @@ func (h *Handler) ReclaimEphemeral(now time.Time) (int, error) {
 				"app", e.App, "slug", e.Slug, "owner", e.Owner)
 			continue
 		}
-		tresp := h.teardownEntry(nil, e, reg, sp, nil)
+		tresp := h.teardownEntry(nil, e, reg, sp, nil, nil)
 		if tresp.Error != nil {
 			h.log.Warn("reclamation teardown left resources behind",
 				"app", e.App, "slug", e.Slug, "err", tresp.Error.Msg)
@@ -907,4 +913,73 @@ func namespaceKind(r *spec.Resource) string {
 		return *r.Kind
 	}
 	return spec.DefaultNamespaceKind
+}
+
+// doctorMachines reports an app approaching its machine capacity — the
+// "max_concurrent machines approaching" finding of 06-fleet.md §4, whose
+// remedy is B4.2's message naming what is running. The count is the
+// daemon's own instances, one machine-wide count per run, because the
+// constraint is on the machine (03-drivers.md §4.5, §8): the capacity
+// guard refuses a new instance past max_concurrent, and doctor says so
+// before the refusal is the first anyone hears of it. Doctor reads
+// everything and writes nothing, so the runner is only asked, never
+// started or stopped.
+func (h *Handler) doctorMachines(appSpecs map[string]*spec.Spec, findings *[]protocol.DoctorFinding, notes *[]string) {
+	hasMachine := false
+	for _, sp := range appSpecs {
+		for i := range sp.Resources {
+			if sp.Resources[i].Type == "machine" {
+				hasMachine = true
+				break
+			}
+		}
+		if hasMachine {
+			break
+		}
+	}
+	if !hasMachine {
+		return
+	}
+	runner := h.machine()
+	instances, err := runner.List()
+	if err != nil {
+		// No runner on this platform, or the helper cannot answer: the
+		// bound is stated, never a silent pass.
+		*notes = append(*notes, fmt.Sprintf("the machine capacity check was skipped: %v", err))
+		return
+	}
+	var running []string
+	for _, in := range instances {
+		if in.Running {
+			running = append(running, in.Name)
+		}
+	}
+	sort.Strings(running)
+	for app, sp := range appSpecs {
+		for i := range sp.Resources {
+			r := &sp.Resources[i]
+			if r.Type != "machine" {
+				continue
+			}
+			max := spec.DefaultMachineMaxConcurrent
+			if r.MaxConcurrent != nil && *r.MaxConcurrent >= 1 {
+				max = *r.MaxConcurrent
+			}
+			// "Approaching": three quarters of the limit or more, the same
+			// ratio the slot-ceiling finding uses.
+			if len(running)*4 < max*3 {
+				continue
+			}
+			var parts []string
+			for _, n := range running {
+				parts = append(parts, fmt.Sprintf("%s (tear down with %q)", n, runner.DeleteCommand(n)))
+			}
+			*findings = append(*findings, protocol.DoctorFinding{
+				App: app, Level: "warning",
+				Message: fmt.Sprintf("app %q is approaching the machine capacity: %d of %d instances are running (%s); the next new instance is refused by the capacity guard",
+					app, len(running), max, strings.Join(parts, ", ")),
+				Remedy: "tear one instance down with the command named above, then re-run 'wt doctor'",
+			})
+		}
+	}
 }

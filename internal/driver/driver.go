@@ -31,6 +31,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 )
 
@@ -148,6 +149,10 @@ type Env struct {
 	// purged on teardown; every other state-path is left alone — teardown
 	// only happens when the purge flag is given (03-drivers.md §4.4).
 	PurgeFlags []string
+	// KeepFlags are the CLI keep flags the caller passed (e.g.
+	// "--keep-vm"). A machine resource whose keep_flag was passed is left
+	// up on teardown — the entry drops but the VM stays (B4.3).
+	KeepFlags []string
 	// Reservations are the ledger's host-global reservations at call time.
 	// The namespace driver refuses to tear down a project whose name matches
 	// one (03-drivers.md §4.2, B8.2).
@@ -157,6 +162,12 @@ type Env struct {
 	// reachable, which every docker-touching operation reports as
 	// unavailable.
 	Docker Docker
+	// Machine is the platform's VM runner seam (Colima on macOS, WSL2 on
+	// Windows). The real implementation lives in internal/platform; tests
+	// install fakes, exactly like Docker. nil means no runner is
+	// installed, which every machine-touching operation reports as
+	// unavailable.
+	Machine platform.MachineRunner
 }
 
 // Reservation is one host-global reservation as the ledger declares it:

@@ -238,15 +238,25 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	for _, s := range res.Skipped {
 		notes = append(notes, s)
 	}
+	for _, n := range res.Notes {
+		notes = append(notes, n)
+	}
 
 	// Step 3: materialise — driver apply in dependency order. On a failure
 	// whose rollback was clean the client drops the entry (release); on a
 	// failure whose rollback left resources behind the entry moves to
 	// tearing-down and the client must not release what survived (B2.3).
+	// A refusal (exit 3 — the machine capacity guard) or an unavailability
+	// (exit 4 — no VM runner on this platform) comes back as a protocol
+	// error; the entry is the caller's own and reserving, so releasing it
+	// is the same rollback the in-band failure path drives.
 	mraw, merr := sess.request("materialise", &protocol.MaterialiseArgs{
 		App: sp.App, Slug: name, Spec: *sp,
 	})
 	if merr != nil {
+		if _, rerr := sess.request("release", &protocol.EntryRef{App: sp.App, Slug: name}); rerr != nil {
+			fmt.Fprintf(stderr, "warning: releasing the entry after the failed init failed: %v; a reserving entry ages out on the coordinator's timer\n", rerr)
+		}
 		WriteError(stderr, merr)
 		return merr.Code
 	}

@@ -82,9 +82,11 @@ internal/coord  the coordinator's request core, socket server and the
               coordinator's timer's teardown of aged-out ephemeral
               clients' entries by handle
 internal/driver  M3: the six-operation driver contract, the port,
-              namespace and state-path drivers, the docker CLI seam, and
-              the sequencing (apply in dependency order, teardown in
-              reverse, continuing past failures)
+              namespace, state-path, cidr and machine drivers, the docker
+              CLI seam, the platform machine-runner seam, and the
+              sequencing (apply in dependency order with machine forced
+              first among its dependents, teardown in reverse continuing
+              past failures)
 ```
 
 Import rules, fixed for the whole plan:

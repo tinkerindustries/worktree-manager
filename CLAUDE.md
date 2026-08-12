@@ -48,12 +48,26 @@ configuration; neither binary branches on repo identity.
 
 - `internal/spec` — the `wt.yaml` schema: parser, validator, template
   evaluator, the walk-up `wt.yaml` finder, and the quoted YAML emitter.
+- `internal/driver` — the six-operation contract, the port, namespace,
+  state-path, cidr and machine drivers, the docker CLI seam, and the
+  sequencing: apply in dependency order with machine forced first among
+  its dependents (a VM must exist before anything expects its daemon),
+  teardown in reverse continuing past failures. The machine driver's
+  rails — the capacity guard (refuse a new instance past
+  `max_concurrent`, naming what is running and how to tear one down; the
+  count is the daemon's own instances; re-running a running profile stays
+  allowed), background warm-up, `--keep-vm`, and the documented bypass —
+  are proved against a fake `platform.MachineRunner`; the live Colima
+  path is reported not_run on this machine.
 - `internal/cli` — verb dispatch, flag parsing, output, the exit-code error
   type, the one dial-and-request helper (exit 5 lives there), and the
   verbs: `spec validate`, `spec explain`, `guard`, `show`,
   `daemon status`, `daemon install`, `bands list`, `bands suggest`,
   `bands reserve`, `ports scan`, `init`, `start`, `rm`, `list`, `doctor`,
-  `reconcile` and `clients`.
+  `reconcile`, `clients` and `cleanup` (gated on gh: missing or
+  unauthenticated gh cleans nothing and exits 4; the full rm safety
+  checks apply even when the PR is merged; unverifiable entries are never
+  touched).
 - `internal/identity` — M1: classification, root resolution, containment,
   slug validation, descriptor location, the guard engine, and the
   per-session classification cache (`WT_GUARD_CACHE`) the generated guard
@@ -74,8 +88,11 @@ configuration; neither binary branches on repo identity.
   onboarding skill and the tests drive it; `cmd/wt` never imports it.
 - `internal/platform` — M8: symlink-resolved path realisation, the mount's
   case-sensitivity probe, the socket path, peer credentials, the private
-  store-dir permission model, the atomic-write helper, and the launchd
-  supervisor seam. The only package permitted to branch on `GOOS`.
+  store-dir permission model, the atomic-write helper, the launchd
+  supervisor seam, and the machine runner seam (Colima on macOS, WSL2 on
+  Windows, nothing elsewhere — the `MachineRunner` interface the machine
+  driver shells out through and its fake-runner tests fake). The only
+  package permitted to branch on `GOOS`.
 - `internal/descriptor` — the per-worktree allocation record: type,
   reader, atomic writer, the shared-block and isolation-state builders,
   and the `info/exclude` ignore rule.
@@ -103,7 +120,15 @@ configuration; neither binary branches on repo identity.
   ledger) and the generated-artefact drift check: `doctor` scans each
   repo's tracked files for the managed marker, compares the recorded
   `# wt-field:` records against the current spec and band ledger, and
-  reports the generated file and the field that moved.
+  reports the generated file and the field that moved. Phase 8 adds the
+  machine-capacity doctor finding (an app approaching `max_concurrent`,
+  naming what is running and how to tear one down) and the scheduled
+  cleanup sweep: the coordinator's own timer (hourly, on the one-minute
+  sweeper), deliberately more conservative than `wt cleanup` — only the
+  coordinator's own host user's entries, never adopting a view, every
+  skip logged. `doctor`'s unparseable-registry row keeps its refusal and
+  states plainly why rebuild-from-descriptors cannot be safe: the
+  registry is the only source of repository locations.
 - `cmd/wt`, `cmd/wtd` — the two entry points.
 - `.claude/skills/onboarding/` — the onboarding skill (a document): the
   eight phases, the primitives card, the plain-app walkthrough. It is the

@@ -24,6 +24,15 @@ type Docker interface {
 	// ListVolumes returns the volume names carrying the project label.
 	ListVolumes(project string) ([]string, error)
 
+	// ListNetworksAll returns the name of every network on the daemon,
+	// regardless of label — the cidr driver's probe input, which asks
+	// whether any existing network overlaps a derived slice
+	// (03-drivers.md §4.3).
+	ListNetworksAll() ([]string, error)
+	// NetworkSubnet returns the network's IPv4 subnet as a CIDR string,
+	// or "" when the network declares none.
+	NetworkSubnet(name string) (string, error)
+
 	// RemoveContainers force-removes the containers by ID.
 	RemoveContainers(ids []string) error
 	// RemoveNetworks removes the networks by ID.

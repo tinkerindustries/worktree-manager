@@ -22,16 +22,20 @@ type fakeDocker struct {
 	containers map[string][]string // project → container ids
 	networks   map[string][]string
 	volumes    map[string][]string
-	failRemove map[string]error // "container:<id>", "network:<id>", "volume:<name>" → error
-	removed    []string
+	// allNetworks maps every network name to its subnet, the cidr
+	// driver's probe input (ListNetworksAll / NetworkSubnet).
+	allNetworks map[string]string
+	failRemove  map[string]error // "container:<id>", "network:<id>", "volume:<name>" → error
+	removed     []string
 }
 
 func newFakeDocker() *fakeDocker {
 	return &fakeDocker{
-		containers: map[string][]string{},
-		networks:   map[string][]string{},
-		volumes:    map[string][]string{},
-		failRemove: map[string]error{},
+		containers:  map[string][]string{},
+		networks:    map[string][]string{},
+		volumes:     map[string][]string{},
+		allNetworks: map[string]string{},
+		failRemove:  map[string]error{},
 	}
 }
 
@@ -40,6 +44,15 @@ func (f *fakeDocker) Version() error { return f.versionErr }
 func (f *fakeDocker) ListContainers(p string) ([]string, error) { return f.containers[p], nil }
 func (f *fakeDocker) ListNetworks(p string) ([]string, error)   { return f.networks[p], nil }
 func (f *fakeDocker) ListVolumes(p string) ([]string, error)    { return f.volumes[p], nil }
+
+func (f *fakeDocker) ListNetworksAll() ([]string, error) {
+	names := make([]string, 0, len(f.allNetworks))
+	for name := range f.allNetworks {
+		names = append(names, name)
+	}
+	return names, nil
+}
+func (f *fakeDocker) NetworkSubnet(name string) (string, error) { return f.allNetworks[name], nil }
 
 func (f *fakeDocker) RemoveContainers(ids []string) error {
 	return f.remove("container", ids, f.containers)

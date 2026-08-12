@@ -72,7 +72,7 @@ func (h *Handler) rm(s *Session, req *protocol.Request) *protocol.Response {
 
 	// The real teardown: entry drop on a clean teardown, tearing-down with
 	// the note and the slot held otherwise (B2.3).
-	tresp := h.teardownEntry(s, e, reg, &args.Spec, args.PurgeFlags)
+	tresp := h.teardownEntry(s, e, reg, &args.Spec, args.PurgeFlags, args.KeepFlags)
 	if tresp.Error != nil {
 		// The error carries the teardown's own exit code; the reap report
 		// is folded into the message so the bounded-coverage statement
@@ -98,5 +98,6 @@ func (h *Handler) rm(s *Session, req *protocol.Request) *protocol.Response {
 		Path:       e.Path,
 		Resources:  sortedResourceNames(e.Resources),
 		Removed:    release.Removed,
+		Notes:      release.Notes,
 	})}
 }
