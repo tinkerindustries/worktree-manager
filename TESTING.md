@@ -70,9 +70,44 @@ This layer needs nothing installed but git.
 
 ## Layer 3 — in-process coordinator
 
-Allocation, authorisation, entry lifecycle and migration against a store
-path and protocol messages, with no socket and no supervisor. This layer
-starts in phase 2, when the coordinator skeleton lands.
+The coordinator's inputs are protocol messages and a store path, so a test
+runs a full request with no socket, no supervisor and no container
+(ARCHITECTURE.md §13.3). The harness is a deliverable rather than a test
+detail — phases 3 to 6 run allocation, authorisation, entry lifecycle and
+migration against it. It lives in `internal/coord`:
+
+- `Harness` (internal/coord/harness.go): opens a store at a temp root,
+  builds the handler, and exposes `Connect(kind, token)` (the hello
+  exchange, with a synthetic peer — the harness has no kernel) and
+  `Request(ctx, session, verb, args)` (one full request round trip).
+- The coordinator's phase-2 tests in `internal/coord/coord_test.go`:
+  `TestHarnessFullRequest` (exit criterion 4), the version-refusal
+  direction tests, identity assignment (host from peer credentials, named
+  token, ephemeral session id), clients.json observation, and
+  `TestServerGracefulShutdown`, which runs the real socket server over a
+  temp socket to pin the lifecycle (cancellation, in-flight requests,
+  socket-file cleanup).
+- The store's own tests in `internal/store/store_test.go`: root
+  resolution, 0700/0600, atomic writes, the schema_version refusal, the
+  unwritable-root error naming the path.
+- The protocol's tests in `internal/protocol/protocol_test.go`: framing
+  (one JSON object per newline-terminated message) and `Agree` naming the
+  upgrade in both directions.
+- `daemon status`'s state machine is driven in
+  `internal/cli/daemon_test.go`: all four states with the platform
+  observations injected, plus end-to-end states with the real
+  observations — a planted registration under `--prefix` and a fake hello
+  server on a temp socket (a stand-in for the coordinator that never
+  imports coordinator code into the client's tests).
+
+Run one test:
+
+```sh
+go test ./internal/coord/ -run TestHarnessFullRequest -v
+go test ./internal/cli/ -run TestDaemonStatusThreeStates -v
+```
+
+This layer needs nothing installed.
 
 ## Layer 4 — live acceptance
 
