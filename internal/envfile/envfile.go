@@ -77,13 +77,13 @@ func (e *MarkersError) Error() string {
 	start, end := describe("start", e.StartLines), describe("end", e.EndLines)
 	switch {
 	case len(e.StartLines) > 1 || len(e.EndLines) > 1:
-		return fmt.Sprintf("refusing to write %s: nested or duplicated managed markers (%s; %s)", "the .env", start, end)
+		return fmt.Sprintf("refusing to write the .env: nested or duplicated managed markers (%s; %s)", start, end)
 	case len(e.StartLines) == 1 && len(e.EndLines) == 1 && e.StartLines[0] >= e.EndLines[0]:
-		return fmt.Sprintf("refusing to write %s: the end marker at line %d precedes its start marker at line %d", "the .env", e.EndLines[0], e.StartLines[0])
+		return fmt.Sprintf("refusing to write the .env: the end marker at line %d precedes its start marker at line %d", e.EndLines[0], e.StartLines[0])
 	case len(e.StartLines) == 1:
-		return fmt.Sprintf("refusing to write %s: the managed block is never closed (%s)", "the .env", start)
+		return fmt.Sprintf("refusing to write the .env: the managed block is never closed (%s)", start)
 	default:
-		return fmt.Sprintf("refusing to write %s: an end marker without a start marker (%s)", "the .env", end)
+		return fmt.Sprintf("refusing to write the .env: an end marker without a start marker (%s)", end)
 	}
 }
 
