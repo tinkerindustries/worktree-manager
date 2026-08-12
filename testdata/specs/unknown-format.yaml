@@ -1,0 +1,10 @@
+# Invalid: xml is not one of the two descriptor formats. Rejected at
+# validation naming emit.descriptor.format.
+version: 1
+app: format-app
+slots:
+  max: 4
+emit:
+  descriptor:
+    filename: wt-env.xml
+    format: xml

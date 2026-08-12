@@ -1,0 +1,124 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: gofmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l cmd internal)"
+          if [ -n "$unformatted" ]; then
+            echo "unformatted files:" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+
+  vet:
+    name: go vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+      - name: go vet
+        run: go vet ./...
+
+  test:
+    name: go test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+      - name: go test
+        run: go test ./...
+
+  cross-build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: darwin
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: linux
+            goarch: amd64
+          - goos: windows
+            goarch: amd64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+      - name: cross-compile
+        run: |
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build ./...
+
+  windows:
+    # Phase 8b: the parts a hosted windows-latest runner can actually
+    # prove (plan.md §5, phase 8's exit criteria) — the build, the unit
+    # and in-process layers, the named pipe carrying a full request
+    # (internal/platform/pipe_windows_test.go,
+    # internal/coord/pipe_integration_test.go), the store ACL set and its
+    # refusal path (private_dir_windows_test.go), the task XML shape and
+    # status parsing (task_windows_test.go), and long-path and
+    # mapped-drive path realisation (realpath_windows_test.go). The
+    # interactive-desktop surfaces — registering the logon task against a
+    # real Task Scheduler, taskkill's escalation against a real desktop
+    # process, Docker Desktop pipe and WSL2 reachability — are not
+    # provable on a runner and are reported not_run.
+    #
+    # Advisory, not gating. Windows is supported with a weaker reaper and
+    # permission model, and PLAN-SCOPE.md has it reported unmet rather than
+    # simulated — no Windows machine has ever run this code. The job exists
+    # so the failures are visible and countable; it does not fail the run,
+    # because a permanently red required job would hide the Linux signal
+    # that does gate.
+    name: windows unit and in-process tests (advisory)
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+      - name: build
+        run: go build ./...
+      - name: go test
+        run: go test ./...
+
+  acceptance:
+    name: acceptance gates (docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+      # The two gates (plan.md §6) run against a coordinator in the
+      # foreground — no supervisor — on a Linux runner with docker, the
+      # only arrangement a hosted runner offers (phase 6). Gate 2 builds
+      # the client binary and runs it inside a golang:1.26-alpine
+      # container with the coordinator's socket bind-mounted, so the
+      # runner's docker daemon must be able to share the workspace path
+      # (true on ubuntu-latest).
+      - name: go test -tags acceptance
+        run: go test -tags acceptance ./...

@@ -1,0 +1,11 @@
+# The dependent test project (B3.1): run against the dev stack's containers
+# by passing `-p {compose}-test`. This project's name is derived from the
+# dev project's, so the two move together and teardown by label covers both.
+services:
+  test:
+    build: .
+    command: ["go", "test", "./..."]
+    depends_on:
+      - api
+    environment:
+      API_PORT: "${API_PORT}"

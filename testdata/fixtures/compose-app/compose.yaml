@@ -1,0 +1,26 @@
+# The dev stack. No `name:` here on purpose: the project name comes from the
+# worktree allocation (`-p {compose}`), and a pinned name would make the
+# second worktree silently attach to the first one's containers (B2.1,
+# D2). `verify` reports a pinned `name:` as the finding that catches that.
+#
+# The healthcheck is the server binary's own probe (`/server -healthcheck`
+# does an HTTP GET against /healthz): the runtime image carries no curl and
+# no wget, so a healthcheck that shelled out would never become healthy.
+services:
+  api:
+    build: .
+    environment:
+      API_PORT: "${API_PORT}"
+    ports:
+      - "${API_PORT}:8080"
+    volumes:
+      - db:/data
+    healthcheck:
+      test: ["CMD", "/server", "-healthcheck"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+      start_period: 2s
+
+volumes:
+  db:

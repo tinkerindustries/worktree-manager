@@ -1,0 +1,19 @@
+# Invalid: the two namespaces reference each other, so template evaluation
+# has no topological order. Rejected at validation naming the cycle.
+version: 1
+app: cycle-app
+slots:
+  max: 4
+resources:
+  - type: namespace
+    name: compose
+    kind: compose
+    template: "{compose_test}"
+  - type: namespace
+    name: compose_test
+    kind: compose
+    template: "{compose}"
+emit:
+  descriptor:
+    filename: wt-env.yaml
+    format: yaml

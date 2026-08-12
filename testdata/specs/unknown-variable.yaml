@@ -1,0 +1,16 @@
+# Invalid: `DB_PATH` is neither a builtin variable nor a resource name — and
+# uppercase cannot be a resource name, so the validator reports it as an
+# unknown variable rather than an unknown resource. Rejected at validation
+# naming the variable.
+version: 1
+app: unknown-variable-app
+slots:
+  max: 4
+resources:
+  - type: state-path
+    name: db
+    template: "{DB_PATH}/.app/db.sqlite"
+emit:
+  descriptor:
+    filename: wt-env.yaml
+    format: yaml

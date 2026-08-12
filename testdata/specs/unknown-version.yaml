@@ -1,0 +1,10 @@
+# Invalid: version 2 is not a schema version this binary understands.
+# Refused at parse time naming the version found and the versions supported.
+version: 2
+app: future-app
+slots:
+  max: 4
+emit:
+  descriptor:
+    filename: wt-env.yaml
+    format: yaml
