@@ -80,6 +80,9 @@ migration against it. It lives in `internal/coord`:
   builds the handler, and exposes `Connect(kind, token)` (the hello
   exchange, with a synthetic peer — the harness has no kernel) and
   `Request(ctx, session, verb, args)` (one full request round trip).
+  `ConnectPeer(peer, kind, token)` runs the hello with an explicit peer,
+  so a test can act as a second host client with a different uid — the
+  ownership check needs two distinct identities.
 - The coordinator's phase-2 tests in `internal/coord/coord_test.go`:
   `TestHarnessFullRequest` (exit criterion 4), the version-refusal
   direction tests, identity assignment (host from peer credentials, named
@@ -87,9 +90,35 @@ migration against it. It lives in `internal/coord`:
   `TestServerGracefulShutdown`, which runs the real socket server over a
   temp socket to pin the lifecycle (cancellation, in-flight requests,
   socket-file cleanup).
-- The store's own tests in `internal/store/store_test.go`: root
-  resolution, 0700/0600, atomic writes, the schema_version refusal, the
-  unwritable-root error naming the path.
+- The coordinator's phase-3 tests in `internal/coord/p3_test.go`, one
+  named per exit criterion:
+  - `TestConcurrentAllocationsGetDistinctSlots` — criterion 1: two
+    goroutines allocate against one app and get different slots.
+  - `TestForeignEntryMutationRefused` — criterion 2: a mutating call
+    against an entry owned by another client is refused, naming the owner
+    and its last-seen time.
+  - `TestAllocationRequiresRegisteredBand` — criterion 3: allocation for
+    an app with no registered band refuses and names the registration
+    command.
+  - `TestSlotExhaustionNamesRangeCleanupAndForeignCount` — criterion 4:
+    the ceiling message names the range, `wt cleanup`, and how many
+    occupied slots the caller cannot free.
+  - `TestReservedPortsNeverAllocated` — criterion 5: a port in the
+    ledger's reservations is never allocated, and neither is one in the
+    spec's `reserved` block.
+  - `TestNewerRegistryListsButDoesNotWrite` — criterion 6: a registry
+    written by a newer schema version lists but does not write.
+  The same file pins the lifecycle (`TestEntryLifecycle`), the ageing of
+  `reserving` entries (`TestReservingEntryAgedOutOnTimer`), the phase-4
+  probe seam (`TestAllocatorProbeSeam`: held skips a slot, unavailable
+  does not block), rule 5's idempotence (`TestAllocateIsIdempotentFor-
+  ExistingSlug`), the ledger verbs (`TestBandReserveAndList`,
+  `TestBandReserveValidations`), path visibility and secrets.
+- The store's own tests in `internal/store/store_test.go` (root
+  resolution, 0700/0600, atomic writes, the schema_version refusal) and
+  `internal/store/registry_test.go` (registry and bands round trips, the
+  lenient list read of a newer registry, the write-path refusal, the
+  never-truncate rule for an unparseable registry).
 - The protocol's tests in `internal/protocol/protocol_test.go`: framing
   (one JSON object per newline-terminated message) and `Agree` naming the
   upgrade in both directions.
@@ -99,11 +128,23 @@ migration against it. It lives in `internal/coord`:
   observations — a planted registration under `--prefix` and a fake hello
   server on a temp socket (a stand-in for the coordinator that never
   imports coordinator code into the client's tests).
+- The bands verbs' client side is driven in `internal/cli/bands_test.go`
+  against the same stand-in pattern, extended to serve requests from a
+  per-verb handler map: `TestRunBandsListJSON`, `TestRunBandsReserveHost`,
+  `TestRunBandsReserveAppMode` (the request carries the committed spec),
+  the usage rails, the not-adopted exit 4, a coordinator refusal passing
+  through with its own exit code, and both verbs exiting 5 with the
+  coordinator stopped.
+- The live client-to-coordinator path — `bands reserve` and `bands list`
+  against a real foreground `wtd` on a temp socket with a temp `WT_HOME`
+  — is exercised by hand in verification, not by a test (the phase-3
+  verification run records it).
 
 Run one test:
 
 ```sh
 go test ./internal/coord/ -run TestHarnessFullRequest -v
+go test ./internal/coord/ -run TestConcurrentAllocationsGetDistinctSlots -v
 go test ./internal/cli/ -run TestDaemonStatusThreeStates -v
 ```
 

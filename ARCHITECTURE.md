@@ -27,9 +27,11 @@ internal/platform  M8: path realisation, the mount's case-sensitivity
 internal/descriptor  M5 read side: the per-worktree allocation record and
               its reader (yaml and json); phase 5 writes the same type
 internal/protocol  the wire between the two binaries: message types,
-              newline-delimited JSON framing, version negotiation
+              newline-delimited JSON framing, version negotiation, and
+              the phase-3 verb payloads (which carry the parsed spec)
 internal/store  the coordinator's state directory: root resolution,
-              atomic writes, the schema_version envelope, clients.json
+              atomic writes, the schema_version envelope, clients.json,
+              registry.json and bands.json
 internal/coord  the coordinator's request core, socket server and the
               in-process harness; one writer serialises here
 ```
@@ -49,7 +51,9 @@ Import rules, fixed for the whole plan:
   `internal/platform`. Coordinator-only.
 - `internal/store` → `internal/platform` (the permission model is a
   platform surface). Coordinator-only.
-- `internal/protocol` → standard library only; both binaries link it.
+- `internal/protocol` → standard library plus `internal/spec` (the phase-3
+  verb payloads carry the parsed spec, per ARCHITECTURE.md §8.1); both
+  binaries link it.
 - `internal/identity` → `internal/spec`, `internal/platform`,
   `internal/descriptor`. It contains no platform branch of its own.
 - `internal/descriptor` → `internal/spec` (the `spec.Resolved` shape of its
@@ -175,14 +179,56 @@ Import rules, fixed for the whole plan:
   §4.6, compiled but unverified in this phase).
 - The one write path is atomic: temp file in the same directory, fsync
   the file, rename, fsync the directory — same directory because a rename
-  across filesystems is not atomic.
+  across filesystems is not atomic. `AtomicWrite` is the only atomic-write
+  helper; the registry, the ledger and clients.json all go through it.
 - Every store file carries a `schema_version` field; a file written by a
   newer schema is refused on read naming the upgrade, never written back.
+  The registry adds a second rail: `ReadRegistryList` decodes a newer file
+  well enough to list it (carrying the file's own version), and
+  `WriteRegistry` refuses to write a file whose version claims a newer
+  schema — "lists but does not write" is structural at the write path.
 - JSON, never YAML: slugs match `^[a-z0-9][a-z0-9-]*$`, which admits `no`,
   `on`, `off`, `yes` and `y`, and a YAML 1.1 parser turns all of those
   into booleans.
-- This phase's one store file is `clients.json`: identity, kind, the
-  coordinator's own last-seen measurement, and the ephemeral flag.
+
+### The registry (`registry.json`)
+
+One file for every entry across every repo, so a multi-entry operation
+stays atomic under a single rename. The entry's fields are
+`docs/ARCHITECTURE.md` §8.3 — there is no `view` field; `owner`,
+`owner_kind`, `ephemeral` and `path_visible` replaced view identity.
+
+- `owner`/`owner_kind` name the client identity that created the entry;
+  the authorisation check reads them (the refusal message names both).
+- `resources` is denormalised deliberately: a cross-repo `list` cannot
+  depend on each repo's spec being readable, so the registry is
+  self-describing.
+- `secrets` is a named field rather than a free-form section so that
+  redaction is structural: a field the code knows to be a secret cannot be
+  served by a response encoder written before that secret existed.
+- `path_visible` records whether the coordinator can stat the recorded
+  path. A path that exists only inside a container is recorded, never
+  checked, and never counted as stale.
+- An unparseable registry is reported, never truncated and recreated, and
+  the refusal names the rebuild.
+
+### The band ledger (`bands.json`)
+
+- Maps each app to the port bases it holds (keyed by port resource name,
+  the shape `spec.Context.Bases` feeds into resolution), and holds the
+  machine-wide reservations no app may allocate from.
+- Registration is explicit: the coordinator refuses to allocate for an app
+  with port resources and no registered band, naming the registration
+  command. The coordinator computes the band's required size from the
+  spec — slot ceiling × ports per slot — so the onboarding skill only
+  chooses where the bases sit, not how large they are.
+- Exclusions come from two places, both enforced at allocation: the
+  spec's `reserved` block (a property of the repository) and the ledger's
+  host-global reservations (a property of the machine). A host reservation
+  carries a required note naming what holds the range — nothing infers a
+  production stack, a person declares it once per machine.
+- This phase's store files are `clients.json`, `registry.json` and
+  `bands.json`, each carrying the `schema_version` envelope.
 
 ## The coordinator (`internal/coord`)
 
@@ -199,10 +245,78 @@ Import rules, fixed for the whole plan:
 - One writer serialises here. There is no lock file, no generation
   counter, no view identity and no view scoping — concurrent requests
   serialise in this one process, and the handler's mutex makes that true
-  across its connection goroutines.
+  across its connection goroutines. The concurrency test is
+  `TestConcurrentAllocationsGetDistinctSlots`: two goroutines allocate
+  against one app and get different slots.
 - `Server` is the socket loop with graceful shutdown: context
   cancellation (SIGINT/SIGTERM from `cmd/wtd`), in-flight requests
-  allowed to finish, socket file removed on exit.
+  allowed to finish, socket file removed on exit. It also runs the
+  reserving-ageing sweeper: `AgeReserving` drops a `reserving` entry past
+  its 10-minute timeout on a one-minute tick — the resident process needs
+  no scheduler for this, and the timeout also covers a client that died
+  mid-sequence.
+
+### Allocation
+
+- Lowest free slot from 1 upward, per app, skipping slots held by any
+  entry of the app, slots whose derived ports fall in either exclusion
+  set, and slots whose resources probe held. Slot 0 is the primary
+  checkout: never allocated, never managed.
+- An existing entry's slot is authoritative (rule 5 below): re-running
+  `init` reconciles and rebuilds, it never reallocates — `allocate` for an
+  existing (app, slug) returns the stored allocation, refused when the
+  entry belongs to another client.
+- The probe is the phase-4 seam: `Handler.Probe` reports `ProbeFree`,
+  `ProbeHeld` or `ProbeUnavailable` for a candidate slot's derived
+  resources. This phase ships the no-probe probe (every slot free) —
+  explicitly, not pretending a probe ran — and the phase-4 port driver
+  replaces it. Held skips the slot; unavailable does not block allocation.
+- On exhaustion the message names the range, `wt cleanup`, and how many of
+  the occupied slots the caller cannot free (the ones owned by other
+  clients) — otherwise the remedy it names would appear to do nothing.
+
+### Authorisation
+
+- The ownership check runs on every mutating call (`activate`, `release`,
+  and `allocate` against an existing entry): an entry owned by another
+  client is refused with exit code 3, naming the owner (kind and key) and
+  its last-seen time from clients.json. The coordinator acts with host
+  privilege on a caller's behalf, so ownership is the boundary that
+  replaces filesystem permissions. Reads are unrestricted apart from
+  `secrets`, which are served to the owning client alone.
+
+### Entry lifecycle
+
+- `reserving` — slot claimed, resources not yet materialised; aged out on
+  the coordinator's own timer.
+- `active` — fully materialised.
+- `tearing-down` — a resting state: teardown left resources behind, so the
+  slot stays held and the entry keeps a note listing what survived
+  (phase 4's teardown writes that note). `release` drops the entry
+  entirely — the rollback path a client drives when init fails before
+  activation.
+
+## Authority rules, as invariants this code holds
+
+The six rules of `docs/ARCHITECTURE.md` §8.6, stated as invariants:
+
+1. **The descriptor beats the registry** — the registry is a cache;
+   rebuilding it from descriptors must always be safe. (Phase 5 writes
+   descriptors; the rebuild lands in phase 6.)
+2. **The ledger beats the spec on where ports sit** — allocation feeds the
+   ledger's bases into `spec.Resolve`; a committed band would stop two
+   developers from differing.
+3. **The spec beats everything on shape** — resources, hooks and emission
+   are the repo's declaration; the coordinator validates the spec it is
+   sent and refuses it whole on any field error.
+4. **The recorded path is informational** — resolution never reads the
+   entry's path, so a worktree can be moved; `path_visible` only records
+   whether the coordinator can stat it.
+5. **An entry's slot is authoritative once written** — re-running `init`
+   reconciles and rebuilds, it never reallocates.
+6. **A client reads any entry and mutates only its own** — the ownership
+   check on every mutating call, exit code 3 naming the owner and its
+   last-seen time.
 
 ## The client (`internal/cli`, `cmd/wt`)
 
@@ -225,8 +339,16 @@ Import rules, fixed for the whole plan:
   JSON object on stdout and nothing else. No colour, no spinner, no
   prompt.
 - Verbs are hand-dispatched with one `flag.FlagSet` per verb. This phase
-  has six: `spec validate`, `spec explain`, `guard`, `show`,
-  `daemon status` and `daemon install`.
+  has eight: `spec validate`, `spec explain`, `guard`, `show`,
+  `daemon status`, `daemon install`, `bands list` and `bands reserve`.
+- `bands list` prints the band ledger — the bases each app holds and the
+  host-global reservations — and `bands reserve` registers either: an
+  app's band from its committed spec (`--base <name>=<port>...`, the spec
+  found by the walk-up rule, so the coordinator can compute the required
+  size), or a host-global reservation (`--host --port <p>... --note
+  <text>`, where the note is required — an unlabelled reservation is one
+  nobody can later judge). Both reach the coordinator, so exit 5 is wired
+  through `dialCoordinator` like every other coordinator verb.
 - `daemon status` distinguishes four states — running, not registered,
   registered but stopped, running but unreachable — and names a different
   fix for each broken one. The state machine is a pure function of two
