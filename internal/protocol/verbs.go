@@ -44,6 +44,10 @@ type AllocateResult struct {
 	PathVisible bool                     `json:"path_visible"`
 	Secrets     map[string]string        `json:"secrets,omitempty"`
 	ProbeNote   string                   `json:"probe_note,omitempty"`
+	// Skipped names the slots the probe held and why — a held port is never
+	// remediated, and the allocator says which slot it skipped (B1.6,
+	// 03-drivers.md §4.1).
+	Skipped []string `json:"skipped,omitempty"`
 }
 
 // EntryRef names one registry entry: the app and slug pair that identifies

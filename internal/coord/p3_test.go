@@ -552,6 +552,12 @@ func TestAllocatorProbeSeam(t *testing.T) {
 		if res.Slot != 2 {
 			t.Errorf("slot = %d, want 2 (the probe held slot 1)", res.Slot)
 		}
+		// The allocator says which slot it skipped and why (B1.6): the held
+		// port is never remediated, and the skip is never silent.
+		if len(res.Skipped) != 1 || !strings.Contains(res.Skipped[0], "slot 1") ||
+			!strings.Contains(res.Skipped[0], "never remediated") {
+			t.Errorf("Skipped = %v, want one entry naming slot 1 and the never-remediated reason", res.Skipped)
+		}
 	})
 
 	t.Run("unavailable does not block allocation", func(t *testing.T) {
