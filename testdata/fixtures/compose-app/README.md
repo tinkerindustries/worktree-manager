@@ -7,7 +7,10 @@ describe it honestly.
 
 ## Layout
 
-- `cmd/server` — the service: binds `API_PORT`, serves `/healthz`.
+- `cmd/server` — the service: binds the resolved API port, serves
+  `/healthz`, and carries `-healthcheck`, the compose healthcheck's probe.
+- `Dockerfile` — builds the server and copies it into a minimal runtime
+  image that carries nothing but the binary.
 - `compose.yaml` — the dev stack: publishes `${API_PORT}`, keeps the
   database in a named volume. Deliberately does not pin `name:`, so a
   project name passed with `-p` wins.
@@ -28,5 +31,8 @@ project), and one isolated state path for the database.
 
 ## Running
 
-The repo is not yet runnable as a worktree pair; that is phase 5. Until
-then, `go build ./...` inside this directory compiles the service.
+The repo runs as a worktree pair through the tooling: `wt init` (from a
+linked worktree) allocates the ports, writes the descriptor and the `.env`
+managed block, and runs the hooks; `wt start` brings the stack up. On its
+own, `go build ./...` inside this directory compiles the service, and
+`docker compose up --build` runs the stack with the committed defaults.

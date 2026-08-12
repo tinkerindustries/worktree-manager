@@ -1,0 +1,7 @@
+# The per-worktree files wt writes during init, and the binary the build
+# hook produces. Committing the ignore lines is the adoption pattern the
+# onboarding skill generates in phase 7; the tool detects the committed
+# lines and never duplicates them in $GIT_COMMON_DIR/info/exclude.
+wt-env.yaml
+.env
+/compose-app-dev

@@ -76,13 +76,27 @@ hooks:
         sticky: true
         default: dev
   health:
-    run: curl -fsS http://127.0.0.1:{api}/healthz
+    # Namespace-independent on purpose: `docker compose exec` runs the
+    # server's own -healthcheck probe inside the api container, so the
+    # check works whether wt runs on the host or inside a container
+    # (127.0.0.1:{api} is only reachable from the host) and needs no curl
+    # on the machine running wt.
+    run: docker compose -f compose.yaml -p {compose} exec -T api /server -healthcheck
     timeout: 30s
 
 emit:
   descriptor:
     filename: wt-env.yaml
     format: yaml
+  # The .env managed block: API_PORT is what compose.yaml interpolates,
+  # and COMPOSE_PROJECT is the worktree's own project name, so a hook or a
+  # shell in the worktree can name the stack it belongs to.
+  env:
+    path: .env
+    seed: true
+    keys:
+      API_PORT: "{api}"
+      COMPOSE_PROJECT: "{compose}"
   reader:
     language: go
     path: internal/env/env.go

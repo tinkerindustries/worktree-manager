@@ -110,9 +110,14 @@ func (h *Handler) allocate(s *Session, req *protocol.Request) *protocol.Response
 		// init reconciles and rebuilds; it never reallocates. The stored
 		// resources are denormalised, so the caller needs no spec to use
 		// them.
+		shared, serr := h.sharedRows(&args.Spec, ctxFor(&args.Spec, e), e.Resources)
+		if serr != nil {
+			return &protocol.Response{Error: serr}
+		}
 		return &protocol.Response{Result: mustJSON(protocol.AllocateResult{
 			App: app, Slug: e.Slug, Slot: e.Slot, State: e.State,
 			Resources: e.Resources, PathVisible: e.PathVisible, Secrets: e.Secrets,
+			Path: e.Path, Existed: true, Shared: shared,
 		})}
 	}
 
@@ -141,13 +146,67 @@ func (h *Handler) allocate(s *Session, req *protocol.Request) *protocol.Response
 			"set $HOME for the coordinator, then re-run")
 	}
 
-	picked, perr := h.pickSlot(&args.Spec, reg, bands, app, args.Slug, args.Path, home, bases,
-		s.Identity.Key, s.Identity.Kind)
-	if perr != nil {
-		return &protocol.Response{Error: perr}
+	// The rebuild-from-descriptor path (ARCHITECTURE.md §9.1, attach
+	// outcome 4): a descriptor exists and no entry does — the registry was
+	// deleted, corrupted, or is another machine's — and the client sent the
+	// descriptor's slot. The descriptor beats the registry (rule 1), so the
+	// entry is rebuilt at that slot; the slot must be in range, must not be
+	// held by another entry, and its derived resources must not fall in
+	// either exclusion set — a hand-edited manifest is still refused, never
+	// honoured (ARCHITECTURE.md §8.4). The probe is not run: this is a
+	// rebuild of a recorded allocation, not a fresh allocation, and the
+	// recorded slot is the allocation.
+	var slot int
+	var resources map[string]spec.Resolved
+	var skipped []string
+	probeNote := ""
+	if args.SlotHint > 0 {
+		max := spec.DefaultSlotMax
+		if args.Spec.Slots.Max != nil && *args.Spec.Slots.Max >= 1 {
+			max = *args.Spec.Slots.Max
+		}
+		if args.SlotHint > max {
+			return respErr(3, fmt.Sprintf("the descriptor's slot %d is above this app's ceiling of %d", args.SlotHint, max),
+				"re-run init after fixing the descriptor (or deleting it to reallocate)")
+		}
+		if holder := registrySlotEntry(reg, app, args.SlotHint); holder != nil {
+			return respErr(3, fmt.Sprintf("the descriptor's slot %d is held by entry %q at %s; the descriptor cannot claim a slot another entry holds",
+				args.SlotHint, holder.Slug, holder.Path),
+				"delete or fix the descriptor, then re-run init")
+		}
+		res, rerr := spec.Resolve(&args.Spec, spec.Context{
+			App: app, Slug: args.Slug, Slot: args.SlotHint,
+			Home: home, Worktree: args.Path, Bases: bases,
+		})
+		if rerr != nil {
+			return respErr(3, fmt.Sprintf("resolving the descriptor's slot %d: %v", args.SlotHint, rerr),
+				"check the spec and the band registration, then re-run")
+		}
+		reservedSet := make(map[int]bool, len(args.Spec.Reserved.Ports))
+		for _, p := range args.Spec.Reserved.Ports {
+			reservedSet[p] = true
+		}
+		resvSet := make(map[int]bool)
+		for _, r := range bands.Reservations {
+			for _, p := range r.Ports {
+				resvSet[p] = true
+			}
+		}
+		if excluded(res, reservedSet, resvSet) {
+			return respErr(3, fmt.Sprintf("the descriptor's slot %d resolves to a port in the spec's reserved block or the host-global reservations; a hand-edited manifest is refused, never honoured",
+				args.SlotHint),
+				"delete or fix the descriptor, then re-run init to reallocate")
+		}
+		slot, resources = args.SlotHint, res
+	} else {
+		picked, perr := h.pickSlot(&args.Spec, reg, bands, app, args.Slug, args.Path, home, bases,
+			s.Identity.Key, s.Identity.Kind)
+		if perr != nil {
+			return &protocol.Response{Error: perr}
+		}
+		slot, resources = picked.slot, picked.resources
+		skipped, probeNote = picked.skipped, picked.probeNote
 	}
-	slot := picked.slot
-	resources := picked.resources
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	entry := store.Entry{
@@ -161,6 +220,14 @@ func (h *Handler) allocate(s *Session, req *protocol.Request) *protocol.Response
 		Secrets:        args.Secrets,
 		CreatedAt:      now, LastSeen: now,
 	}
+	shared, serr := h.sharedRows(&args.Spec, spec.Context{
+		App: app, Slug: entry.Slug, Slot: entry.Slot,
+		Home: home, Worktree: entry.Path, Bases: bases,
+	}, entry.Resources)
+	if serr != nil {
+		return &protocol.Response{Error: serr}
+	}
+
 	reg.Entries = append(reg.Entries, entry)
 	if err := h.st.WriteRegistry(reg); err != nil {
 		return h.storeErr("writing the registry", err)
@@ -169,8 +236,70 @@ func (h *Handler) allocate(s *Session, req *protocol.Request) *protocol.Response
 	return &protocol.Response{Result: mustJSON(protocol.AllocateResult{
 		App: app, Slug: entry.Slug, Slot: entry.Slot, State: entry.State,
 		Resources: entry.Resources, PathVisible: entry.PathVisible, Secrets: entry.Secrets,
-		ProbeNote: picked.probeNote, Skipped: picked.skipped,
+		ProbeNote: probeNote, Skipped: skipped, Shared: shared,
 	})}
+}
+
+// ctxFor builds the template context for one existing entry: the entry's
+// own slot, slug and path, and the coordinator's home.
+func ctxFor(sp *spec.Spec, e *store.Entry) spec.Context {
+	return spec.Context{
+		App: sp.App, Slug: e.Slug, Slot: e.Slot,
+		Home: homeDirOrEmpty(), Worktree: e.Path, Bases: nil,
+	}
+}
+
+// homeDirOrEmpty is the coordinator's home, or "" where it cannot be
+// determined — the shared block's {home} resolves to the empty string in
+// that case rather than failing the whole allocation.
+func homeDirOrEmpty() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return home
+}
+
+// sharedRows computes the descriptor's shared block, both halves
+// (03-drivers.md §6): the generated half — every resource with
+// default: shared, with its driver's blast-radius prose as the impact —
+// and the hand-authored half from the spec. The coordinator is the only
+// side that imports the drivers, so the rows are computed here and carried
+// to the client's emitter, which copies them into the descriptor.
+func (h *Handler) sharedRows(sp *spec.Spec, ctx spec.Context, resolved map[string]spec.Resolved) ([]protocol.SharedRow, *protocol.Error) {
+	var rows []protocol.SharedRow
+	for i := range sp.Resources {
+		r := &sp.Resources[i]
+		if r.Default == nil || *r.Default != "shared" {
+			continue
+		}
+		v, ok := resolved[r.Name]
+		if !ok {
+			return nil, &protocol.Error{Code: 3,
+				Msg:    fmt.Sprintf("shared block: resource %q has default: shared but no resolved value", r.Name),
+				Remedy: "fix the spec, then re-run"}
+		}
+		text := ""
+		if d := h.Drivers.Driver(r.Type); d != nil {
+			text = d.BlastRadius(r, sp)
+		}
+		if strings.TrimSpace(text) == "" {
+			return nil, &protocol.Error{Code: 3,
+				Msg:    fmt.Sprintf("shared block: resource %q has default: shared but no impact text is available", r.Name),
+				Remedy: "check the driver registry, then re-run"}
+		}
+		rows = append(rows, protocol.SharedRow{Name: fmt.Sprint(v.Value), Impact: text})
+	}
+	for i := range sp.Shared {
+		name, err := spec.Substitute(sp.Shared[i].Name, ctx, resolved)
+		if err != nil {
+			return nil, &protocol.Error{Code: 3,
+				Msg:    fmt.Sprintf("shared block: resolving shared[%d].name: %v", i, err),
+				Remedy: "fix the spec, then re-run"}
+		}
+		rows = append(rows, protocol.SharedRow{Name: name, Impact: sp.Shared[i].Impact})
+	}
+	return rows, nil
 }
 
 // pickedSlot is the allocation algorithm's answer: the chosen slot and its

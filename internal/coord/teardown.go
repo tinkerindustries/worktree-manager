@@ -59,30 +59,16 @@ func (h *Handler) Teardown(s *Session, ref protocol.EntryRef, sp *spec.Spec, pur
 	if perr := h.checkOwner(s, e); perr != nil {
 		return &protocol.Response{Error: perr}
 	}
+	return h.teardownEntry(s, e, reg, sp, purgeFlags)
+}
 
-	bands, err := h.st.ReadBands()
-	if err != nil {
-		return h.storeErr("reading the band ledger", err)
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return respErr(4, fmt.Sprintf("the coordinator cannot determine the home directory for {home}: %v", err),
-			"set $HOME for the coordinator, then re-run")
-	}
-
-	env := driver.Env{
-		Spec: sp, App: e.App, Slug: e.Slug, Slot: e.Slot,
-		Home: home, Worktree: e.Path,
-		Resolved: e.Resources,
-		Docker:   h.docker(),
-	}
-	if band := findBand(bands, e.App); band != nil {
-		env.Bases = band.Bases
-	}
-	for _, r := range bands.Reservations {
-		env.Reservations = append(env.Reservations, driver.Reservation{
-			Ports: r.Ports, Names: r.Names, Note: r.Note,
-		})
+// teardownEntry runs the teardown of one looked-up, ownership-checked
+// entry. The caller holds h.mu. Phase 5's rm verb calls it after the reap;
+// Teardown is the same path through the verb-shaped front door.
+func (h *Handler) teardownEntry(s *Session, e *store.Entry, reg store.RegistryFile, sp *spec.Spec, purgeFlags []string) *protocol.Response {
+	env, perr := h.entryEnv(e, sp)
+	if perr != nil {
+		return &protocol.Response{Error: perr}
 	}
 
 	rep := h.Drivers.TeardownAll(sp, e.Resources, env, purgeFlags)
@@ -91,7 +77,7 @@ func (h *Handler) Teardown(s *Session, ref protocol.EntryRef, sp *spec.Spec, pur
 		// Nothing survived: the entry drops and the slot frees.
 		idx := -1
 		for i := range reg.Entries {
-			if reg.Entries[i].App == ref.App && reg.Entries[i].Slug == ref.Slug {
+			if reg.Entries[i].App == e.App && reg.Entries[i].Slug == e.Slug {
 				idx = i
 				break
 			}
@@ -101,7 +87,7 @@ func (h *Handler) Teardown(s *Session, ref protocol.EntryRef, sp *spec.Spec, pur
 			return h.storeErr("writing the registry", err)
 		}
 		return &protocol.Response{Result: mustJSON(protocol.ReleaseResult{
-			App: ref.App, Slug: ref.Slug, Removed: true,
+			App: e.App, Slug: e.Slug, Removed: true,
 		})}
 	}
 
@@ -124,6 +110,45 @@ func (h *Handler) docker() driver.Docker {
 		return h.Docker
 	}
 	return driver.NewDocker()
+}
+
+// entryEnv builds the driver environment for one entry: everything an
+// operation needs beyond the resolved value, read fresh from the store at
+// call time — the ledger's bases and reservations, the coordinator's home,
+// the docker seam. It is the shared construction behind teardown,
+// materialise and the rm verb, so the three cannot drift apart on what an
+// operation may see (03-drivers.md §2).
+func (h *Handler) entryEnv(e *store.Entry, sp *spec.Spec) (driver.Env, *protocol.Error) {
+	bands, err := h.st.ReadBands()
+	if err != nil {
+		return driver.Env{}, &protocol.Error{
+			Code: 1, Msg: fmt.Sprintf("reading the band ledger: %v", err),
+			Remedy: "check the coordinator's store (WT_HOME) is readable and writable, then re-run",
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return driver.Env{}, &protocol.Error{
+			Code:   4,
+			Msg:    fmt.Sprintf("the coordinator cannot determine the home directory for {home}: %v", err),
+			Remedy: "set $HOME for the coordinator, then re-run",
+		}
+	}
+	env := driver.Env{
+		Spec: sp, App: e.App, Slug: e.Slug, Slot: e.Slot,
+		Home: home, Worktree: e.Path,
+		Resolved: e.Resources,
+		Docker:   h.docker(),
+	}
+	if band := findBand(bands, e.App); band != nil {
+		env.Bases = band.Bases
+	}
+	for _, r := range bands.Reservations {
+		env.Reservations = append(env.Reservations, driver.Reservation{
+			Ports: r.Ports, Names: r.Names, Note: r.Note,
+		})
+	}
+	return env, nil
 }
 
 // teardownNote composes the entry's note: exactly what survived, in the
