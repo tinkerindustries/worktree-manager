@@ -15,12 +15,12 @@ func TestValidateLoopbackTCP(t *testing.T) {
 		}
 	}
 	bad := []string{
-		"0.0.0.0:7331",       // all interfaces: the surface must bind loopback only
-		"192.168.1.10:7331",  // the LAN
-		":7331",              // no host: all interfaces
-		"localhost:7331",     // not a literal loopback address
-		"7331",               // not host:port
-		"127.0.0.1",          // no port
+		"0.0.0.0:7331",      // all interfaces: the surface must bind loopback only
+		"192.168.1.10:7331", // the LAN
+		":7331",             // no host: all interfaces
+		"localhost:7331",    // not a literal loopback address
+		"7331",              // not host:port
+		"127.0.0.1",         // no port
 	}
 	for _, addr := range bad {
 		if err := ValidateLoopbackTCP(addr); err == nil {

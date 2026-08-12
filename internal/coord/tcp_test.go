@@ -49,7 +49,7 @@ func TestTCPIdentityRules(t *testing.T) {
 			MinVer: protocol.VersionMin, MaxVer: protocol.VersionMax,
 		})
 		_, missing = tcpConnect(h.H, &protocol.Hello{
-			Kind: protocol.KindNamed,
+			Kind:   protocol.KindNamed,
 			MinVer: protocol.VersionMin, MaxVer: protocol.VersionMax,
 		})
 		if wrong.Error == nil || wrong.Error.Code != 3 {
@@ -68,7 +68,7 @@ func TestTCPIdentityRules(t *testing.T) {
 
 	t.Run("a host claim over TCP is refused", func(t *testing.T) {
 		_, reply := tcpConnect(h.H, &protocol.Hello{
-			Kind: protocol.KindHost,
+			Kind:   protocol.KindHost,
 			MinVer: protocol.VersionMin, MaxVer: protocol.VersionMax,
 		})
 		if reply.Error == nil {
@@ -81,7 +81,7 @@ func TestTCPIdentityRules(t *testing.T) {
 
 	t.Run("an ephemeral claim over TCP is refused", func(t *testing.T) {
 		_, reply := tcpConnect(h.H, &protocol.Hello{
-			Kind: protocol.KindEphemeral,
+			Kind:   protocol.KindEphemeral,
 			MinVer: protocol.VersionMin, MaxVer: protocol.VersionMax,
 		})
 		if reply.Error == nil {
