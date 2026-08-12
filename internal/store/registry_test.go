@@ -215,3 +215,61 @@ func TestBandsRoundTrip(t *testing.T) {
 		t.Errorf("bands.json lacks its schema_version envelope:\n%s", raw)
 	}
 }
+
+// TestSpecsCacheRoundTrip: the per-app spec cache survives the atomic
+// write and the lenient load, and a missing file is an empty cache.
+func TestSpecsCacheRoundTrip(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "wt")
+	st, err := Open(root)
+	if err != nil {
+		t.Fatalf("opening the store: %v", err)
+	}
+	sp := spec.Spec{Version: 1, App: "compose-app"}
+	if err := st.WriteSpecs(SpecsFile{Specs: map[string]spec.Spec{"compose-app": sp}}); err != nil {
+		t.Fatalf("writing the cache: %v", err)
+	}
+	f, err := st.ReadSpecs()
+	if err != nil {
+		t.Fatalf("reading the cache: %v", err)
+	}
+	got, ok := f.Specs["compose-app"]
+	if !ok || got.App != "compose-app" {
+		t.Errorf("cache = %+v", f.Specs)
+	}
+	// A missing file is an empty cache.
+	empty, err := Open(filepath.Join(t.TempDir(), "wt"))
+	if err != nil {
+		t.Fatalf("opening an empty store: %v", err)
+	}
+	ef, err := empty.ReadSpecs()
+	if err != nil {
+		t.Fatalf("reading an empty cache: %v", err)
+	}
+	if len(ef.Specs) != 0 {
+		t.Errorf("empty cache = %+v, want none", ef.Specs)
+	}
+}
+
+// TestBandSpansRoundTrip: the ledger records each base's span — phase 6's
+// doctor reads it to detect overlap between two apps without either app's
+// spec.
+func TestBandSpansRoundTrip(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "wt")
+	st, err := Open(root)
+	if err != nil {
+		t.Fatalf("opening the store: %v", err)
+	}
+	if err := st.WriteBands(BandsFile{Bands: []Band{
+		{App: "compose-app", Bases: map[string]int{"api": 4200, "proxy": 4200},
+			Spans: map[string]int{"api": 64, "proxy": 64}},
+	}}); err != nil {
+		t.Fatalf("writing the ledger: %v", err)
+	}
+	f, err := st.ReadBands()
+	if err != nil {
+		t.Fatalf("reading the ledger: %v", err)
+	}
+	if len(f.Bands) != 1 || f.Bands[0].Spans["api"] != 64 {
+		t.Errorf("ledger = %+v", f.Bands)
+	}
+}

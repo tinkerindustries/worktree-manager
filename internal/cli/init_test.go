@@ -106,9 +106,9 @@ func newRecordingCoord(t *testing.T, sock string, handlers map[string]func(*prot
 	t.Helper()
 	rc := &recordingCoord{requests: map[string][]json.RawMessage{}}
 	// The fake's dispatch is per verb, so the recorder registers itself
-	// under every lifecycle verb.
+	// under every lifecycle and fleet verb.
 	all := map[string]func(*protocol.Request) *protocol.Response{}
-	for _, verb := range []string{"allocate", "materialise", "activate", "release", "rm"} {
+	for _, verb := range []string{"allocate", "materialise", "activate", "release", "rm", "list", "reconcile", "clients.list", "doctor"} {
 		all[verb] = func(req *protocol.Request) *protocol.Response {
 			rc.requests[req.Verb] = append(rc.requests[req.Verb], req.Args)
 			if h, ok := handlers[req.Verb]; ok {
