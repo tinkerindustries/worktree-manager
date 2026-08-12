@@ -50,9 +50,19 @@ configuration; neither binary branches on repo identity.
   evaluator, the walk-up `wt.yaml` finder, and the quoted YAML emitter.
 - `internal/cli` — verb dispatch, flag parsing, output, the exit-code error
   type.
+- `internal/identity` — M1: classification, root resolution, containment,
+  slug validation, descriptor location, the guard engine.
+- `internal/platform` — M8b: symlink-resolved path realisation and the
+  mount's case-sensitivity probe. The only package permitted to branch on
+  `GOOS`.
+- `internal/descriptor` — the per-worktree allocation record and its
+  reader (yaml and json); phase 5 writes the same type.
 - `cmd/wt`, `cmd/wtd` — the two entry points.
 - `testdata/fixtures/` — the three fixture repositories; each has its own
   `wt.yaml`, which is what the walk-up resolution rule is tested against.
+  The classification fixtures (plain repo, two linked worktrees, clone,
+  removed worktree, symlink variants) are built with real git in
+  `t.TempDir()` inside `internal/identity` tests — never mocked git output.
 - `testdata/specs/` — invalid specs, one per required validation refusal.
 - `ARCHITECTURE.md` (root) — the as-built codemap; read it before touching
   package boundaries. `TESTING.md` — how the test layers work.

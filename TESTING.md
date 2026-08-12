@@ -22,23 +22,51 @@ go test ./internal/spec/ -run TestExplainTablesDisjoint -v
 ## Layer 2 — real-repo fixtures
 
 Classification, root resolution and containment against real repositories,
-never mocked git output: `testdata/fixtures/compose-app`,
-`testdata/fixtures/plain-app` and `testdata/fixtures/vm-app`. Each is an
-ordinary file tree — no `.git` — because later phases copy a fixture into a
-temp directory and run `git init` there.
+never mocked git output (plan.md §4): the bug M1 exists to prevent (D4) was a
+misreading of what git reports, and a test built on a mock of that same
+misreading would pass while the bug survived.
 
-Each fixture carries its own `wt.yaml` at its root; the fixture specs must
-always validate, and `testdata/specs/` holds the invalid specs, one per
-required validation refusal. The fixture and walk-up tests are
-`TestParseFixtureSpecs`, `TestInvalidSpecsRejected`,
-`TestFixtureWalkUpFromSubtree` and `TestFindSpecPath*` in
-`internal/spec/`. This layer needs nothing installed.
+The fixtures are built by running real git commands in `t.TempDir()` — no
+nested `.git` is committed to this repository. Two fixture kinds:
+
+- **The committed trees** under `testdata/fixtures/`: `compose-app`,
+  `plain-app` and `vm-app`, ordinary file trees each carrying its own
+  `wt.yaml`. Later phases copy one into a temp directory and run `git init`
+  there. The fixture specs must always validate; `testdata/specs/` holds the
+  invalid specs, one per required validation refusal. Tests:
+  `TestParseFixtureSpecs`, `TestInvalidSpecsRejected`,
+  `TestFixtureWalkUpFromSubtree`, `TestFindSpecPath*` in `internal/spec/`.
+- **The synthetic repos built at test time** in `internal/identity/`: a
+  builder (`buildFixtures`) runs `git init`, commit, `git worktree add`,
+  `git clone` and `os.RemoveAll` to produce the six fixtures of plan.md §4:
+
+  1. a plain repository,
+  2. a repository with two linked worktrees,
+  3. a clone,
+  4. a worktree whose directory has been removed,
+  5. each of the above reached through a symlink (the plain repository, the
+     main checkout, a linked worktree, the clone and the removed worktree's
+     path all have symlink variants).
+
+  `TestClassifyFixtures` classifies every one of them, including through
+  symlinks, asserting the outcome and that the acting root is the real path
+  git reports. `TestClassifyCarriesTheReach` pins that the main checkout
+  path is a field on the classification result, never a function (the D4
+  shape). The guard's exit criteria run against the same layer: an adopted
+  two-worktree repo with a committed `wt.yaml`, a descriptor in the worktree
+  and a shared store (`buildAdoptedRepo`), exercised by
+  `TestGuardDeniesWriteToPrimaryCheckout`, `TestGuardDeniesReadCLAUDEOutside`
+  and `TestGuardFailsOpen` in `internal/identity/`, and at the binary level
+  by `TestRunGuard*` and `TestRunShow*` in `internal/cli/`.
 
 Run one test:
 
 ```sh
-go test ./internal/spec/ -run TestFixtureHooksEmitCoverage -v
+go test ./internal/identity/ -run TestClassifyFixtures -v
+go test ./internal/identity/ -run TestGuardDeniesWriteToPrimaryCheckout -v
 ```
+
+This layer needs nothing installed but git.
 
 ## Layer 3 — in-process coordinator
 
@@ -58,7 +86,7 @@ a machine with neither docker nor `gh`. CI runs this layer from phase 6.
 | Layer | Needs |
 |---|---|
 | Pure unit | nothing |
-| Real-repo fixtures | nothing |
+| Real-repo fixtures | git, for the real repositories built in `t.TempDir()` |
 | In-process coordinator | nothing |
 | Live acceptance | docker and a coordinator process (phase 5), `gh` for the gates that check PRs (phase 5/6) |
 
