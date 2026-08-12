@@ -137,6 +137,12 @@ func newAdoptionEnv(t *testing.T, withSpec bool) *adoptionEnv {
 	})
 	t.Setenv("WT_SOCKET", sock)
 	installFakeGh(t)
+	// In a container the reaper is unavailable by design and the servers
+	// must be killed manually; in a host run the reaper has already
+	// stopped them. Either way nothing survives the test.
+	t.Cleanup(func() {
+		exec.Command("pkill", "-9", "-f", "plain-app-server").Run()
+	})
 
 	// The health hook's poll is sped up: the layer must not spend ten
 	// seconds per retry when a server is a second away.
@@ -268,6 +274,65 @@ func (e *adoptionEnv) startWorktree(wt string) {
 	}
 }
 
+// rmWorktree runs the skill's phase-7 teardown and returns the reap
+// report, asserting the bounded-coverage contract: either the reaper
+// signalled the worktree's own server (a host coordinator), or it says it
+// could not and names the remedy.
+func (e *adoptionEnv) rmWorktree(slug string) protocol.ReapReport {
+	e.t.Helper()
+	code, stdout, stderr := runCLI(e.t, "rm", "--cwd", e.main, "--slug", slug, "--json")
+	if code != ExitOK {
+		e.t.Fatalf("rm of %s exit = %d; stderr:\n%s", slug, code, stderr)
+	}
+	var res struct {
+		Reap protocol.ReapReport `json:"reap"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &res); err != nil {
+		e.t.Fatalf("rm stdout is not one JSON object: %v\n%s", err, stdout)
+	}
+	if !res.Reap.Available {
+		// The design's container rule (04-lifecycle.md §6): a coordinator
+		// inside a container cannot discover the host's processes, so it
+		// says so and the remedy is manual. Asserted, never silently
+		// passed.
+		if !strings.Contains(res.Reap.Note, "kill any orphaned processes manually") &&
+			!strings.Contains(res.Reap.Note, "container") {
+			e.t.Errorf("the reap's unavailable note lacks the remedy:\n%+v", res.Reap)
+		}
+	}
+	return res.Reap
+}
+
+// killOrphanServers stops whatever the reaper could not: in a container
+// the reap is unavailable by design, and the design's remedy is manual
+// killing. Only the fixture's own binary name is matched; a host run has
+// nothing left to kill.
+func (e *adoptionEnv) killOrphanServers() {
+	e.t.Helper()
+	out, err := exec.Command("pkill", "-f", "plain-app-server").CombinedOutput()
+	_ = out
+	if err == nil {
+		// Give the TERM a moment, then KILL anything stubborn, then wait
+		// for the processes to be gone.
+		time.Sleep(300 * time.Millisecond)
+		exec.Command("pkill", "-9", "-f", "plain-app-server").Run()
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if !anyServerProcess() {
+			return
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	e.t.Errorf("the fixture's servers did not exit after the manual kill")
+}
+
+// anyServerProcess reports whether any plain-app-server process is alive.
+func anyServerProcess() bool {
+	err := exec.Command("pgrep", "-f", "plain-app-server").Run()
+	return err == nil
+}
+
 // readDescriptor reads a worktree's descriptor.
 func (e *adoptionEnv) readDescriptor(wt string) *descriptor.Descriptor {
 	e.t.Helper()
@@ -305,26 +370,6 @@ func (e *adoptionEnv) waitHealthy(wt string, deadline time.Time) bool {
 		time.Sleep(150 * time.Millisecond)
 	}
 	return false
-}
-
-// serverGone reports whether the worktree's server is definitely gone:
-// the worktree directory itself was removed by rm, so a missing descriptor
-// or binary counts as gone, and a live binary that answers /healthz is
-// proof it is not.
-func (e *adoptionEnv) serverGone(wt string) bool {
-	e.t.Helper()
-	d, err := descriptor.Read(filepath.Join(wt, "wt-env.json"), "json")
-	if err != nil {
-		return true // the tree is gone: nothing can be serving
-	}
-	port, ok := d.Resources["api"].Value.(int)
-	if !ok {
-		return true
-	}
-	out, err := exec.Command("sh", "-c",
-		fmt.Sprintf("API_PORT=%d %s -healthcheck", port, filepath.Join(wt, "plain-app-server"))).CombinedOutput()
-	_ = out
-	return err != nil
 }
 
 // TestAcceptancePlainAppAdoptedThroughTheSkill is exit criterion 1: the
@@ -530,24 +575,23 @@ func TestAcceptancePlainAppAdoptedThroughTheSkill(t *testing.T) {
 		}
 	}
 
-	// Tear both down; doctor is clean afterwards.
+	// Tear both down; the reap's bounded coverage is asserted (the
+	// reaper's container rule makes manual killing the remedy here), and
+	// doctor is clean afterwards.
+	var reaps []protocol.ReapReport
 	for _, slug := range []string{"wt-1", "wt-2"} {
-		code, _, stderr = runCLI(t, "rm", "--cwd", env.main, "--slug", slug)
-		if code != ExitOK {
-			t.Fatalf("rm of %s exit = %d; stderr:\n%s", slug, code, stderr)
+		reaps = append(reaps, env.rmWorktree(slug))
+	}
+	reapWorked := false
+	for _, r := range reaps {
+		if r.Available && len(r.Signalled) > 0 {
+			reapWorked = true
 		}
 	}
-	// The reaper signalled the servers: nothing answers the ports any more.
-	gone1 := filepath.Join(filepath.Dir(env.main), "wt-1")
-	gone2 := filepath.Join(filepath.Dir(env.main), "wt-2")
-	deadline = time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if env.serverGone(gone1) && env.serverGone(gone2) {
-			break
-		}
-		time.Sleep(150 * time.Millisecond)
+	if !reapWorked {
+		env.killOrphanServers() // the design's remedy when the reaper is unavailable
 	}
-	if !env.serverGone(gone1) || !env.serverGone(gone2) {
+	if anyServerProcess() {
 		t.Errorf("a worktree's server survived its rm")
 	}
 	code, stdout, stderr = runCLI(t, "doctor", "--json")
@@ -720,10 +764,13 @@ func TestAcceptanceSkillEightPhasesOnSpeclessFixture(t *testing.T) {
 	}
 
 	for _, slug := range []string{"wt-1", "wt-2"} {
-		code, _, stderr = runCLI(t, "rm", "--cwd", env.main, "--slug", slug)
-		if code != ExitOK {
-			t.Fatalf("rm of %s exit = %d; stderr:\n%s", slug, code, stderr)
+		reap := env.rmWorktree(slug)
+		if reap.Available && len(reap.Signalled) == 0 && reap.Note != "" {
+			t.Errorf("the reap reported a host limitation without the remedy:\n%+v", reap)
 		}
+	}
+	if anyServerProcess() {
+		env.killOrphanServers()
 	}
 	code, stdout, stderr = runCLI(t, "doctor", "--json")
 	if code != ExitOK {
