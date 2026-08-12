@@ -740,7 +740,10 @@ func TestAcceptanceGate2ContainerAndHostAllocate(t *testing.T) {
 	writeT(t, initScript, `#!/bin/sh
 set -e
 apk add --no-cache git >/dev/null 2>&1
-rm -rf "$REPO" "$WT"
+# $REPO is a bind-mount point, so it cannot be removed from in here —
+# only emptied. $WT is ordinary container filesystem and goes whole.
+rm -rf "$REPO"/..?* "$REPO"/.[!.]* "$REPO"/* 2>/dev/null || true
+rm -rf "$WT"
 git clone -q "$SRC" "$REPO"
 git -C "$REPO" config user.email t@example.com
 git -C "$REPO" config user.name T
