@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/driver"
 	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
@@ -63,10 +64,20 @@ type Handler struct {
 	ProtocolMax int
 
 	// Probe is the phase-4 seam: the check that skips a slot whose derived
-	// resources probe as held. This phase ships the no-probe probe
-	// (noProbe), which reports every slot free; the phase-4 port driver
-	// replaces it at startup. A test can install a fake.
+	// resources probe as held. InstallDrivers replaces the phase-3 no-probe
+	// probe (noProbe) with the driver-backed probe at startup; a test can
+	// install a fake.
 	Probe Probe
+
+	// Drivers is the driver registry the allocation probe and the teardown
+	// path run against, installed by InstallDrivers. Nil until then: phase-3
+	// tests never call the teardown path, and cmd/wtd installs the registry
+	// before serving.
+	Drivers driver.Registry
+
+	// Docker is the docker seam the teardown path runs against. Nil means
+	// the real CLI runner (driver.NewDocker) is used; tests install fakes.
+	Docker driver.Docker
 
 	st  *store.Store
 	log *slog.Logger

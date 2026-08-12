@@ -109,12 +109,20 @@ func writeBandsTable(stdout io.Writer, res *protocol.BandsListResult) int {
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "RESERVATIONS\t")
-	fmt.Fprintln(w, "PORTS\tNOTE")
+	fmt.Fprintln(w, "PORTS\tNAMES\tNOTE")
 	if len(res.Reservations) == 0 {
 		fmt.Fprintln(w, "(none)\t")
 	}
 	for _, r := range res.Reservations {
-		fmt.Fprintf(w, "%s\t%s\n", joinPorts(r.Ports), r.Note)
+		ports := joinPorts(r.Ports)
+		if ports == "" {
+			ports = "-"
+		}
+		names := strings.Join(r.Names, ", ")
+		if names == "" {
+			names = "-"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\n", ports, names, r.Note)
 	}
 	return finish(w)
 }
@@ -133,22 +141,28 @@ func joinPorts(ports []int) string {
 //	wt bands reserve --base <name>=<port>...            register this repo's
 //	    [--json]                                        port band from its
 //	                                                    committed spec
-//	wt bands reserve --host --port <p>... --note <text> reserve host-global
-//	    [--json]                                        ports no app may
-//	                                                    allocate from
+//	wt bands reserve --host --port <p>...               reserve host-global
+//	    [--name <project>...]                           ports no app may
+//	    --note <text>                                   allocate from and
+//	    [--json]                                        compose project names
+//	                                                    no teardown may reach
 //
 // Registration is explicit — nothing grabs a range on the fly — and a host
 // reservation carries a required note naming what holds the range
-// (02-coordination.md §6.2, plan.md §8 R6).
+// (02-coordination.md §6.2, plan.md §8 R6). The reserved names are the
+// phase-4 rail behind the namespace driver's teardown refusal: a person
+// declares the co-resident stack's compose project name once per machine.
 func runBandsReserve(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("bands reserve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOut := fs.Bool("json", false, "print exactly one JSON object on stdout")
-	host := fs.Bool("host", false, "reserve host-global ports instead of registering an app band")
+	host := fs.Bool("host", false, "reserve host-global ports or project names instead of registering an app band")
 	var bases baseList
 	fs.Var(&bases, "base", "band base for one port resource, <name>=<port>; repeatable")
 	var ports intList
 	fs.Var(&ports, "port", "host-globally reserved port; repeatable")
+	var names nameList
+	fs.Var(&names, "name", "host-globally reserved compose project name; repeatable")
 	note := fs.String("note", "", "what holds the reserved range (required with --host)")
 	if err := fs.Parse(args); err != nil {
 		return ExitUsage
@@ -164,14 +178,14 @@ func runBandsReserve(args []string, stdout, stderr io.Writer) int {
 	if *host {
 		if len(bases) > 0 {
 			WriteError(stderr, UsageError(
-				"run 'wt bands reserve --host --port <p>... --note <text>'",
-				"--host takes --port, not --base"))
+				"run 'wt bands reserve --host --port <p>... [--name <project>...] --note <text>'",
+				"--host takes --port and --name, not --base"))
 			return ExitUsage
 		}
-		if len(ports) == 0 {
+		if len(ports) == 0 && len(names) == 0 {
 			WriteError(stderr, UsageError(
-				"run 'wt bands reserve --host --port 5319 --port 5320 --note <text>'",
-				"--host requires at least one --port"))
+				"run 'wt bands reserve --host --port 5319 --port 5320 --name compose-app-prod --note <text>'",
+				"--host requires at least one --port or one --name"))
 			return ExitUsage
 		}
 		if *note == "" {
@@ -180,12 +194,12 @@ func runBandsReserve(args []string, stdout, stderr io.Writer) int {
 				"--host requires --note; an unlabelled reservation is one nobody can later judge"))
 			return ExitUsage
 		}
-		reqArgs = protocol.ReserveBandArgs{Host: true, Ports: []int(ports), Note: *note}
+		reqArgs = protocol.ReserveBandArgs{Host: true, Ports: []int(ports), Names: []string(names), Note: *note}
 	} else {
-		if len(ports) > 0 {
+		if len(ports) > 0 || len(names) > 0 {
 			WriteError(stderr, UsageError(
-				"run 'wt bands reserve --host --port <p>...' for host reservations",
-				"--port is only valid with --host"))
+				"run 'wt bands reserve --host --port <p>... --name <project>...' for host reservations",
+				"--port and --name are only valid with --host"))
 			return ExitUsage
 		}
 		if *note != "" {
@@ -275,6 +289,9 @@ func writeReserveTable(stdout io.Writer, res *protocol.ReserveBandResult) int {
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	if res.Host {
 		fmt.Fprintf(w, "reserved:\t%s\n", joinPorts(res.Ports))
+		if len(res.Names) > 0 {
+			fmt.Fprintf(w, "names:\t%s\n", strings.Join(res.Names, ", "))
+		}
 		fmt.Fprintf(w, "note:\t%s\n", res.Note)
 		return finish(w)
 	}
@@ -310,5 +327,17 @@ func (l *intList) Set(v string) error {
 		return fmt.Errorf("%q is not a port number: %v", v, err)
 	}
 	*l = append(*l, p)
+	return nil
+}
+
+// nameList is the repeatable --name flag: the compose project names a host
+// reservation declares as co-resident production, which label-based teardown
+// must never reach (03-drivers.md §4.2, B8.2).
+type nameList []string
+
+func (l *nameList) String() string { return strings.Join(*l, ",") }
+
+func (l *nameList) Set(v string) error {
+	*l = append(*l, v)
 	return nil
 }

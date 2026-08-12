@@ -539,7 +539,7 @@ func TestAllocatorProbeSeam(t *testing.T) {
 		sess, _ := h.Connect(protocol.KindHost, "")
 		sp := testSpec(t, "compose-app", 8)
 		registerBand(t, h, sess, sp, 4200)
-		h.H.Probe = func(app string, slot int, resources map[string]spec.Resolved) ProbeResult {
+		h.H.Probe = func(s *spec.Spec, slot int, resources map[string]spec.Resolved) ProbeResult {
 			if slot == 1 {
 				return ProbeHeld
 			}
@@ -552,6 +552,12 @@ func TestAllocatorProbeSeam(t *testing.T) {
 		if res.Slot != 2 {
 			t.Errorf("slot = %d, want 2 (the probe held slot 1)", res.Slot)
 		}
+		// The allocator says which slot it skipped and why (B1.6): the held
+		// port is never remediated, and the skip is never silent.
+		if len(res.Skipped) != 1 || !strings.Contains(res.Skipped[0], "slot 1") ||
+			!strings.Contains(res.Skipped[0], "never remediated") {
+			t.Errorf("Skipped = %v, want one entry naming slot 1 and the never-remediated reason", res.Skipped)
+		}
 	})
 
 	t.Run("unavailable does not block allocation", func(t *testing.T) {
@@ -559,7 +565,7 @@ func TestAllocatorProbeSeam(t *testing.T) {
 		sess, _ := h.Connect(protocol.KindHost, "")
 		sp := testSpec(t, "compose-app", 8)
 		registerBand(t, h, sess, sp, 4200)
-		h.H.Probe = func(app string, slot int, resources map[string]spec.Resolved) ProbeResult {
+		h.H.Probe = func(s *spec.Spec, slot int, resources map[string]spec.Resolved) ProbeResult {
 			return ProbeUnavailable
 		}
 		res, perr := allocate(t, h, sess, sp, "alpha")
@@ -568,6 +574,11 @@ func TestAllocatorProbeSeam(t *testing.T) {
 		}
 		if res.Slot != 1 {
 			t.Errorf("slot = %d, want 1", res.Slot)
+		}
+		// Bounded coverage is stated: the output carries the note that the
+		// registry was the only check performed (03-drivers.md §4.1).
+		if res.ProbeNote == "" {
+			t.Error("ProbeNote is empty; an unavailable probe must state that the registry was the only check")
 		}
 	})
 

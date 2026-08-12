@@ -37,14 +37,16 @@ const (
 // Probe is the seam the phase-4 port driver plugs into: "skip anything
 // probing held", with the probe itself phase 4's work. This phase ships the
 // no-probe probe — every slot probes free — explicitly, rather than
-// pretending a probe ran. The driver replaces the Handler's Probe field at
-// coordinator startup; a test can install a fake.
-type Probe func(app string, slot int, resources map[string]spec.Resolved) ProbeResult
+// pretending a probe ran. InstallDrivers replaces the Handler's Probe with
+// the driver-backed probe at coordinator startup; a test can install a fake.
+// The spec is passed so the probe can consult each resource's driver with
+// the resource itself (the namespace driver, for one, needs the kind).
+type Probe func(s *spec.Spec, slot int, resources map[string]spec.Resolved) ProbeResult
 
 // noProbe is phase 3's probe: nothing is held. The real probe (the phase-4
 // port driver's) reports from the host network namespace; until then the
 // no-probe case is explicit in the allocation path.
-func noProbe(string, int, map[string]spec.Resolved) ProbeResult { return ProbeFree }
+func noProbe(*spec.Spec, int, map[string]spec.Resolved) ProbeResult { return ProbeFree }
 
 // ReservingTimeout is how long a reserving entry may sit before the
 // coordinator ages it out on its own timer (ARCHITECTURE.md §11.2). It must
@@ -139,11 +141,13 @@ func (h *Handler) allocate(s *Session, req *protocol.Request) *protocol.Response
 			"set $HOME for the coordinator, then re-run")
 	}
 
-	slot, resources, perr := h.pickSlot(&args.Spec, reg, bands, app, args.Slug, args.Path, home, bases,
+	picked, perr := h.pickSlot(&args.Spec, reg, bands, app, args.Slug, args.Path, home, bases,
 		s.Identity.Key, s.Identity.Kind)
 	if perr != nil {
 		return &protocol.Response{Error: perr}
 	}
+	slot := picked.slot
+	resources := picked.resources
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	entry := store.Entry{
@@ -165,7 +169,20 @@ func (h *Handler) allocate(s *Session, req *protocol.Request) *protocol.Response
 	return &protocol.Response{Result: mustJSON(protocol.AllocateResult{
 		App: app, Slug: entry.Slug, Slot: entry.Slot, State: entry.State,
 		Resources: entry.Resources, PathVisible: entry.PathVisible, Secrets: entry.Secrets,
+		ProbeNote: picked.probeNote, Skipped: picked.skipped,
 	})}
+}
+
+// pickedSlot is the allocation algorithm's answer: the chosen slot and its
+// resources, plus the bounded-coverage statements the output must carry —
+// which slots were skipped and why (a held port is never remediated, the
+// allocator says which slot it skipped, B1.6), and whether the chosen
+// slot's probe was unavailable (the registry was the only check).
+type pickedSlot struct {
+	slot      int
+	resources map[string]spec.Resolved
+	skipped   []string
+	probeNote string
 }
 
 // pickSlot runs the allocation algorithm: the lowest free value from 1
@@ -175,7 +192,7 @@ func (h *Handler) allocate(s *Session, req *protocol.Request) *protocol.Response
 // never allocated, never managed (ARCHITECTURE.md §8.4). ownerKey and
 // ownerKind are the calling client's identity, which the exhaustion message
 // needs to count the slots the caller cannot free.
-func (h *Handler) pickSlot(s *spec.Spec, reg store.RegistryFile, bands store.BandsFile, app, slug, path, home string, bases map[string]int, ownerKey, ownerKind string) (int, map[string]spec.Resolved, *protocol.Error) {
+func (h *Handler) pickSlot(s *spec.Spec, reg store.RegistryFile, bands store.BandsFile, app, slug, path, home string, bases map[string]int, ownerKey, ownerKind string) (*pickedSlot, *protocol.Error) {
 	max := spec.DefaultSlotMax
 	if s.Slots.Max != nil && *s.Slots.Max >= 1 {
 		max = *s.Slots.Max
@@ -194,6 +211,9 @@ func (h *Handler) pickSlot(s *spec.Spec, reg store.RegistryFile, bands store.Ban
 	if probe == nil {
 		probe = noProbe
 	}
+	// Skipped collects the slots the probe held and why (B1.6): the output
+	// says which slot it skipped so the reason is never silent.
+	var skipped []string
 
 	for slot := 1; slot <= max; slot++ {
 		if registrySlotHeld(reg, app, slot) {
@@ -204,7 +224,7 @@ func (h *Handler) pickSlot(s *spec.Spec, reg store.RegistryFile, bands store.Ban
 			Home: home, Worktree: path, Bases: bases,
 		})
 		if err != nil {
-			return 0, nil, &protocol.Error{
+			return nil, &protocol.Error{
 				Code:   3,
 				Msg:    fmt.Sprintf("resolving slot %d: %v", slot, err),
 				Remedy: "check the spec and the band registration, then re-run",
@@ -213,13 +233,23 @@ func (h *Handler) pickSlot(s *spec.Spec, reg store.RegistryFile, bands store.Ban
 		if excluded(resources, reservedSet, resvSet) {
 			continue
 		}
-		switch probe(app, slot, resources) {
+		probeNote := ""
+		switch probe(s, slot, resources) {
 		case ProbeHeld:
-			continue // a held port is never remediated: skip the slot and say which one (plan.md phase 4)
-		case ProbeFree, ProbeUnavailable:
-			// Unavailable does not block allocation (plan.md §3).
+			// A held port is never remediated (B1.6): whatever holds it is
+			// probably the developer's own running instance, and killing it
+			// is out of the tool's hands. Skip the slot and say which one —
+			// the output names it so the reason is never silent.
+			skipped = append(skipped, fmt.Sprintf(
+				"slot %d skipped: a derived port is bound by something outside the registry, and a held port is never remediated", slot))
+			continue
+		case ProbeUnavailable:
+			// Unavailable does not block allocation (plan.md §3), and the
+			// output states that the registry was the only check performed.
+			probeNote = "the port probe was unavailable; the registry was the only check performed"
+		case ProbeFree:
 		}
-		return slot, resources, nil
+		return &pickedSlot{slot: slot, resources: resources, skipped: skipped, probeNote: probeNote}, nil
 	}
 
 	// Exhaustion is actionable: the message names the range, the cleanup
@@ -240,14 +270,14 @@ func (h *Handler) pickSlot(s *spec.Spec, reg store.RegistryFile, bands store.Ban
 		}
 	}
 	if occupied == 0 {
-		return 0, nil, &protocol.Error{
+		return nil, &protocol.Error{
 			Code: 3,
 			Msg: fmt.Sprintf("app %q has no free slot in 1..%d: every slot's derived ports fall in the spec's "+
 				"reserved block or the host-global reservations, so no slot is allocatable", app, max),
 			Remedy: "move the band bases or narrow the exclusions (the spec's reserved block, or 'wt bands reserve --host'), then re-run",
 		}
 	}
-	return 0, nil, &protocol.Error{
+	return nil, &protocol.Error{
 		Code: 3,
 		Msg: fmt.Sprintf("app %q has no free slot in 1..%d: all %d slots are occupied, "+
 			"and %d of them are owned by other clients and cannot be freed from here",

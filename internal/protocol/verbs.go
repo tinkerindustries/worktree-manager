@@ -31,7 +31,10 @@ type AllocateArgs struct {
 // derives from, the denormalised resource table, the state the entry was
 // committed in (reserving), whether the coordinator can stat the recorded
 // path, and the owner's own secrets echoed back — the owner is the only
-// client they are ever served to (ARCHITECTURE.md §12.2).
+// client they are ever served to (ARCHITECTURE.md §12.2). ProbeNote carries
+// the bounded-coverage statement when the chosen slot's probe was
+// unavailable: allocation proceeded on the registry alone, and the output
+// says so (03-drivers.md §4.1).
 type AllocateResult struct {
 	App         string                   `json:"app"`
 	Slug        string                   `json:"slug"`
@@ -40,6 +43,11 @@ type AllocateResult struct {
 	Resources   map[string]spec.Resolved `json:"resources"`
 	PathVisible bool                     `json:"path_visible"`
 	Secrets     map[string]string        `json:"secrets,omitempty"`
+	ProbeNote   string                   `json:"probe_note,omitempty"`
+	// Skipped names the slots the probe held and why — a held port is never
+	// remediated, and the allocator says which slot it skipped (B1.6,
+	// 03-drivers.md §4.1).
+	Skipped []string `json:"skipped,omitempty"`
 }
 
 // EntryRef names one registry entry: the app and slug pair that identifies
@@ -70,14 +78,15 @@ type ReleaseResult struct {
 // resource, so the coordinator can compute the band's required size from
 // the spec — the onboarding skill chooses only where the bases sit, not how
 // large they are (02-coordination.md §6.2). Host mode carries the ports no
-// app may allocate from and the required note naming what holds the range
-// (plan.md §8, R6): nothing infers a production stack, a person declares it
-// once per machine.
+// app may allocate from, the compose project names no teardown may reach,
+// and the required note naming what holds the range (plan.md §8, R6):
+// nothing infers a production stack, a person declares it once per machine.
 type ReserveBandArgs struct {
 	Spec  spec.Spec      `json:"spec,omitempty"`
 	Bases map[string]int `json:"bases,omitempty"`
 	Host  bool           `json:"host,omitempty"`
 	Ports []int          `json:"ports,omitempty"`
+	Names []string       `json:"names,omitempty"`
 	Note  string         `json:"note,omitempty"`
 }
 
@@ -90,6 +99,7 @@ type ReserveBandResult struct {
 	Spans map[string]int `json:"spans,omitempty"`
 	Host  bool           `json:"host,omitempty"`
 	Ports []int          `json:"ports,omitempty"`
+	Names []string       `json:"names,omitempty"`
 	Note  string         `json:"note,omitempty"`
 }
 
@@ -101,8 +111,9 @@ type BandInfo struct {
 
 // ReservationInfo is one host-global reservation as bands.list reports it.
 type ReservationInfo struct {
-	Ports []int  `json:"ports"`
-	Note  string `json:"note"`
+	Ports []int    `json:"ports"`
+	Names []string `json:"names,omitempty"`
+	Note  string   `json:"note"`
 }
 
 // BandsListResult is the whole ledger: the app bands and the machine-wide

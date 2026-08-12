@@ -22,6 +22,7 @@ import (
 	"syscall"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/coord"
+	"github.com/mrgeoffrich/worktree-manager/internal/driver"
 	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
@@ -74,6 +75,10 @@ func run(args []string) int {
 		log.Error("building the coordinator", "err", err)
 		return 1
 	}
+	// The driver registry is the allocation probe and the teardown path.
+	// cidr and machine join in phase 8; the registry already knows how to
+	// skip a type with no driver.
+	h.InstallDrivers(driver.NewRegistry(&driver.Port{}, &driver.Namespace{}, &driver.StatePath{}))
 	srv := coord.NewServer(h, log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
