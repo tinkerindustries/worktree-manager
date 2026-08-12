@@ -471,6 +471,17 @@ func (tr *containerTransport) containerPath(sandbox string) string {
 	return "/s/" + filepath.Base(sandbox)
 }
 
+// containerBin is the directory the shared files land in inside the
+// container — the one that has to be on PATH for the scripts to find wt.
+// The two transports lay them out differently: bind mode mounts each file
+// at /s/<name>, while volume mode keeps the tail under /vol.
+func (tr *containerTransport) containerBin() string {
+	if tr.volume != "" {
+		return tr.containerPath(tr.base)
+	}
+	return "/s"
+}
+
 // runArgs returns the docker run command (the args after "docker") that
 // share the transport's files into a container: the wt binary, the fake
 // gh, the scripts, the repository source, the persistent clone, the
@@ -797,9 +808,11 @@ wt rm --cwd "$REPO" --slug wt-c
 			"-e", "REPO="+tr.containerPath(filepath.Join(tr.base, "repo")),
 			"-e", "WT="+tr.containerPath(filepath.Join(tr.base, "wt-c")),
 			"-e", "REMOTE="+tr.containerPath(remote))
-		if tr.volume != "" {
-			args = append(args, "-e", "PATH="+tr.containerPath(tr.base)+":/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-		}
+		// Unconditional: the scripts call wt by name, and it is only ever
+		// on PATH because of this. Setting it in volume mode alone was why
+		// the gate passed in a sandbox that used the volume and failed on
+		// every CI runner, which binds.
+		args = append(args, "-e", "PATH="+tr.containerBin()+":/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 		args = append(args,
 			"golang:1.26-alpine",
 			"sh", tr.containerPath(filepath.Join(tr.base, scriptName)))
