@@ -3,8 +3,12 @@
 // foreground against a socket path given by --socket or WT_SOCKET — the
 // mode the tests and the CI gates use, and the reason the process lifecycle
 // is split from supervisor registration: a hosted Linux runner has no
-// launchd. Under a supervisor (a launchd LaunchAgent on macOS, written by
-// `wt daemon install`) it is the same binary started by someone else.
+// launchd. Under a supervisor (a launchd LaunchAgent on macOS, the systemd
+// user unit on Linux, a scheduled task on Windows — written by
+// `wt daemon install`) it is the same binary started by someone else. On
+// Linux the systemd socket unit hands the listener over through
+// LISTEN_FDS, and --activate makes wtd consume that descriptor instead of
+// opening its own socket (systemd_linux.go).
 //
 // Lifecycle: SIGINT and SIGTERM cancel the serving context, in-flight
 // requests finish, and the process exits 0. Structured logging with
@@ -39,6 +43,7 @@ func run(args []string) int {
 	fs := flag.NewFlagSet("wtd", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	socket := fs.String("socket", "", "socket path (default: WT_SOCKET, then the platform default)")
+	activate := fs.Bool("activate", false, "consume the listening socket systemd passed via LISTEN_FDS (the systemd unit passes this; mutually exclusive with --socket)")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -84,6 +89,32 @@ func run(args []string) int {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if *activate {
+		// The systemd socket-activation path: the listener comes from the
+		// .socket unit, never from --socket (the two cannot both decide
+		// where the coordinator listens).
+		if *socket != "" {
+			log.Error("--activate and --socket are mutually exclusive", "socket", *socket)
+			return 1
+		}
+		ln, err := platform.ActivatedListener()
+		if err != nil {
+			log.Error("consuming the activated socket", "err", err)
+			return 1
+		}
+		if ln == nil {
+			log.Error("--activate given but no activated socket (LISTEN_FDS is unset); run wtd in the foreground, or start it through the systemd socket unit")
+			return 1
+		}
+		log.Info("wtd starting", "version", version, "store", root, "socket", ln.Addr().String(), "activated", true)
+		if err := srv.ServeListener(ctx, ln); err != nil {
+			log.Error("coordinator stopped with an error", "err", err)
+			return 1
+		}
+		log.Info("wtd stopped")
+		return 0
+	}
 
 	log.Info("wtd starting", "version", version, "store", root, "socket", socketPath)
 	if err := srv.Serve(ctx, socketPath); err != nil {

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -11,38 +12,56 @@ import (
 // TestSupervisorRegistrationPathPrefix: under a prefix the registration file
 // is inert data on every platform — this is the seam that lets the daemon
 // tests exercise registration and status without ever touching the machine's
-// launchd (no test may install a LaunchAgent on the machine running it).
+// supervisor (no test may install a real supervisor unit on the machine
+// running it). The filename is the platform's own, so a prefixed install
+// plants the file a prefixed status check looks for.
 func TestSupervisorRegistrationPathPrefix(t *testing.T) {
 	prefix := tempDir(t)
 	got, err := SupervisorRegistrationPath(prefix)
 	if err != nil {
 		t.Fatalf("SupervisorRegistrationPath(prefix): %v", err)
 	}
-	if want := filepath.Join(prefix, LaunchAgentFilename); got != want {
+	if want := filepath.Join(prefix, SupervisorFilename(runtime.GOOS)); got != want {
 		t.Errorf("SupervisorRegistrationPath = %q, want %q", got, want)
 	}
 }
 
-// TestSupervisorRegistrationPathReal: without a prefix the real path is
-// macOS's LaunchAgents directory and a refusal naming phase 8 elsewhere —
-// Linux and Windows have no supervisor in this phase.
+// TestSupervisorRegistrationPathReal: without a prefix the real path is the
+// platform's supervisor location: macOS's LaunchAgents directory, Linux's
+// systemd user directory (the service unit of the pair), Windows's task
+// XML directory. A platform with no supervisor refuses.
 func TestSupervisorRegistrationPathReal(t *testing.T) {
 	got, err := SupervisorRegistrationPath("")
 	if err == ErrNoSupervisor {
-		return // linux/windows: phase 8 owns the unit; the refusal is the contract
+		return // untargeted platform: the refusal is the contract
 	}
 	if err != nil {
 		t.Fatalf("SupervisorRegistrationPath: %v", err)
 	}
-	if !strings.HasSuffix(got, filepath.Join("Library", "LaunchAgents", LaunchAgentFilename)) {
-		t.Errorf("real registration path = %q, want ~/Library/LaunchAgents/<label>.plist", got)
+	switch runtime.GOOS {
+	case "darwin":
+		if !strings.HasSuffix(got, filepath.Join("Library", "LaunchAgents", LaunchAgentFilename)) {
+			t.Errorf("real registration path = %q, want ~/Library/LaunchAgents/<label>.plist", got)
+		}
+	case "linux":
+		if !strings.HasSuffix(got, filepath.Join("systemd", "user", SystemdServiceFilename)) {
+			t.Errorf("real registration path = %q, want ~/.config/systemd/user/<label>.service", got)
+		}
+	case "windows":
+		if !strings.HasSuffix(got, WindowsTaskFilename) {
+			t.Errorf("real registration path = %q, want the task XML under %%LOCALAPPDATA%%", got)
+		}
 	}
 }
 
-// TestInstallSupervisorPrefix writes the LaunchAgent plist under a prefix and
-// verifies its content: RunAtLoad and KeepAlive, no Sockets key — launchd
-// socket activation needs launch_activate_socket, a C API, and this project
-// is CGO_ENABLED=0 throughout.
+// TestInstallSupervisorPrefix writes the registration file(s) under a prefix
+// and verifies their content. On macOS the launchd plist carries RunAtLoad
+// and KeepAlive and no Sockets key — launchd socket activation needs
+// launch_activate_socket, a C API, and this project is CGO_ENABLED=0
+// throughout. On Linux the systemd service unit carries ExecStart with
+// --activate and Restart=always, and the paired .socket unit owns the
+// listener (SocketMode 0700). On Windows the task XML is written (the
+// schtasks registration itself is never run under a prefix).
 func TestInstallSupervisorPrefix(t *testing.T) {
 	prefix := tempDir(t)
 	wtd := filepath.Join(prefix, "wtd")
@@ -54,45 +73,144 @@ func TestInstallSupervisorPrefix(t *testing.T) {
 		t.Fatalf("InstallSupervisor: %v", err)
 	}
 	if res.Loaded {
-		t.Error("install under a prefix reported loaded; a prefix must never touch launchd")
+		t.Error("install under a prefix reported loaded; a prefix must never touch the supervisor")
 	}
-	if res.PlistPath != filepath.Join(prefix, LaunchAgentFilename) {
-		t.Errorf("plist path = %q", res.PlistPath)
+	if res.RegistrationPath != filepath.Join(prefix, SupervisorFilename(runtime.GOOS)) {
+		t.Errorf("registration path = %q", res.RegistrationPath)
 	}
-	data, err := os.ReadFile(res.PlistPath)
+	data, err := os.ReadFile(res.RegistrationPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	plist := string(data)
-	for _, want := range []string{
-		"<key>Label</key>",
-		"<string>" + LaunchAgentLabel + "</string>",
-		"<key>ProgramArguments</key>",
-		"<string>" + wtd + "</string>",
-		"<key>RunAtLoad</key>",
-		"<true/>",
-		"<key>KeepAlive</key>",
-	} {
-		if !strings.Contains(plist, want) {
-			t.Errorf("plist lacks %s:\n%s", want, plist)
-		}
+	file := string(data)
+	if !strings.Contains(file, "com.mrgeoffrich.wtd") {
+		t.Errorf("registration file lacks the label:\n%s", file)
 	}
-	if strings.Contains(plist, "Sockets") {
-		t.Errorf("plist carries a Sockets key; launchd socket activation is C-API-only and this project is CGO_ENABLED=0:\n%s", plist)
+	switch runtime.GOOS {
+	case "darwin":
+		for _, want := range []string{
+			"<key>Label</key>",
+			"<string>" + LaunchAgentLabel + "</string>",
+			"<key>ProgramArguments</key>",
+			"<string>" + wtd + "</string>",
+			"<key>RunAtLoad</key>",
+			"<true/>",
+			"<key>KeepAlive</key>",
+		} {
+			if !strings.Contains(file, want) {
+				t.Errorf("plist lacks %s:\n%s", want, file)
+			}
+		}
+		if strings.Contains(file, "Sockets") {
+			t.Errorf("plist carries a Sockets key; launchd socket activation is C-API-only and this project is CGO_ENABLED=0:\n%s", file)
+		}
+	case "linux":
+		for _, want := range []string{
+			"[Unit]",
+			"Requires=" + SystemdSocketFilename,
+			"After=" + SystemdSocketFilename,
+			`ExecStart="` + wtd + `" --activate`,
+			"Restart=always",
+			"WantedBy=default.target",
+		} {
+			if !strings.Contains(file, want) {
+				t.Errorf("service unit lacks %s:\n%s", want, file)
+			}
+		}
+		sockData, err := os.ReadFile(filepath.Join(prefix, SystemdSocketFilename))
+		if err != nil {
+			t.Fatalf("the paired socket unit was not written: %v", err)
+		}
+		sock := string(sockData)
+		for _, want := range []string{
+			"ListenStream=%t/wt/sock",
+			"SocketMode=0700",
+			"WantedBy=sockets.target",
+		} {
+			if !strings.Contains(sock, want) {
+				t.Errorf("socket unit lacks %s:\n%s", want, sock)
+			}
+		}
+	case "windows":
+		if !strings.Contains(file, "Exec") {
+			t.Errorf("task XML lacks the Exec action:\n%s", file)
+		}
 	}
 }
 
-// TestInstallSupervisorNoSupervisorPlatform: on Linux and Windows a real
-// (prefix-less) registration is phase 8 and must refuse, naming the
-// foreground alternative. Skipped on darwin: there the prefix-less path is
-// the real launchd, and no test may install a LaunchAgent on the machine
-// running it.
-func TestInstallSupervisorNoSupervisorPlatform(t *testing.T) {
-	if runtime.GOOS == "darwin" {
-		t.Skip("darwin's prefix-less install is the real launchd; tests only use prefixes")
+// TestInstallSupervisorRealRegistrationNeverRunsInTests: a real
+// (prefix-less) install registers with the machine's supervisor, which no
+// test may do on any platform — darwin (launchctl bootstrap), linux
+// (systemctl enable), windows (schtasks /Create). The test exists so a
+// future platform that forgets the rule fails loudly here instead of in
+// review.
+func TestInstallSupervisorRealRegistrationNeverRunsInTests(t *testing.T) {
+	switch runtime.GOOS {
+	case "darwin", "linux", "windows":
+		t.Skipf("a prefix-less install on %s is the real supervisor; tests only use prefixes", runtime.GOOS)
 	}
 	if _, err := InstallSupervisor(InstallSupervisorOpts{WtdPath: "/nonexistent/wtd"}); err == nil {
 		t.Fatal("InstallSupervisor without a prefix succeeded on this platform")
+	}
+}
+
+// TestInstallSupervisorNeedsWtdPath: the registration file execs the
+// coordinator binary, so an install without it refuses.
+func TestInstallSupervisorNeedsWtdPath(t *testing.T) {
+	prefix := tempDir(t)
+	if _, err := InstallSupervisor(InstallSupervisorOpts{Prefix: prefix}); err == nil {
+		t.Fatal("InstallSupervisor without a wtd path succeeded")
+	}
+}
+
+// TestSystemdEscapeExec pins the ExecStart quoting: a path with a space or
+// a dollar must survive systemd's argument splitting.
+func TestSystemdEscapeExec(t *testing.T) {
+	got := systemdEscapeExec(`/home/a b/wtd$1`)
+	if !strings.Contains(got, `"`) {
+		t.Errorf("exec path is not quoted: %q", got)
+	}
+	if strings.Contains(got, " ") && !strings.HasPrefix(got, `"`) {
+		t.Errorf("a path with a space must be quoted: %q", got)
+	}
+}
+
+// TestLingeringCaveatUnderPrefix: a test prefix never probes loginctl —
+// the caveat is empty so CI (a container without systemd) does not see it.
+func TestLingeringCaveatUnderPrefix(t *testing.T) {
+	if got := LingeringCaveat(tempDir(t)); got != "" {
+		t.Errorf("LingeringCaveat under a prefix = %q, want empty", got)
+	}
+}
+
+// TestActivatedListenerNotActivated: without LISTEN_FDS the process was not
+// socket-activated, and ActivatedListener reports that (nil, nil) — the
+// foreground path.
+func TestActivatedListenerNotActivated(t *testing.T) {
+	t.Setenv("LISTEN_FDS", "")
+	t.Setenv("LISTEN_PID", "")
+	ln, err := ActivatedListener()
+	if err != nil {
+		t.Fatalf("ActivatedListener: %v", err)
+	}
+	if ln != nil {
+		t.Error("ActivatedListener returned a listener with no LISTEN_FDS")
+	}
+}
+
+// TestActivatedListenerRefusesForeignHandoff: LISTEN_FDS naming another
+// process, or more than one descriptor, is refused — the handoff is only
+// valid for this process and for exactly the one socket the unit owns.
+func TestActivatedListenerRefusesForeignHandoff(t *testing.T) {
+	t.Setenv("LISTEN_FDS", "1")
+	t.Setenv("LISTEN_PID", "999999")
+	if _, err := ActivatedListener(); err == nil {
+		t.Error("a handoff naming another pid succeeded")
+	}
+	t.Setenv("LISTEN_PID", strconv.Itoa(os.Getpid()))
+	t.Setenv("LISTEN_FDS", "2")
+	if _, err := ActivatedListener(); err == nil {
+		t.Error("a two-descriptor handoff succeeded, want a refusal")
 	}
 }
 

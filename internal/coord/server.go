@@ -46,6 +46,16 @@ func (s *Server) Serve(ctx context.Context, socketPath string) error {
 	}
 	defer ln.Close()
 	defer os.Remove(socketPath)
+	return s.ServeListener(ctx, ln)
+}
+
+// ServeListener serves an already-created listener — the unix socket
+// `Serve` opens, or the descriptor systemd handed over under socket
+// activation (platform.ActivatedListener, systemd_linux.go). Nothing is
+// removed on exit: a listener this path does not own stays in place (the
+// systemd socket unit keeps its socket file; Serve's own defer handles
+// the path it created).
+func (s *Server) ServeListener(ctx context.Context, ln net.Listener) error {
 	s.startSweeper(ctx)
 
 	go func() {
@@ -59,7 +69,7 @@ func (s *Server) Serve(ctx context.Context, socketPath string) error {
 			if ctx.Err() != nil {
 				break // shutting down: stop accepting, drain
 			}
-			return fmt.Errorf("accepting on %s: %w", socketPath, err)
+			return fmt.Errorf("accepting on %s: %w", ln.Addr(), err)
 		}
 		s.wg.Add(1)
 		go func() {
