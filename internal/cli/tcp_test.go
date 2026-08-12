@@ -14,6 +14,8 @@ package cli
 // token or off loopback.
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -30,10 +32,15 @@ import (
 // tcpTestToken is the token the test's coordinator is configured with.
 const tcpTestToken = "tcp-e2e-token-0123456789abcdef"
 
-// buildWtd builds the real coordinator binary into a temp dir.
+// buildWtd builds the real coordinator binary into a temp dir (the .exe
+// extension is required on Windows for the process to start).
 func buildWtd(t *testing.T) string {
 	t.Helper()
-	bin := filepath.Join(t.TempDir(), "wtd")
+	exe := ""
+	if runtime.GOOS == "windows" {
+		exe = ".exe"
+	}
+	bin := filepath.Join(t.TempDir(), "wtd"+exe)
 	build := exec.Command("go", "build", "-o", bin, filepath.Join("..", "..", "cmd", "wtd"))
 	build.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := build.CombinedOutput(); err != nil {
@@ -49,7 +56,14 @@ func buildWtd(t *testing.T) string {
 func startWtdTCP(t *testing.T) (tcpAddr, sockPath string, stop func()) {
 	t.Helper()
 	bin := buildWtd(t)
+	// The platform listener: a short unix socket path, or a named pipe on
+	// Windows (a pipe name, not a filesystem path).
 	sock := shortSock(t, "tcp")
+	if runtime.GOOS == "windows" {
+		b := make([]byte, 8)
+		rand.Read(b)
+		sock = `\\.\pipe\wt-tcp-test-` + hex.EncodeToString(b)
+	}
 	storeRoot := filepath.Join(t.TempDir(), "wt")
 	cmd := exec.Command(bin, "--socket", sock, "--tcp", "127.0.0.1:0", "--tcp-token", tcpTestToken)
 	cmd.Env = append(os.Environ(), "WT_HOME="+storeRoot)
@@ -369,19 +383,27 @@ func TestDaemonInstallTCPWritesTokenIntoRegistration(t *testing.T) {
 	if !strings.Contains(string(data), "--tcp") || !strings.Contains(string(data), tcpTestToken) {
 		t.Errorf("the registration does not carry the TCP configuration:\n%s", data)
 	}
-	if fi, err := os.Stat(filepath.Join(prefix, registrationFilenameForThisPlatform())); err == nil {
-		if fi.Mode().Perm()&0o077 != 0 {
-			t.Errorf("the registration carrying the token is %o, want 0600", fi.Mode().Perm())
+	// The 0600 rail is unix: Windows file modes are ACL-shaped, and the
+	// task XML's secrecy comes from the profile ACL, not a mode bit.
+	if runtime.GOOS != "windows" {
+		if fi, err := os.Stat(filepath.Join(prefix, registrationFilenameForThisPlatform())); err == nil {
+			if fi.Mode().Perm()&0o077 != 0 {
+				t.Errorf("the registration carrying the token is %o, want 0600", fi.Mode().Perm())
+			}
 		}
 	}
 }
 
 // registrationFilenameForThisPlatform maps the test's platform to the
-// registration filename under a prefix: the plist on macOS, the systemd
-// service unit elsewhere (the Windows task XML is a windows-only test).
+// registration filename under a prefix: the plist on macOS, the task XML
+// on Windows, the systemd service unit on Linux.
 func registrationFilenameForThisPlatform() string {
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		return "com.mrgeoffrich.wtd.plist"
+	case "windows":
+		return "com.mrgeoffrich.wtd.xml"
+	default:
+		return "com.mrgeoffrich.wtd.service"
 	}
-	return "com.mrgeoffrich.wtd.service"
 }

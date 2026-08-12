@@ -94,18 +94,21 @@ echo "installed wt and wtd into $BINDIR"
 # the installer drives `wt daemon install`, which owns the per-platform
 # registration (launchd on macOS, the systemd user unit on Linux, the
 # logon scheduled task on Windows). An explicit prefix directs the
-# registration at the same prefix, where it is inert data.
-REG_ARGS=""
-if [ -n "$REG_PREFIX" ]; then
-	REG_ARGS="--prefix $REG_PREFIX"
-fi
+# registration at the same prefix, where it is inert data. The TCP
+# arguments are one word each by construction (a host:port address and a
+# whitespace-free token — the validation `wt daemon install` runs), so the
+# unquoted expansion is safe under `set -u`.
+TCP_ARGS=""
 if [ -n "$TCP" ]; then
-	"$BINDIR/wt" daemon install $REG_ARGS --wtd "$BINDIR/wtd" --tcp "$TCP" --tcp-token "$TCP_TOKEN"
-	if [ -z "$REG_PREFIX" ]; then
-		echo "loopback TCP enabled on $TCP; a container client dials tcp://<host>:<port> with WT_CLIENT_TOKEN set"
-	fi
+	TCP_ARGS="--tcp $TCP --tcp-token $TCP_TOKEN"
+fi
+if [ -n "$REG_PREFIX" ]; then
+	"$BINDIR/wt" daemon install --prefix "$REG_PREFIX" --wtd "$BINDIR/wtd" $TCP_ARGS
 else
-	"$BINDIR/wt" daemon install $REG_ARGS --wtd "$BINDIR/wtd"
+	"$BINDIR/wt" daemon install --wtd "$BINDIR/wtd" $TCP_ARGS
+fi
+if [ -n "$TCP" ] && [ -z "$REG_PREFIX" ]; then
+	echo "loopback TCP enabled on $TCP; a container client dials tcp://<host>:<port> with WT_CLIENT_TOKEN set"
 fi
 
 echo "verify with: wt daemon status"
