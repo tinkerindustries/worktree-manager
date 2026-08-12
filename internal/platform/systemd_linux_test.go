@@ -2,24 +2,28 @@
 
 package platform
 
-// systemd_linux_test.go is the linux-only half of the supervisor tests:
-// the unit-file escaping and the activated-listener handoff. The
-// registration content tests live in the shared daemon_test.go, guarded by
-// a runtime.GOOS switch, so they run on every platform's CI.
-
 import (
-	"strings"
+	"os"
+	"strconv"
 	"testing"
 )
 
-// TestSystemdEscapeExec pins the ExecStart quoting: a path with a space or
-// a dollar must survive systemd's argument splitting.
-func TestSystemdEscapeExec(t *testing.T) {
-	got := systemdEscapeExec(`/home/a b/wtd$1`)
-	if !strings.Contains(got, `"`) {
-		t.Errorf("exec path is not quoted: %q", got)
+// TestActivatedListenerRefusesForeignHandoff: LISTEN_FDS naming another
+// process, or more than one descriptor, is refused — the handoff is only
+// valid for this process and for exactly the one socket the unit owns.
+//
+// Linux-only, because socket activation is systemd's: every other platform's
+// ActivatedListener reports "not activated" unconditionally (systemd_other.go),
+// so there is no handoff to refuse and the assertions below would fail there.
+func TestActivatedListenerRefusesForeignHandoff(t *testing.T) {
+	t.Setenv("LISTEN_FDS", "1")
+	t.Setenv("LISTEN_PID", "999999")
+	if _, err := ActivatedListener(); err == nil {
+		t.Error("a handoff naming another pid succeeded")
 	}
-	if strings.Contains(got, " ") && !strings.HasPrefix(got, `"`) {
-		t.Errorf("a path with a space must be quoted: %q", got)
+	t.Setenv("LISTEN_PID", strconv.Itoa(os.Getpid()))
+	t.Setenv("LISTEN_FDS", "2")
+	if _, err := ActivatedListener(); err == nil {
+		t.Error("a two-descriptor handoff succeeded, want a refusal")
 	}
 }

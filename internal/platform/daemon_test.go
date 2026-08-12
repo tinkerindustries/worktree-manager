@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf16"
@@ -211,22 +210,6 @@ func TestActivatedListenerNotActivated(t *testing.T) {
 	}
 	if ln != nil {
 		t.Error("ActivatedListener returned a listener with no LISTEN_FDS")
-	}
-}
-
-// TestActivatedListenerRefusesForeignHandoff: LISTEN_FDS naming another
-// process, or more than one descriptor, is refused — the handoff is only
-// valid for this process and for exactly the one socket the unit owns.
-func TestActivatedListenerRefusesForeignHandoff(t *testing.T) {
-	t.Setenv("LISTEN_FDS", "1")
-	t.Setenv("LISTEN_PID", "999999")
-	if _, err := ActivatedListener(); err == nil {
-		t.Error("a handoff naming another pid succeeded")
-	}
-	t.Setenv("LISTEN_PID", strconv.Itoa(os.Getpid()))
-	t.Setenv("LISTEN_FDS", "2")
-	if _, err := ActivatedListener(); err == nil {
-		t.Error("a two-descriptor handoff succeeded, want a refusal")
 	}
 }
 
