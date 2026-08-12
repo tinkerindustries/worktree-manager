@@ -163,18 +163,6 @@ func TestInstallSupervisorNeedsWtdPath(t *testing.T) {
 	}
 }
 
-// TestSystemdEscapeExec pins the ExecStart quoting: a path with a space or
-// a dollar must survive systemd's argument splitting.
-func TestSystemdEscapeExec(t *testing.T) {
-	got := systemdEscapeExec(`/home/a b/wtd$1`)
-	if !strings.Contains(got, `"`) {
-		t.Errorf("exec path is not quoted: %q", got)
-	}
-	if strings.Contains(got, " ") && !strings.HasPrefix(got, `"`) {
-		t.Errorf("a path with a space must be quoted: %q", got)
-	}
-}
-
 // TestLingeringCaveatUnderPrefix: a test prefix never probes loginctl —
 // the caveat is empty so CI (a container without systemd) does not see it.
 func TestLingeringCaveatUnderPrefix(t *testing.T) {

@@ -3,12 +3,18 @@
 package platform
 
 import (
-	"errors"
 	"net"
 )
 
-// listenUnix reports the phase-8 refusal: the Windows transport is the
-// named pipe, not a unix socket.
-func listenUnix(path string) (net.Listener, error) {
-	return nil, errors.New(`the Windows named pipe transport (\\.\pipe\wt) is phase 8; this build does not listen on it`)
+// listenSocket creates the coordinator's named-pipe listener: the first
+// instance of the pipe at path with the owner-only ACL (pipe_windows.go,
+// sec_windows.go). A second listener on the same name is refused — the
+// pipe analogue of the unix already-listening check.
+func listenSocket(path string) (net.Listener, error) {
+	return listenPipe(path)
+}
+
+// dialSocket connects to the coordinator's named pipe at path.
+func dialSocket(path string) (net.Conn, error) {
+	return dialPipe(path)
 }

@@ -3,14 +3,23 @@
 package platform
 
 import (
-	"errors"
 	"net"
 )
 
-// peerUID reports that peer credentials do not exist on a Windows named
-// pipe — the identity model's host row is unix-only (ARCHITECTURE.md
-// §10.2). Phase 8 owns the pipe and with it the question of how a host
-// client is identified there; this phase reports the absence.
-func peerUID(uc *net.UnixConn) (int, error) {
-	return 0, errors.New("peer credentials are unavailable on Windows (the named pipe transport is phase 8)")
+// WindowsPipeOwnerUID is the identity PeerUID reports for every host
+// connection on Windows. It is not a uid — Windows has no unix uids. It
+// is the statement that the pipe's ACL (sec_windows.go) admitted this
+// connection, and the ACL admits exactly the owning user, so every host
+// connection on Windows IS the owner. The coordinator keys host identity
+// on this value, which makes "the store owner" the identity of every host
+// client — the honest answer to "what identifies a host client on a
+// named pipe": the pipe's ACL restricts it to the owning user, and that
+// is the whole of the identity (ARCHITECTURE.md §10.2's host row,
+// resolved for Windows in phase 8).
+const WindowsPipeOwnerUID = 0
+
+// peerUIDConn reports the pipe owner on Windows: the connection exists,
+// therefore the ACL admitted it, therefore it is the owner's.
+func peerUIDConn(c net.Conn) (int, error) {
+	return WindowsPipeOwnerUID, nil
 }
