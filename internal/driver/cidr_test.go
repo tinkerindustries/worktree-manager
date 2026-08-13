@@ -40,7 +40,7 @@ func cidrFixture(t *testing.T, onExhaustion string) (*spec.Spec, spec.Context, *
 	if err != nil {
 		t.Fatalf("resolving the fixture: %v", err)
 	}
-	return s, ctx, resourceByName(s, "egress"), table
+	return s, ctx, spec.ResourceByName(s, "egress"), table
 }
 
 func cidrValue(t *testing.T, table map[string]spec.Resolved) string {

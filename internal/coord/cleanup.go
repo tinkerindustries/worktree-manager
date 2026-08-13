@@ -22,17 +22,15 @@ package coord
 //     destructive sweep earns its keep by being boring.
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
+	"github.com/mrgeoffrich/worktree-manager/internal/treecheck"
 )
 
 // SweepIntervalDefault is how often the coordinator's own cleanup sweep
@@ -45,24 +43,11 @@ const SweepIntervalDefault = time.Hour
 const sweepChecksMaxLines = 3
 
 // gh returns the handler's gh seam, defaulting to the real runner.
-func (h *Handler) gh() func(dir string, args ...string) ([]byte, error) {
+func (h *Handler) gh() treecheck.Runner {
 	if h.Gh != nil {
 		return h.Gh
 	}
-	return ghRun
-}
-
-// ghRun is the real gh runner: the binary must exist, and a missing one is
-// an error the sweep maps to "clean nothing".
-func ghRun(dir string, args ...string) ([]byte, error) {
-	if _, err := exec.LookPath("gh"); err != nil {
-		return nil, fmt.Errorf("gh is not installed or not on PATH")
-	}
-	cmd := exec.Command("gh", args...)
-	if dir != "" {
-		cmd.Dir = dir
-	}
-	return cmd.CombinedOutput()
+	return treecheck.Gh
 }
 
 // sweepInterval returns the handler's sweep interval, defaulting to the
@@ -82,7 +67,7 @@ func (h *Handler) sweepInterval() time.Duration {
 func (h *Handler) SweepCleanup() (int, error) {
 	// The gh gate first: guessing at merge status is how a sweep deletes
 	// work (06-fleet.md §7.1), so an unavailable gh stops the whole sweep.
-	if _, err := h.gh()("", "auth", "status"); err != nil {
+	if err := treecheck.AuthStatus(h.gh()); err != nil {
 		h.log.Warn("scheduled cleanup skipped: gh is unavailable; nothing was cleaned", "err", err)
 		return 0, nil
 	}
@@ -100,56 +85,87 @@ func (h *Handler) SweepCleanup() (int, error) {
 		return 0, err
 	}
 
-	cleaned := 0
+	// The candidates are snapshotted by identity, and each is looked up
+	// fresh: the loop releases the mutex per entry and the teardown
+	// rewrites the registry, so an index into the slice read here would
+	// not survive the first clean.
+	type candidate struct{ app, slug string }
+	var candidates []candidate
 	for i := range reg.Entries {
-		e := &reg.Entries[i]
+		candidates = append(candidates, candidate{reg.Entries[i].App, reg.Entries[i].Slug})
+	}
+
+	cleaned := 0
+	for _, c := range candidates {
+		reg, err := h.st.ReadRegistry()
+		if err != nil {
+			return cleaned, err
+		}
+		e := registryEntry(reg, c.app, c.slug)
+		if e == nil {
+			continue // gone since the snapshot; nothing to clean
+		}
+		skip := func(reason string) {
+			h.log.Info("scheduled cleanup skipped an entry", "app", c.app, "slug", c.slug, "reason", reason)
+		}
 		if e.OwnerKind != protocol.KindHost || e.Owner != uid {
-			h.log.Info("scheduled cleanup skipped an entry", "app", e.App, "slug", e.Slug,
-				"reason", "owned by another client; the sweep never adopts a view")
+			skip("owned by another client; the sweep never adopts a view")
 			continue
 		}
 		if !e.PathVisible {
-			h.log.Info("scheduled cleanup skipped an entry", "app", e.App, "slug", e.Slug,
-				"reason", "the worktree exists only inside a container; an unverifiable entry is never cleaned")
+			skip("the worktree exists only inside a container; an unverifiable entry is never cleaned")
 			continue
 		}
 		if _, serr := os.Stat(e.Path); serr != nil {
-			h.log.Info("scheduled cleanup skipped an entry", "app", e.App, "slug", e.Slug,
-				"reason", "the worktree directory is gone; reconcile handles a gone directory")
+			skip("the worktree directory is gone; reconcile handles a gone directory")
 			continue
 		}
 		sp := h.specForEntry(e, specs)
 		if sp == nil {
-			h.log.Info("scheduled cleanup skipped an entry", "app", e.App, "slug", e.Slug,
-				"reason", "no spec can be found for the entry; the teardown cannot compute dependent projects or purge refusals")
+			skip("no spec can be found for the entry; the teardown cannot compute dependent projects or purge refusals")
 			continue
 		}
-		if ok, reason := h.sweepChecks(e, sp); !ok {
-			h.log.Info("scheduled cleanup skipped an entry", "app", e.App, "slug", e.Slug, "reason", reason)
+		// The checks shell out to git and gh per entry. They run with the
+		// mutex released, under the entry's claim, so a sweep over a dozen
+		// worktrees does not block every client for the duration.
+		ok, reason := false, ""
+		if cerr := h.runUnlocked(c.app, c.slug, func() {
+			ok, reason = h.sweepChecks(e, sp)
+		}); cerr != nil {
+			skip(cerr.Msg)
 			continue
 		}
-		tresp := h.teardownEntry(nil, e, reg, sp, nil, nil)
-		if tresp.Error != nil {
-			h.log.Warn("scheduled cleanup teardown left resources behind", "app", e.App, "slug", e.Slug, "err", tresp.Error.Msg)
+		if !ok {
+			skip(reason)
 			continue
 		}
-		// The git half: `git worktree remove`, never --force — git
-		// refusing is signal that a check missed something, and the sweep
-		// reports it and leaves the tree alone.
-		if out, rerr := exec.Command("git", "-C", e.Path, "worktree", "remove", e.Path).CombinedOutput(); rerr != nil {
-			h.log.Warn("scheduled cleanup removed the entry but git refused to remove the worktree", "app", e.App, "slug", e.Slug,
-				"git", strings.TrimSpace(string(out)))
-			cleaned++
-			continue
-		}
-		cleaned++
-		h.log.Info("scheduled cleanup cleaned an entry", "app", e.App, "slug", e.Slug, "worktree", e.Path)
-		// teardownEntry wrote the registry with this entry gone; reload so
-		// the next entry's handle is fresh.
+		// The registry moved on while the checks ran; the teardown works
+		// from the entry as it stands now.
 		reg, err = h.st.ReadRegistry()
 		if err != nil {
 			return cleaned, err
 		}
+		e = registryEntry(reg, c.app, c.slug)
+		if e == nil {
+			skip("the entry went away while the checks ran")
+			continue
+		}
+		path := e.Path
+		tresp := h.teardownEntry(nil, e, sp, nil, nil)
+		if tresp.Error != nil {
+			h.log.Warn("scheduled cleanup teardown left resources behind", "app", c.app, "slug", c.slug, "err", tresp.Error.Msg)
+			continue
+		}
+		cleaned++
+		// The git half: `git worktree remove`, never --force — git
+		// refusing is signal that a check missed something, and the sweep
+		// reports it and leaves the tree alone.
+		if rerr := treecheck.WorktreeRemove(path, treecheck.Git); rerr != nil {
+			h.log.Warn("scheduled cleanup removed the entry but git refused to remove the worktree", "app", c.app, "slug", c.slug,
+				"git", rerr)
+			continue
+		}
+		h.log.Info("scheduled cleanup cleaned an entry", "app", c.app, "slug", c.slug, "worktree", path)
 	}
 	return cleaned, nil
 }
@@ -161,72 +177,34 @@ func (h *Handler) SweepCleanup() (int, error) {
 // is clean — the full rm checks still apply (06-fleet.md §7.1). Returns
 // whether the entry may be cleaned and the reason when it may not.
 func (h *Handler) sweepChecks(e *store.Entry, sp *spec.Spec) (bool, string) {
-	out, err := exec.Command("git", "-C", e.Path, "status", "--porcelain").Output()
+	res, err := treecheck.Uncommitted(e.Path, treecheck.Git)
 	if err != nil {
 		return false, fmt.Sprintf("the uncommitted-changes check could not run: %v", err)
 	}
-	if lines := nonEmptyLines(string(out)); len(lines) > 0 {
-		return false, fmt.Sprintf("the tree has %d uncommitted change(s), first: %s", len(lines), firstLines(lines))
+	if !res.OK() {
+		return false, fmt.Sprintf("the tree has %d uncommitted change(s), first: %s", len(res.Lines), res.First(sweepChecksMaxLines))
 	}
 
-	branch, berr := exec.Command("git", "-C", e.Path, "rev-parse", "--abbrev-ref", "HEAD").Output()
-	if berr != nil || strings.TrimSpace(string(branch)) == "HEAD" {
+	if _, ok := treecheck.OnBranch(e.Path, treecheck.Git); !ok {
 		return false, "the worktree is not on a branch (detached HEAD)"
 	}
-	out, uerr := exec.Command("git", "-C", e.Path, "log", "@{u}..HEAD", "--oneline").Output()
+	res, uerr := treecheck.Unpushed(e.Path, treecheck.Git)
 	if uerr != nil {
 		return false, fmt.Sprintf("the unpushed-commits check could not run (an absent upstream is itself a stop): %v", uerr)
 	}
-	if lines := nonEmptyLines(string(out)); len(lines) > 0 {
-		return false, fmt.Sprintf("the branch has %d unpushed commit(s), first: %s", len(lines), firstLines(lines))
+	if !res.OK() {
+		return false, fmt.Sprintf("the branch has %d unpushed commit(s), first: %s", len(res.Lines), res.First(sweepChecksMaxLines))
 	}
 
-	merged, detail := h.sweepMergedPR(e.Path)
-	if !merged {
-		return false, detail
+	pr, perr := treecheck.PRState(e.Path, h.gh())
+	if perr != nil {
+		return false, fmt.Sprintf("gh could not answer whether this branch's PR is merged (%v)", perr)
+	}
+	if !pr.Merged() {
+		if pr.State == treecheck.StateNone {
+			return false, pr.Describe()
+		}
+		return false, fmt.Sprintf("%s, not merged", pr.Describe())
 	}
 	return true, ""
-}
-
-// sweepMergedPR asks gh whether the branch's PR is merged, in the
-// worktree. When gh cannot answer, the branch is skipped — never guessed
-// at.
-func (h *Handler) sweepMergedPR(root string) (bool, string) {
-	out, err := h.gh()(root, "pr", "view", "--json", "state,number")
-	if err == nil {
-		var pr struct {
-			Number int    `json:"number"`
-			State  string `json:"state"`
-		}
-		if jerr := json.Unmarshal(out, &pr); jerr == nil && pr.Number > 0 {
-			if pr.State == "MERGED" {
-				return true, ""
-			}
-			return false, fmt.Sprintf("PR #%d is %s, not merged", pr.Number, pr.State)
-		}
-	}
-	if strings.Contains(strings.ToLower(string(out)), "no pull requests found") {
-		return false, "no pull request for this branch"
-	}
-	return false, fmt.Sprintf("gh could not answer whether this branch's PR is merged (%s)", strings.TrimSpace(string(out)))
-}
-
-// nonEmptyLines splits a command's output into its non-empty lines.
-func nonEmptyLines(out string) []string {
-	var lines []string
-	for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
-		if l != "" {
-			lines = append(lines, l)
-		}
-	}
-	return lines
-}
-
-// firstLines renders the first few lines of a list, for a log line.
-func firstLines(lines []string) string {
-	shown := lines
-	if len(shown) > sweepChecksMaxLines {
-		shown = shown[:sweepChecksMaxLines]
-	}
-	return strings.Join(shown, "; ")
 }

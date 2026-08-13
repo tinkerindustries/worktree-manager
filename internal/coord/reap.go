@@ -30,8 +30,9 @@ package coord
 
 import (
 	"fmt"
+	"maps"
 	"path/filepath"
-	"sort"
+	"slices"
 	"time"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/platform"
@@ -70,8 +71,13 @@ func (h *Handler) reapBinaries(sp *spec.Spec) []string {
 // subtract the exclusion list, discover the LISTEN holders, classify them
 // against the spec's binaries, and signal the named ones with the
 // TERM-wait-KILL escalation. It never fails the teardown: every limit is a
-// note with the remedy, and teardown completes regardless (B7.1). The
-// caller holds h.mu (the ledger read is store work).
+// note with the remedy, and teardown completes regardless (B7.1).
+//
+// It runs with h.mu released, under the entry's claim: discovery shells out
+// and the escalation waits out a grace period. The ledger read it starts
+// with is the store read that has to be tolerated there — a reservation
+// added mid-reap is not seen until the next call, and the consequence is
+// bounded, since a reserved port's holder is skipped rather than signalled.
 func (h *Handler) reap(e *store.Entry, sp *spec.Spec, keepProcesses, dryRun bool) protocol.ReapReport {
 	if keepProcesses {
 		return protocol.ReapReport{
@@ -159,6 +165,7 @@ func classifyAndSignal(holders []platform.Holder, allowlist []string, dryRun boo
 	}
 	var reported []protocol.ReapHolder
 	var actions []protocol.ReapAction
+	var signal []platform.Holder
 	for _, hld := range holders {
 		base := filepath.Base(hld.Command)
 		if !named[base] {
@@ -175,14 +182,14 @@ func classifyAndSignal(holders []platform.Holder, allowlist []string, dryRun boo
 			})
 			continue
 		}
-		actions = append(actions, signalEscalation(hld)...)
+		signal = append(signal, hld)
 	}
-	return reported, actions
+	return reported, append(actions, signalEscalation(signal)...)
 }
 
-// signalEscalation runs B7.1's sequence against one holder: the graceful
-// signal, wait about three seconds, then the force kill if it is still
-// alive. The actions report which path it took and why: a TERM action
+// signalEscalation runs B7.1's sequence against every named holder: the
+// graceful signal to each, one shared wait of about three seconds, then the
+// force kill for those still alive. The actions report which path it took and why: a TERM action
 // naming the graceful step, then either a KILL action stating that no
 // escalation was needed, or one stating that the escalation happened.
 // The distinction is the point on Windows (08-platform.md §4.3): taskkill
@@ -193,36 +200,48 @@ func classifyAndSignal(holders []platform.Holder, allowlist []string, dryRun boo
 // letting it release its lease. A failed graceful signal does not abort
 // the sequence: on Windows the failure is the common case, not the
 // process being gone, and the escalation still has to run.
-func signalEscalation(hld platform.Holder) []protocol.ReapAction {
-	termErr := platform.SignalTerm(hld.PID)
-	termAction := protocol.ReapAction{
-		PID: hld.PID, Command: hld.Command, Port: hld.Port, Signal: "TERM",
+func signalEscalation(holders []platform.Holder) []protocol.ReapAction {
+	if len(holders) == 0 {
+		return nil
 	}
-	if termErr != nil {
-		termAction.Err = termErr.Error()
+	terms := make([]protocol.ReapAction, len(holders))
+	for i, hld := range holders {
+		terms[i] = protocol.ReapAction{
+			PID: hld.PID, Command: hld.Command, Port: hld.Port, Signal: "TERM",
+		}
+		if err := platform.SignalTerm(hld.PID); err != nil {
+			terms[i].Err = err.Error()
+		}
 	}
-	actions := []protocol.ReapAction{termAction}
+
+	// One wait covers every holder: the grace period is wall-clock, so
+	// three orphaned processes cost three seconds rather than nine.
 	time.Sleep(reapGraceWait)
-	if !platform.Alive(hld.PID) {
-		actions = append(actions, protocol.ReapAction{
-			PID: hld.PID, Command: hld.Command, Port: hld.Port,
-			Signal: "KILL", Err: "no escalation needed: the process exited during the wait after the graceful signal",
-		})
-		return actions
+
+	actions := make([]protocol.ReapAction, 0, 2*len(holders))
+	for i, hld := range holders {
+		actions = append(actions, terms[i])
+		if !platform.Alive(hld.PID) {
+			actions = append(actions, protocol.ReapAction{
+				PID: hld.PID, Command: hld.Command, Port: hld.Port,
+				Signal: "KILL", Err: "no escalation needed: the process exited during the wait after the graceful signal",
+			})
+			continue
+		}
+		killAction := protocol.ReapAction{
+			PID: hld.PID, Command: hld.Command, Port: hld.Port, Signal: "KILL",
+		}
+		if killErr := platform.SignalKill(hld.PID); killErr != nil {
+			killAction.Err = killErr.Error()
+		} else {
+			// The escalation must be stated, never implied: on Windows this
+			// action IS taskkill /F, and reporting it as a graceful stop
+			// would hide the very situation the reaper exists to prevent
+			// (08-platform.md §4.3).
+			killAction.Err = "escalated to the force kill: the graceful signal (SIGTERM on unix, taskkill without /F on Windows) did not stop the process within the wait"
+		}
+		actions = append(actions, killAction)
 	}
-	killAction := protocol.ReapAction{
-		PID: hld.PID, Command: hld.Command, Port: hld.Port, Signal: "KILL",
-	}
-	if killErr := platform.SignalKill(hld.PID); killErr != nil {
-		killAction.Err = killErr.Error()
-	} else {
-		// The escalation must be stated, never implied: on Windows this
-		// action IS taskkill /F, and reporting it as a graceful stop
-		// would hide the very situation the reaper exists to prevent
-		// (08-platform.md §4.3).
-		killAction.Err = "escalated to the force kill: the graceful signal (SIGTERM on unix, taskkill without /F on Windows) did not stop the process within the wait"
-	}
-	actions = append(actions, killAction)
 	return actions
 }
 
@@ -230,7 +249,7 @@ func signalEscalation(hld platform.Holder) []protocol.ReapAction {
 // order.
 func entryPorts(e *store.Entry) []int {
 	var ports []int
-	for _, name := range sortedResourceNames(e.Resources) {
+	for _, name := range slices.Sorted(maps.Keys(e.Resources)) {
 		r := e.Resources[name]
 		if r.Type != "port" {
 			continue
@@ -240,15 +259,4 @@ func entryPorts(e *store.Entry) []int {
 		}
 	}
 	return ports
-}
-
-// sortedResourceNames returns the entry's resource names sorted, so the
-// reap's ports and the rm report's resource list are deterministic.
-func sortedResourceNames(resources map[string]spec.Resolved) []string {
-	names := make([]string, 0, len(resources))
-	for name := range resources {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
 }

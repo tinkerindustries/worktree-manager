@@ -9,8 +9,6 @@ package managed
 import (
 	"strings"
 	"testing"
-
-	"github.com/mrgeoffrich/worktree-manager/internal/envfile"
 )
 
 // TestReplacePreservesHandEditsOutsideTheBlock is exit criterion 4's core:
@@ -152,15 +150,5 @@ func tripwireContent() []string {
 		"This repository uses per-worktree environments.",
 		"- Never hardcode a port or a path: read them with `wt show`.",
 		"- Something else creates the worktree; `wt init` attaches to it.",
-	}
-}
-
-// TestMarkersAreTheEnvfileConvention pins the phase-7 rule literally:
-// the generated artefacts use the .env block's own markers — one marker
-// convention in the system, never a second one (plan.md §5 phase 7).
-func TestMarkersAreTheEnvfileConvention(t *testing.T) {
-	if StartMarker != envfile.StartMarker || EndMarker != envfile.EndMarker {
-		t.Errorf("markers differ from the .env block's: %q/%q vs %q/%q",
-			StartMarker, EndMarker, envfile.StartMarker, envfile.EndMarker)
 	}
 }

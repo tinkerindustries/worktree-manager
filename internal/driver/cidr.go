@@ -197,9 +197,12 @@ func cidrsOverlap(a, b string) bool {
 	if err != nil {
 		return false
 	}
-	aStart := ip4ToUint32(an.IP)
+	aStart, aok := spec.IP4ToUint32(an.IP)
+	bStart, bok := spec.IP4ToUint32(bn.IP)
+	if !aok || !bok {
+		return false
+	}
 	aEnd := aStart + ip4Range(an)
-	bStart := ip4ToUint32(bn.IP)
 	bEnd := bStart + ip4Range(bn)
 	return aStart < bEnd && bStart < aEnd
 }
@@ -210,14 +213,6 @@ func cidrsOverlap(a, b string) bool {
 func ip4Range(n *net.IPNet) uint64 {
 	bits, _ := n.Mask.Size()
 	return uint64(1) << (32 - bits)
-}
-
-// ip4ToUint32 turns an IPv4 address into the uint32 the range arithmetic
-// uses. The driver's own copy of the spec package's helper, because the
-// overlap check is driver-side arithmetic over parsed CIDRs.
-func ip4ToUint32(ip net.IP) uint64 {
-	ip = ip.To4()
-	return uint64(ip[0])<<24 | uint64(ip[1])<<16 | uint64(ip[2])<<8 | uint64(ip[3])
 }
 
 // BlastRadius is the shared-block prose for a cidr resource. A cidr cannot

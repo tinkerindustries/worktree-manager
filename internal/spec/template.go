@@ -113,12 +113,6 @@ func validateTemplateVars(t, field string, resources map[string]bool) error {
 	return nil
 }
 
-// slotString renders the {slot} variable. {app}, {home} and {worktree} are
-// plain strings; {slug} is validated separately.
-func slotString(slot int) string {
-	return strconv.Itoa(slot)
-}
-
 // Substitute resolves one non-resource template — a seed.from path or a
 // hand-authored shared name — against the same variables Resolve uses: the
 // builtins ({app}, {slug}, {slot}, {home}, {worktree}) plus the names of

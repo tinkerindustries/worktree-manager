@@ -64,7 +64,16 @@ func (h *Handler) materialise(s *Session, req *protocol.Request) *protocol.Respo
 	}
 	env.SeedModes = args.SeedModes
 
-	rep := h.Drivers.ApplyAll(&args.Spec, e.Resources, env)
+	// The drivers run with the mutex released: the machine driver starts a
+	// VM, which its own documentation measures in minutes, and every other
+	// client would wait behind it for `wt list`. The entry is reserving,
+	// which is the claim; runUnlocked refuses a second operation on it.
+	var rep driver.ApplyReport
+	if cerr := h.runUnlocked(args.App, args.Slug, func() {
+		rep = h.Drivers.ApplyAll(&args.Spec, e.Resources, env)
+	}); cerr != nil {
+		return &protocol.Response{Error: cerr}
+	}
 
 	out := &protocol.MaterialiseResult{
 		App: args.App, Slug: args.Slug,
@@ -115,10 +124,22 @@ func (h *Handler) materialise(s *Session, req *protocol.Request) *protocol.Respo
 	if rep.RollbackErr != nil {
 		out.State = store.StateTearingDown
 		out.RollbackErr = rep.RollbackErr.Error()
-		e.State = store.StateTearingDown
-		e.TeardownNote = fmt.Sprintf("materialisation of %s failed and its rollback left resources behind: %v; the slot stays held until a re-run frees everything",
+		// The registry is re-read: the copy above was taken before the
+		// drivers ran without the lock, and another client may have
+		// written since.
+		reg, err := h.st.ReadRegistry()
+		if err != nil {
+			return h.storeErr("reading the registry", err)
+		}
+		fresh := registryEntry(reg, args.App, args.Slug)
+		if fresh == nil {
+			return respErr(1, fmt.Sprintf("no registry entry for app %q slug %q", args.App, args.Slug),
+				"the entry went away mid-materialisation; re-run 'wt list' to see the current state")
+		}
+		fresh.State = store.StateTearingDown
+		fresh.TeardownNote = fmt.Sprintf("materialisation of %s failed and its rollback left resources behind: %v; the slot stays held until a re-run frees everything",
 			rep.Failed, rep.RollbackErr)
-		e.LastSeen = time.Now().UTC().Format(time.RFC3339Nano)
+		fresh.LastSeen = time.Now().UTC().Format(time.RFC3339Nano)
 		if err := h.st.WriteRegistry(reg); err != nil {
 			return h.storeErr("writing the registry", err)
 		}

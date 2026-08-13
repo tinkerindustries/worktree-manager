@@ -16,15 +16,11 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/descriptor"
 	"github.com/mrgeoffrich/worktree-manager/internal/identity"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 )
-
-// startHooks are the hooks start runs, in order: the bring-up phase of
-// init's step 7.
-var startHooks = []string{"start", "seed", "health"}
 
 // startResult is the one JSON object `wt start --json` prints.
 type startResult struct {
@@ -108,7 +104,7 @@ func runStart(args []string, stdout, stderr io.Writer) int {
 
 	var hooksRun []string
 	for _, name := range startHooks {
-		hook := hookByName(&sp.Hooks, name)
+		hook := spec.HookByName(&sp.Hooks, name)
 		if hook == nil {
 			continue
 		}
@@ -129,19 +125,7 @@ func runStart(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	// Persist any sticky parameter chosen this run back into the
-	// descriptor (04-lifecycle.md §5.2), merged with the persisted set so
-	// one run's choices never drop another run's.
-	if len(runner.chosenValues()) > 0 {
-		merged := stickyParamsOf(d)
-		for k, v := range runner.chosenValues() {
-			merged[k] = v
-		}
-		d.Extras = withStickyParams(d.Extras, merged)
-		if err := descriptor.Write(dpath, sp.Emit.Descriptor.Format, d); err != nil {
-			fmt.Fprintf(stderr, "warning: persisting the chosen hook parameters into %s failed: %v; the choice is not recorded and will be re-made next run\n", dpath, err)
-		}
-	}
+	persistSticky(d, dpath, sp.Emit.Descriptor.Format, runner.chosenValues(), stderr)
 
 	result := startResult{
 		App: sp.App, Slug: d.Slug, Slot: d.Slot,
@@ -154,18 +138,6 @@ func runStart(args []string, stdout, stderr io.Writer) int {
 		}
 		return ExitOK
 	}
-	fmt.Fprintf(stdout, "started %s/%s (slot %d): hooks %s\n", sp.App, d.Slug, d.Slot, joinList(hooksRun))
+	fmt.Fprintf(stdout, "started %s/%s (slot %d): hooks %s\n", sp.App, d.Slug, d.Slot, strings.Join(hooksRun, ", "))
 	return ExitOK
-}
-
-// joinList renders a list for the text output.
-func joinList(items []string) string {
-	out := ""
-	for i, s := range items {
-		if i > 0 {
-			out += ", "
-		}
-		out += s
-	}
-	return out
 }

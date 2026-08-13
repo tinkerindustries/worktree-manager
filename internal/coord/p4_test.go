@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
 	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
@@ -269,6 +270,68 @@ func TestCoordTeardownRequiresSpecAndOwnership(t *testing.T) {
 			t.Errorf("the refusal must name the owner: %q", resp.Error.Msg)
 		}
 	})
+}
+
+// TestAgeingOutTearsDownByHandle: a client that dies after materialise and
+// before activate leaves real objects whose only handle is the entry, so
+// the ageing timer tears them down rather than deleting the entry from
+// under them. A teardown that cannot finish leaves the entry tearing-down
+// with its note, which is the state doctor, rm and reconcile repair.
+func TestAgeingOutTearsDownByHandle(t *testing.T) {
+	stub := &stubDriver{teardownErr: &driver.TeardownError{Resource: "compose", Survivors: []driver.Survivor{
+		{Kind: "container", Name: "c1", Resource: "compose", Reason: "removing it failed"},
+	}}}
+	h, _, _, ref := setupTeardown(t, driver.NewRegistry(stub))
+
+	// The entry is still reserving — the client never activated it.
+	aged, err := h.H.AgeReserving(time.Now().UTC().Add(11*time.Minute), ReservingTimeout)
+	if err != nil {
+		t.Fatalf("AgeReserving: %v", err)
+	}
+	if aged != 1 {
+		t.Fatalf("aged = %d, want 1", aged)
+	}
+	if len(stub.tornDown) != 1 || stub.tornDown[0] != "compose" {
+		t.Errorf("tornDown = %v, want the entry's own resource torn down by handle", stub.tornDown)
+	}
+
+	reg, err := h.Store.ReadRegistry()
+	if err != nil {
+		t.Fatalf("reading the registry: %v", err)
+	}
+	e := registryEntry(reg, ref.App, ref.Slug)
+	if e == nil {
+		t.Fatal("the entry was dropped while a container survived; its handle is gone with it")
+	}
+	if e.State != store.StateTearingDown {
+		t.Errorf("state = %q, want tearing-down", e.State)
+	}
+	if !strings.Contains(e.TeardownNote, "c1") {
+		t.Errorf("the entry's note must list what survived: %q", e.TeardownNote)
+	}
+}
+
+// TestAgeingOutDropsACleanTeardown: nothing survived, so the entry is
+// dropped and the slot frees — the outcome the timer had before, now
+// reached by tearing down first.
+func TestAgeingOutDropsACleanTeardown(t *testing.T) {
+	stub := &stubDriver{}
+	h, _, _, ref := setupTeardown(t, driver.NewRegistry(stub))
+
+	aged, err := h.H.AgeReserving(time.Now().UTC().Add(11*time.Minute), ReservingTimeout)
+	if err != nil || aged != 1 {
+		t.Fatalf("AgeReserving = %d, %v; want 1 aged out", aged, err)
+	}
+	if len(stub.tornDown) != 1 {
+		t.Errorf("tornDown = %v, want the resource torn down before the entry was dropped", stub.tornDown)
+	}
+	reg, err := h.Store.ReadRegistry()
+	if err != nil {
+		t.Fatalf("reading the registry: %v", err)
+	}
+	if registryEntry(reg, ref.App, ref.Slug) != nil {
+		t.Error("the entry survived a clean teardown; the slot is not freed")
+	}
 }
 
 // strPtr points at a string literal for a pointer field.

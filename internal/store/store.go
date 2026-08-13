@@ -131,6 +131,22 @@ func (s *Store) WriteFile(name string, data []byte) error {
 	return AtomicWrite(filepath.Join(s.root, name), data, 0o600)
 }
 
+// loadFile reads one store file into a zero-valued T, returning an empty
+// file stamped with the current schema version when it does not exist yet
+// — every store file's first read is a first run. The four typed readers
+// are this function with their own type and filename.
+func loadFile[T any](s *Store, name string, empty func() T) (T, error) {
+	var f T
+	if err := s.Load(name, &f); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return empty(), nil
+		}
+		var zero T
+		return zero, err
+	}
+	return f, nil
+}
+
 // AtomicWrite is the store's one write path: temp file in the same
 // directory, fsync the file, rename, fsync the directory. Since phase 5 the
 // sequence lives in internal/platform — the client-side emitters (the

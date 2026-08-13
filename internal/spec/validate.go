@@ -193,6 +193,11 @@ func validateResourceFields(i int, r *Resource, slotMax int) error {
 		if err != nil {
 			return &FieldError{Field: field("pool"), Reason: fmt.Sprintf("%q is not a valid CIDR: %v", *r.Pool, err)}
 		}
+		// The block arithmetic is 32-bit throughout, so an IPv6 pool
+		// parses here and then has nowhere to go.
+		if poolNet.IP.To4() == nil {
+			return &FieldError{Field: field("pool"), Reason: fmt.Sprintf("%q is not an IPv4 CIDR; the cidr driver allocates IPv4 blocks only", *r.Pool)}
+		}
 		poolBits, _ := poolNet.Mask.Size()
 		if r.Size == nil {
 			return &FieldError{Field: field("size"), Reason: "required — the per-slot mask, e.g. 22 for a /22 per worktree"}
@@ -261,69 +266,38 @@ func validateResourceFields(i int, r *Resource, slotMax int) error {
 	return nil
 }
 
+// fieldSet reports whether one optional resource field is set. The table
+// is keyed by the same names the per-type field lists use, so a name in a
+// list that has no entry here is a missing rule rather than a silently
+// skipped one — absent refuses it.
+var fieldSet = map[string]func(*Resource) bool{
+	"form":           func(r *Resource) bool { return r.Form != nil },
+	"size":           func(r *Resource) bool { return r.Size != nil },
+	"offset":         func(r *Resource) bool { return r.Offset != nil },
+	"kind":           func(r *Resource) bool { return r.Kind != nil },
+	"files":          func(r *Resource) bool { return len(r.Files) > 0 },
+	"pool":           func(r *Resource) bool { return r.Pool != nil },
+	"on_exhaustion":  func(r *Resource) bool { return r.OnExhaustion != nil },
+	"template":       func(r *Resource) bool { return r.Template != nil },
+	"default":        func(r *Resource) bool { return r.Default != nil },
+	"flag":           func(r *Resource) bool { return r.Flag != nil },
+	"seed":           func(r *Resource) bool { return r.Seed != nil },
+	"purge":          func(r *Resource) bool { return r.Purge != nil },
+	"driver":         func(r *Resource) bool { return r.Driver != nil },
+	"max_concurrent": func(r *Resource) bool { return r.MaxConcurrent != nil },
+	"keep_flag":      func(r *Resource) bool { return r.KeepFlag != nil },
+}
+
 // absent refuses a field that is not valid for the declared resource type.
+// A field name with no entry in fieldSet is refused as a defect: silently
+// returning nil would disable a validation rule with no compile error.
 func absent(r *Resource, field, name string) error {
-	switch field {
-	case "form":
-		if r.Form != nil {
-			return &FieldError{Field: name, Reason: "not valid for this resource type"}
-		}
-	case "size":
-		if r.Size != nil {
-			return &FieldError{Field: name, Reason: "not valid for this resource type"}
-		}
-	case "offset":
-		if r.Offset != nil {
-			return &FieldError{Field: name, Reason: "not valid for this resource type"}
-		}
-	case "kind":
-		if r.Kind != nil {
-			return &FieldError{Field: name, Reason: "not valid for this resource type"}
-		}
-	case "files":
-		if len(r.Files) > 0 {
-			return &FieldError{Field: name, Reason: "not valid for this resource type"}
-		}
-	case "pool":
-		if r.Pool != nil {
-			return &FieldError{Field: name, Reason: "not valid for this resource type"}
-		}
-	case "on_exhaustion":
-		if r.OnExhaustion != nil {
-			return &FieldError{Field: name, Reason: "not valid for this resource type"}
-		}
-	case "template":
-		if r.Template != nil {
-			return &FieldError{Field: name, Reason: "not valid for this resource type"}
-		}
-	case "default":
-		if r.Default != nil {
-			return &FieldError{Field: name, Reason: "not valid for this resource type"}
-		}
-	case "flag":
-		if r.Flag != nil {
-			return &FieldError{Field: name, Reason: "not valid for this resource type"}
-		}
-	case "seed":
-		if r.Seed != nil {
-			return &FieldError{Field: name, Reason: "not valid for this resource type"}
-		}
-	case "purge":
-		if r.Purge != nil {
-			return &FieldError{Field: name, Reason: "not valid for this resource type"}
-		}
-	case "driver":
-		if r.Driver != nil {
-			return &FieldError{Field: name, Reason: "not valid for this resource type"}
-		}
-	case "max_concurrent":
-		if r.MaxConcurrent != nil {
-			return &FieldError{Field: name, Reason: "not valid for this resource type"}
-		}
-	case "keep_flag":
-		if r.KeepFlag != nil {
-			return &FieldError{Field: name, Reason: "not valid for this resource type"}
-		}
+	set, ok := fieldSet[field]
+	if !ok {
+		return &FieldError{Field: name, Reason: fmt.Sprintf("internal: no rule for field %q", field)}
+	}
+	if set(r) {
+		return &FieldError{Field: name, Reason: "not valid for this resource type"}
 	}
 	return nil
 }
@@ -386,38 +360,63 @@ func findTemplateCycle(s *Spec) []string {
 			}
 		}
 	}
-	// Leftovers form at least one cycle. Walk one of them, starting from
-	// the first leftover in declaration order so the reported cycle is
-	// deterministic.
-	var start string
+	// Leftovers hold at least one cycle, but not every leftover is on one:
+	// a node merely referenced by a cycle member is left over too, and has
+	// no edge back into the set. A walk that started there would report a
+	// path naming no resource, so the search is a depth-first one that
+	// returns a real cycle.
+	order := make([]string, 0, len(s.Resources))
 	for i := range s.Resources {
-		if indeg[s.Resources[i].Name] > 0 {
-			start = s.Resources[i].Name
-			break
-		}
+		order = append(order, s.Resources[i].Name)
 	}
-	if start == "" {
-		return nil
-	}
-	path := []string{start}
-	seen := map[string]int{start: 0}
-	cur := start
-	for {
-		var next string
-		for _, m := range edges[cur] {
-			if indeg[m] > 0 {
-				next = m
-				break
+	return cycleInLeftovers(order, edges, indeg)
+}
+
+// cycleInLeftovers finds one cycle among the nodes Kahn's algorithm left
+// behind, following the first back edge a depth-first search meets. order is
+// declaration order, so the cycle reported for a given spec is always the
+// same one.
+func cycleInLeftovers(order []string, edges map[string][]string, indeg map[string]int) []string {
+	const (
+		white = 0
+		grey  = 1
+		black = 2
+	)
+	color := make(map[string]int, len(order))
+	var stack []string
+	var walk func(string) []string
+	walk = func(n string) []string {
+		color[n] = grey
+		stack = append(stack, n)
+		for _, m := range edges[n] {
+			if indeg[m] == 0 {
+				continue // not a leftover: cannot be on a cycle
+			}
+			switch color[m] {
+			case white:
+				if c := walk(m); c != nil {
+					return c
+				}
+			case grey:
+				for i, v := range stack {
+					if v == m {
+						return append(append([]string{}, stack[i:]...), m)
+					}
+				}
 			}
 		}
-		if pos, ok := seen[next]; ok {
-			path = append(path, next)
-			return path[pos:]
-		}
-		seen[next] = len(path)
-		path = append(path, next)
-		cur = next
+		stack = stack[:len(stack)-1]
+		color[n] = black
+		return nil
 	}
+	for _, n := range order {
+		if indeg[n] > 0 && color[n] == white {
+			if c := walk(n); c != nil {
+				return c
+			}
+		}
+	}
+	return nil
 }
 
 func resourceIndex(s *Spec, name string) int {
@@ -456,15 +455,15 @@ func validateShared(i int, sh *Shared, resources map[string]bool) error {
 	return nil
 }
 
-// hookNames is the six hooks in run order: install, prepull, build, start,
+// HookNames is the six hooks in run order: install, prepull, build, start,
 // seed, health. start is the sixth, required by the init sequence table in
 // 04-lifecycle.md §4 and defined by ARCHITECTURE.md §6.1 ("run the hooks
 // that bring the stack up").
-var hookNames = []string{"install", "prepull", "build", "start", "seed", "health"}
+var HookNames = []string{"install", "prepull", "build", "start", "seed", "health"}
 
 func validateHooks(h *Hooks, resources map[string]bool) error {
-	for _, name := range hookNames {
-		hook := hookByName(h, name)
+	for _, name := range HookNames {
+		hook := HookByName(h, name)
 		if hook == nil {
 			continue
 		}
@@ -507,7 +506,7 @@ func validateHooks(h *Hooks, resources map[string]bool) error {
 	return nil
 }
 
-func hookByName(h *Hooks, name string) *Hook {
+func HookByName(h *Hooks, name string) *Hook {
 	switch name {
 	case "install":
 		return h.Install

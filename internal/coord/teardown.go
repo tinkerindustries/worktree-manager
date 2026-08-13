@@ -60,7 +60,7 @@ func (h *Handler) Teardown(s *Session, ref protocol.EntryRef, sp *spec.Spec, pur
 	if perr := h.checkOwner(s, e); perr != nil {
 		return &protocol.Response{Error: perr}
 	}
-	return h.teardownEntry(s, e, reg, sp, purgeFlags, nil)
+	return h.teardownEntry(s, e, sp, purgeFlags, nil)
 }
 
 // teardownEntry runs the teardown of one looked-up, ownership-checked
@@ -69,13 +69,29 @@ func (h *Handler) Teardown(s *Session, ref protocol.EntryRef, sp *spec.Spec, pur
 // are the CLI keep flags the caller passed (e.g. "--keep-vm"); a machine
 // resource whose keep_flag was passed is left up, and the note names the
 // manual teardown command.
-func (h *Handler) teardownEntry(s *Session, e *store.Entry, reg store.RegistryFile, sp *spec.Spec, purgeFlags, keepFlags []string) *protocol.Response {
+func (h *Handler) teardownEntry(s *Session, e *store.Entry, sp *spec.Spec, purgeFlags, keepFlags []string) *protocol.Response {
 	env, perr := h.entryEnv(e, sp)
 	if perr != nil {
 		return &protocol.Response{Error: perr}
 	}
+	app, slug := e.App, e.Slug
 
-	rep := h.Drivers.TeardownAll(sp, e.Resources, env, purgeFlags, keepFlags)
+	// The drivers run with the mutex released: a compose teardown takes as
+	// long as docker takes, and every other client would wait behind it.
+	// The entry's handles come from the registry copy read before the
+	// claim, which is what a teardown works from by design (03-drivers.md
+	// §2.2), and the outcome is recorded against a fresh read below.
+	var rep driver.TeardownReport
+	if cerr := h.runUnlocked(app, slug, func() {
+		rep = h.Drivers.TeardownAll(sp, e.Resources, env, purgeFlags, keepFlags)
+	}); cerr != nil {
+		return &protocol.Response{Error: cerr}
+	}
+
+	reg, err := h.st.ReadRegistry()
+	if err != nil {
+		return h.storeErr("reading the registry", err)
+	}
 
 	if rep.Clean() {
 		// Nothing survived: the entry drops and the slot frees. A machine
@@ -83,30 +99,29 @@ func (h *Handler) teardownEntry(s *Session, e *store.Entry, reg store.RegistryFi
 		// naming the documented bypass, so the leftover is never silent
 		// (B4.3).
 		notes := h.keptMachineNotes(sp, e, keepFlags)
-		idx := -1
-		for i := range reg.Entries {
-			if reg.Entries[i].App == e.App && reg.Entries[i].Slug == e.Slug {
-				idx = i
-				break
-			}
+		if !dropEntry(&reg, app, slug) {
+			return respErr(1, fmt.Sprintf("no registry entry for app %q slug %q", app, slug),
+				"the entry went away mid-teardown; re-run 'wt list' to see the current state")
 		}
-		reg.Entries = append(reg.Entries[:idx], reg.Entries[idx+1:]...)
 		if err := h.st.WriteRegistry(reg); err != nil {
 			return h.storeErr("writing the registry", err)
 		}
 		return &protocol.Response{Result: mustJSON(protocol.ReleaseResult{
-			App: e.App, Slug: e.Slug, Removed: true, Notes: notes,
+			App: app, Slug: slug, Removed: true, Notes: notes,
 		})}
 	}
 
 	// Something survived: tearing-down is a resting state, the note lists
 	// exactly what survived, and the slot stays held (B2.3, ARCHITECTURE.md
 	// §11.2).
-	e.State = store.StateTearingDown
-	e.TeardownNote = teardownNote(rep)
-	e.LastSeen = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := h.st.WriteRegistry(reg); err != nil {
-		return h.storeErr("writing the registry", err)
+	note := teardownNote(rep)
+	seen := time.Now().UTC().Format(time.RFC3339Nano)
+	e.State, e.TeardownNote, e.LastSeen = store.StateTearingDown, note, seen
+	if fresh := registryEntry(reg, app, slug); fresh != nil {
+		fresh.State, fresh.TeardownNote, fresh.LastSeen = store.StateTearingDown, note, seen
+		if err := h.st.WriteRegistry(reg); err != nil {
+			return h.storeErr("writing the registry", err)
+		}
 	}
 	code, msg, remedy := teardownFailure(rep)
 	return respErr(code, msg, remedy)
@@ -161,11 +176,7 @@ func (h *Handler) entryEnv(e *store.Entry, sp *spec.Spec) (driver.Env, *protocol
 	if band := findBand(bands, e.App); band != nil {
 		env.Bases = band.Bases
 	}
-	for _, r := range bands.Reservations {
-		env.Reservations = append(env.Reservations, driver.Reservation{
-			Ports: r.Ports, Names: r.Names, Note: r.Note,
-		})
-	}
+	env.Reservations = bands.Reservations
 	return env, nil
 }
 

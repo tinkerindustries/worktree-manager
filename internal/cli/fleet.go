@@ -26,50 +26,16 @@ import (
 // across every repo, with the stale / unverifiable / reclaimable / foreign
 // markers, secrets redacted unless --wide is given to the owning client.
 func runList(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("list", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	jsonOut := fs.Bool("json", false, "print exactly one JSON object on stdout")
-	wide := fs.Bool("wide", false, "show seed credentials (served to the owning client alone)")
-	if err := fs.Parse(args); err != nil {
-		return ExitUsage
-	}
-	if fs.NArg() > 0 {
-		WriteError(stderr, UsageError(
-			"run 'wt list' with no positional arguments",
-			"unexpected arguments: %v", fs.Args()))
-		return ExitUsage
-	}
-
-	sess, err := dialCoordinator()
-	if err != nil {
-		WriteError(stderr, err)
-		return err.Code
-	}
-	defer sess.Close()
-	raw, err := sess.request("list", &protocol.ListArgs{Wide: *wide})
-	if err != nil {
-		WriteError(stderr, err)
-		return err.Code
-	}
-	var res protocol.ListResult
-	if err := json.Unmarshal(raw, &res); err != nil {
-		WriteError(stderr, New(ExitFailure, fmt.Sprintf("decoding the list response: %v", err), ""))
-		return ExitFailure
-	}
-
-	if *jsonOut {
-		if err := WriteJSON(stdout, res); err != nil {
-			WriteError(stderr, New(ExitFailure, err.Error(), ""))
-			return ExitFailure
-		}
-		return ExitOK
-	}
-	return writeListTable(stdout, &res)
+	return coordVerb("list", args, stdout, stderr, "list",
+		func(fs *flag.FlagSet) func() any {
+			wide := fs.Bool("wide", false, "show seed credentials (served to the owning client alone)")
+			return func() any { return &protocol.ListArgs{Wide: *wide} }
+		}, writeListTable)
 }
 
 // writeListTable prints the registry in text form: one line per entry,
 // sorted by app then slot, with the markers in the flags column.
-func writeListTable(stdout io.Writer, res *protocol.ListResult) int {
+func writeListTable(stdout, stderr io.Writer, res *protocol.ListResult) int {
 	entries := append([]protocol.ListEntry(nil), res.Entries...)
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].App != entries[j].App {
@@ -105,43 +71,12 @@ func writeListTable(stdout io.Writer, res *protocol.ListResult) int {
 // diagnostics (stderr). Exit 0 when doctor ran, whatever it found —
 // findings are data, and a scheduled caller can branch on the JSON.
 func runDoctor(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	jsonOut := fs.Bool("json", false, "print exactly one JSON object on stdout")
-	if err := fs.Parse(args); err != nil {
-		return ExitUsage
-	}
-	if fs.NArg() > 0 {
-		WriteError(stderr, UsageError(
-			"run 'wt doctor' with no positional arguments",
-			"unexpected arguments: %v", fs.Args()))
-		return ExitUsage
-	}
+	return coordVerb("doctor", args, stdout, stderr, "doctor", nil, writeDoctorReport)
+}
 
-	sess, err := dialCoordinator()
-	if err != nil {
-		WriteError(stderr, err)
-		return err.Code
-	}
-	defer sess.Close()
-	raw, err := sess.request("doctor", nil)
-	if err != nil {
-		WriteError(stderr, err)
-		return err.Code
-	}
-	var res protocol.DoctorResult
-	if err := json.Unmarshal(raw, &res); err != nil {
-		WriteError(stderr, New(ExitFailure, fmt.Sprintf("decoding the doctor response: %v", err), ""))
-		return ExitFailure
-	}
-
-	if *jsonOut {
-		if err := WriteJSON(stdout, res); err != nil {
-			WriteError(stderr, New(ExitFailure, err.Error(), ""))
-			return ExitFailure
-		}
-		return ExitOK
-	}
+// writeDoctorReport prints the findings on stdout, each with the command
+// that fixes it, and the bounded-coverage notes on stderr.
+func writeDoctorReport(stdout, stderr io.Writer, res *protocol.DoctorResult) int {
 	for _, n := range res.Notes {
 		fmt.Fprintf(stderr, "note: %s\n", n)
 	}
@@ -162,43 +97,11 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 // kind, last seen, how many entries each owns, and which ephemeral clients
 // have aged out.
 func runClients(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("clients", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	jsonOut := fs.Bool("json", false, "print exactly one JSON object on stdout")
-	if err := fs.Parse(args); err != nil {
-		return ExitUsage
-	}
-	if fs.NArg() > 0 {
-		WriteError(stderr, UsageError(
-			"run 'wt clients' with no positional arguments",
-			"unexpected arguments: %v", fs.Args()))
-		return ExitUsage
-	}
+	return coordVerb("clients", args, stdout, stderr, "clients.list", nil, writeClientsTable)
+}
 
-	sess, err := dialCoordinator()
-	if err != nil {
-		WriteError(stderr, err)
-		return err.Code
-	}
-	defer sess.Close()
-	raw, err := sess.request("clients.list", nil)
-	if err != nil {
-		WriteError(stderr, err)
-		return err.Code
-	}
-	var res protocol.ClientsListResult
-	if err := json.Unmarshal(raw, &res); err != nil {
-		WriteError(stderr, New(ExitFailure, fmt.Sprintf("decoding the clients response: %v", err), ""))
-		return ExitFailure
-	}
-
-	if *jsonOut {
-		if err := WriteJSON(stdout, res); err != nil {
-			WriteError(stderr, New(ExitFailure, err.Error(), ""))
-			return ExitFailure
-		}
-		return ExitOK
-	}
+// writeClientsTable prints one line per known client.
+func writeClientsTable(stdout, stderr io.Writer, res *protocol.ClientsListResult) int {
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "IDENTITY\tKIND\tEPHEMERAL\tLAST SEEN\tENTRIES\tSTATE")
 	if len(res.Clients) == 0 {

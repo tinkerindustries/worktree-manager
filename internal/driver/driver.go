@@ -28,11 +28,11 @@ package driver
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
 
 // Driver is the six-operation contract. Apply and Teardown are optional,
@@ -174,20 +174,11 @@ type Env struct {
 // ports no app may allocate from, compose project names no teardown may
 // reach, and the required note naming what holds the range. Nothing infers a
 // production stack — a person declares it once per machine (plan.md §8, R6).
-type Reservation struct {
-	Ports []int    `json:"ports"`
-	Names []string `json:"names,omitempty"`
-	Note  string   `json:"note"`
-}
-
-// PortsStrings renders the reservation's ports for a message.
-func (r Reservation) PortsStrings() []string {
-	out := make([]string, len(r.Ports))
-	for i, p := range r.Ports {
-		out[i] = strconv.Itoa(p)
-	}
-	return out
-}
+//
+// It is the ledger's own type. A driver reads a reservation it was handed
+// and never writes one, and two declarations of the same three fields would
+// let the rail and the ledger disagree about what was reserved.
+type Reservation = store.Reservation
 
 // ProbeResult is the probe's three-way answer. Unavailable is distinct from
 // success and failure and the distinction is load-bearing at the call site:

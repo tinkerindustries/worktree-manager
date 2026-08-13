@@ -107,7 +107,7 @@ func TestCycleDetection(t *testing.T) {
 		t.Fatalf("Parse: %v", err)
 	}
 	cyc := findTemplateCycle(s2)
-	if cyc == nil || len(cyc) < 2 {
+	if len(cyc) < 2 {
 		t.Fatalf("findTemplateCycle(loop) = %v, want a cycle path", cyc)
 	}
 	if cyc[0] != cyc[len(cyc)-1] {

@@ -7,6 +7,7 @@ package driver
 // than details (plan.md §5, phase 4).
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -42,7 +43,7 @@ type ApplyReport struct {
 func (r Registry) ApplyAll(s *spec.Spec, values map[string]spec.Resolved, env Env) ApplyReport {
 	var rep ApplyReport
 	for _, name := range r.ApplyOrder(s) {
-		res := resourceByName(s, name)
+		res := spec.ResourceByName(s, name)
 		d := r.Driver(res.Type)
 		value, ok := values[name]
 		if !ok {
@@ -72,7 +73,7 @@ func (r Registry) rollback(rep ApplyReport, failed string, err error, s *spec.Sp
 	rep.Err = err
 	for i := len(rep.Outcomes) - 1; i >= 0; i-- {
 		name := rep.Outcomes[i].Resource
-		res := resourceByName(s, name)
+		res := spec.ResourceByName(s, name)
 		d := r.Driver(res.Type)
 		value := values[name]
 		if d != nil && d.HasTeardown() {
@@ -159,7 +160,7 @@ func (r Registry) TeardownAll(s *spec.Spec, values map[string]spec.Resolved, env
 	seenSurvivors := make(map[string]bool)
 	seenRefusals := make(map[string]bool)
 	for _, name := range order {
-		res := resourceByName(s, name)
+		res := spec.ResourceByName(s, name)
 		value, ok := values[name]
 		if res == nil {
 			if ok {
@@ -202,7 +203,10 @@ func (r Registry) TeardownAll(s *spec.Spec, values map[string]spec.Resolved, env
 			rep.Unavailable = append(rep.Unavailable, fmt.Sprintf("%s: %v", name, err))
 		case isTeardownError(err):
 			out.OK = false
-			te := err.(*TeardownError)
+			// isTeardownError matches a wrapped one too, so the extraction
+			// must unwrap the same way the predicate did.
+			var te *TeardownError
+			errors.As(err, &te)
 			out.Survivors = te.Survivors
 			for _, sv := range te.Survivors {
 				key := sv.Kind + "|" + sv.Name + "|" + sv.Resource
@@ -236,8 +240,6 @@ func (rep TeardownReport) Summary() string {
 	for _, sv := range rep.Survivors {
 		parts = append(parts, fmt.Sprintf("survived: %s %s (%s)", sv.Kind, sv.Name, sv.Reason))
 	}
-	for _, n := range rep.Notes {
-		parts = append(parts, n)
-	}
+	parts = append(parts, rep.Notes...)
 	return strings.Join(parts, "; ")
 }

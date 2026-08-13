@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/managed"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"runtime"
 )
@@ -331,5 +332,16 @@ func writeTestFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("writing %s: %v", path, err)
+	}
+}
+
+// TestMarkersAreTheOneConvention pins the phase-7 rule literally: the
+// generated artefacts and the .env block share one marker convention, and
+// they share it by sharing the declaration — never a second one (plan.md §5
+// phase 7).
+func TestMarkersAreTheOneConvention(t *testing.T) {
+	if StartMarker != managed.StartMarker || EndMarker != managed.EndMarker {
+		t.Errorf("markers differ from the managed block's: %q/%q vs %q/%q",
+			StartMarker, EndMarker, managed.StartMarker, managed.EndMarker)
 	}
 }

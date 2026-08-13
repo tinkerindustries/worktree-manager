@@ -15,6 +15,8 @@ package coord
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
@@ -56,7 +58,15 @@ func (h *Handler) rm(s *Session, req *protocol.Request) *protocol.Response {
 			"restart wtd, then re-run")
 	}
 
-	reap := h.reap(e, &args.Spec, args.KeepProcesses, args.DryRun)
+	// The reaper discovers listeners and waits out the grace period, which
+	// is seconds of wall-clock; it runs with the mutex released under the
+	// entry's claim. It reads the band ledger first, which is store work.
+	var reap protocol.ReapReport
+	if cerr := h.runUnlocked(args.App, args.Slug, func() {
+		reap = h.reap(e, &args.Spec, args.KeepProcesses, args.DryRun)
+	}); cerr != nil {
+		return &protocol.Response{Error: cerr}
+	}
 
 	if args.DryRun {
 		// Preview: the reap lists what it would signal (nothing is
@@ -66,13 +76,13 @@ func (h *Handler) rm(s *Session, req *protocol.Request) *protocol.Response {
 			EntryFound: true,
 			Reap:       reap,
 			Path:       e.Path,
-			Resources:  sortedResourceNames(e.Resources),
+			Resources:  slices.Sorted(maps.Keys(e.Resources)),
 		})}
 	}
 
 	// The real teardown: entry drop on a clean teardown, tearing-down with
 	// the note and the slot held otherwise (B2.3).
-	tresp := h.teardownEntry(s, e, reg, &args.Spec, args.PurgeFlags, args.KeepFlags)
+	tresp := h.teardownEntry(s, e, &args.Spec, args.PurgeFlags, args.KeepFlags)
 	if tresp.Error != nil {
 		// The error carries the teardown's own exit code; the reap report
 		// is folded into the message so the bounded-coverage statement
@@ -96,7 +106,7 @@ func (h *Handler) rm(s *Session, req *protocol.Request) *protocol.Response {
 		EntryFound: true,
 		Reap:       reap,
 		Path:       e.Path,
-		Resources:  sortedResourceNames(e.Resources),
+		Resources:  slices.Sorted(maps.Keys(e.Resources)),
 		Removed:    release.Removed,
 		Notes:      release.Notes,
 	})}

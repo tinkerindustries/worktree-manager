@@ -60,7 +60,7 @@ func runConformance(t *testing.T, tc conformanceCase) {
 	if err != nil {
 		t.Fatalf("%s: spec.Resolve: %v", tc.name, err)
 	}
-	res := resourceByName(tc.spec, tc.resource)
+	res := spec.ResourceByName(tc.spec, tc.resource)
 	if res == nil {
 		t.Fatalf("%s: test spec has no resource %q", tc.name, tc.resource)
 	}

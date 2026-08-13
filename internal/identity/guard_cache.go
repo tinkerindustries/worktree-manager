@@ -130,11 +130,10 @@ func entryValid(e guardCacheEntry) bool {
 
 // cacheIdentityTarget is the path whose identity a cache entry is
 // validated against: the root's own .git entry when it exists, else the
-// root itself. The root directory's own mtime is not usable — the
-// guard's case-sensitivity probe creates and removes one probe file per
-// call in the root, bumping the directory's mtime and self-invalidating
-// every entry on every call (08-platform.md §4.2). The .git entry is not
-// touched by the probe, is recreated with a new identity when the
+// root itself. The root directory's own mtime is not usable — the guard's
+// case-sensitivity probe creates and removes a probe file in the root,
+// bumping the directory's mtime (08-platform.md §4.2). The .git entry is
+// not touched by the probe, is recreated with a new identity when the
 // worktree is re-created, and vanishes with the worktree on removal.
 func cacheIdentityTarget(root string) string {
 	gitEntry := filepath.Join(root, ".git")

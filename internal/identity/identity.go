@@ -15,6 +15,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 )
 
 // Outcome is the four-way classification of 01-identity.md §2.
@@ -151,7 +153,7 @@ func Classify(cwd string, standalone bool) (*Classification, error) {
 	// equal.
 	gitDir := absJoin(cwd, gitDirRaw)
 	commonDir := absJoin(cwd, commonDirRaw)
-	equal, err := samePath(gitDir, commonDir)
+	equal, err := platform.SamePath(gitDir, commonDir)
 	if err != nil {
 		return nil, fmt.Errorf("classifying %s: comparing git dirs: %w", cwd, err)
 	}
@@ -228,24 +230,6 @@ func absJoin(base, p string) string {
 		return filepath.Clean(p)
 	}
 	return filepath.Clean(filepath.Join(absBase, p))
-}
-
-// samePath reports whether two paths name the same directory, comparing the
-// symlink-resolved forms and falling back to the plain comparison when
-// resolution fails.
-func samePath(a, b string) (bool, error) {
-	ra, errA := filepath.EvalSymlinks(a)
-	rb, errB := filepath.EvalSymlinks(b)
-	switch {
-	case errA == nil && errB == nil:
-		return ra == rb, nil
-	case errA != nil && errB != nil:
-		return a == b, nil
-	case errA != nil:
-		return false, errA
-	default:
-		return false, errB
-	}
 }
 
 // runGit runs one git command with cwd as the working directory and returns

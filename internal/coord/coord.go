@@ -138,7 +138,14 @@ type Handler struct {
 	// not race itself. One writer serialises here — there is no lock file,
 	// no generation counter, no compare-and-swap retry; concurrent requests
 	// serialise in this one process (revision 2, plan.md §2).
+	//
+	// It is released across driver work, which can take minutes; the entry
+	// is held by a claim instead (claim.go).
 	mu sync.Mutex
+
+	// claims are the entries with a long operation in flight, guarded by
+	// mu. See claim.go.
+	claims map[entryKey]bool
 }
 
 // NewHandler builds the request core over an opened store.
@@ -153,6 +160,7 @@ func NewHandler(st *store.Store, log *slog.Logger) (*Handler, error) {
 		ProtocolMin: protocol.VersionMin,
 		ProtocolMax: protocol.VersionMax,
 		Probe:       noProbe,
+		claims:      map[entryKey]bool{},
 		st:          st,
 		log:         log,
 	}, nil
@@ -355,15 +363,9 @@ func (h *Handler) observe(id Identity) error {
 		return err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	replaced := false
-	for i := range f.Clients {
-		if f.Clients[i].Kind == id.Kind && f.Clients[i].Identity == id.Key {
-			f.Clients[i].LastSeen = now
-			replaced = true
-			break
-		}
-	}
-	if !replaced {
+	if c := findClient(f, id.Kind, id.Key); c != nil {
+		c.LastSeen = now
+	} else {
 		f.Clients = append(f.Clients, store.ClientEntry{
 			Identity:  id.Key,
 			Kind:      id.Kind,

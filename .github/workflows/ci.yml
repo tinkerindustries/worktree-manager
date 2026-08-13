@@ -46,8 +46,24 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
-      - name: go test
-        run: go test ./...
+      # The race detector gates: the coordinator is a resident daemon with a
+      # goroutine per connection, background sweepers and shared handler
+      # state, and it is race-clean today.
+      - name: go test -race
+        run: go test -race ./...
+
+  staticcheck:
+    name: staticcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+      - name: staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          "$(go env GOPATH)/bin/staticcheck" ./...
 
   cross-build:
     name: build ${{ matrix.goos }}/${{ matrix.goarch }}
@@ -103,7 +119,7 @@ jobs:
       - name: build
         run: go build ./...
       - name: go test
-        run: go test ./...
+        run: go test -race ./...
 
   acceptance:
     name: acceptance gates (docker)

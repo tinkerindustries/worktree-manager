@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/driver"
 	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
@@ -493,6 +494,8 @@ func TestAllocateIsIdempotentForExistingSlug(t *testing.T) {
 // AgeReserving on an interval; here the timer's work is driven directly.
 func TestReservingEntryAgedOutOnTimer(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
+	// Ageing out is a teardown by handle, so the timer needs the drivers.
+	h.H.InstallDrivers(driver.NewRegistry(&driver.Port{}, &driver.Namespace{}, &driver.StatePath{}))
 	sess, _ := h.Connect(protocol.KindHost, "")
 	sp := testSpec(t, "compose-app", 8)
 	registerBand(t, h, sess, sp, 4200)

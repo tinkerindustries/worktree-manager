@@ -51,31 +51,61 @@ import (
 func (h *Handler) RecoverInterrupted() (int, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	return h.resolveReserving(
+		func(*store.Entry) bool { return true },
+		"the coordinator restarted while this entry was reserving and no spec could be found to tear it down; the slot stays held until the teardown is re-run with the spec",
+		"restart recovery")
+}
+
+// resolveReserving rolls interrupted reserving entries back to a known
+// state, one at a time, and returns how many it resolved. match picks which
+// reserving entries to resolve: every one for the restart pass, the
+// timed-out ones for the ageing timer. noSpecNote is the entry's note when
+// its spec cannot be found, and logPrefix names the caller in the log.
+//
+// Both callers need the same three outcomes — torn down and dropped, torn
+// down partially and left tearing-down, or no spec and left tearing-down —
+// because both are looking at the same thing: an allocation whose
+// materialised half is real and whose only handle is the entry.
+//
+// The caller holds h.mu.
+func (h *Handler) resolveReserving(match func(*store.Entry) bool, noSpecNote, logPrefix string) (int, error) {
 	if h.Drivers == nil {
-		return 0, errors.New("coord: restart recovery needs the driver registry")
+		return 0, errors.New("coord: resolving an interrupted allocation needs the driver registry")
 	}
 	specs, err := h.st.ReadSpecs()
 	if err != nil {
 		return 0, err
 	}
 
-	recovered := 0
+	resolved := 0
+	attempted := map[[2]string]bool{}
 	for {
 		reg, err := h.st.ReadRegistry()
 		if err != nil {
-			return recovered, err
+			return resolved, err
 		}
 		var target *store.Entry
 		for i := range reg.Entries {
-			if reg.Entries[i].State == store.StateReserving {
-				target = &reg.Entries[i]
-				break
+			e := &reg.Entries[i]
+			if e.State != store.StateReserving || !match(e) {
+				continue
 			}
+			if attempted[[2]string{e.App, e.Slug}] {
+				// The entry was resolved and is still reserving on disk, so
+				// the registry write did not land. Re-reading it would spin
+				// forever, and the restart pass runs before the coordinator
+				// accepts a connection, where nothing could observe it.
+				return resolved, fmt.Errorf("coord: %s/%s is still reserving after its teardown; the registry write is not landing", e.App, e.Slug)
+			}
+			target = e
+			break
 		}
 		if target == nil {
-			return recovered, nil
+			return resolved, nil
 		}
 		app, slug := target.App, target.Slug
+		attempted[[2]string{app, slug}] = true
 
 		sp := h.specForEntry(target, specs)
 		if sp == nil {
@@ -83,29 +113,28 @@ func (h *Handler) RecoverInterrupted() (int, error) {
 			// projects or the purge refusal, so a teardown would be a partial
 			// honour of a destructive operation (plan.md §3). The entry moves
 			// to tearing-down with the note naming the command that supplies
-			// the spec; the slot stays held — never dropped blind, and never
-			// left for the ageing timer, which drops without tearing down.
+			// the spec; the slot stays held — never dropped blind.
 			target.State = store.StateTearingDown
-			target.TeardownNote = "the coordinator restarted while this entry was reserving and no spec could be found to tear it down; the slot stays held until the teardown is re-run with the spec"
+			target.TeardownNote = noSpecNote
 			target.LastSeen = time.Now().UTC().Format(time.RFC3339Nano)
 			if err := h.st.WriteRegistry(reg); err != nil {
-				return recovered, err
+				return resolved, err
 			}
-			h.log.Info("restart recovery: reserving entry moved to tearing-down (no spec found)",
+			h.log.Info(logPrefix+": reserving entry moved to tearing-down (no spec found)",
 				"app", app, "slug", slug)
-			recovered++
+			resolved++
 			continue
 		}
 
-		tresp := h.teardownEntry(nil, target, reg, sp, nil, nil)
+		tresp := h.teardownEntry(nil, target, sp, nil, nil)
 		if tresp.Error != nil {
-			h.log.Warn("restart recovery: teardown of an interrupted allocation left resources behind",
+			h.log.Warn(logPrefix+": teardown of an interrupted allocation left resources behind",
 				"app", app, "slug", slug, "err", tresp.Error.Msg)
 		} else {
-			h.log.Info("restart recovery: interrupted allocation torn down and released",
+			h.log.Info(logPrefix+": interrupted allocation torn down and released",
 				"app", app, "slug", slug)
 		}
-		recovered++
+		resolved++
 	}
 }
 

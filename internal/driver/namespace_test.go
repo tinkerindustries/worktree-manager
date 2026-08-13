@@ -129,7 +129,7 @@ func nsFixture(t *testing.T, d Docker, worktree string) (*spec.Spec, Env, *spec.
 		Resolved: table,
 		Docker:   d,
 	}
-	return s, env, resourceByName(s, "compose")
+	return s, env, spec.ResourceByName(s, "compose")
 }
 
 func nsValue(t *testing.T, s *spec.Spec, env Env, name string) string {

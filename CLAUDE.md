@@ -15,9 +15,10 @@ documents are inputs and are never edited.
 
 ```sh
 go build ./...
-go test ./...
+go test -race ./...          # CI gates on -race
 go vet ./...
 gofmt -l cmd internal        # must print nothing
+staticcheck ./...            # CI gates on this too; must print nothing
 go test -tags acceptance ./...   # the live gates, from phase 6 in CI; needs docker
 ```
 
@@ -48,6 +49,16 @@ configuration; neither binary branches on repo identity.
 
 - `internal/spec` — the `wt.yaml` schema: parser, validator, template
   evaluator, the walk-up `wt.yaml` finder, and the quoted YAML emitter.
+  It owns the accessors every other package used to copy:
+  `ResourceByName`, `NamespaceKind`, `HookByName`, `HookNames`,
+  `WorktreePath` and the IPv4 block arithmetic.
+- `internal/treecheck` — the checks that must pass before a worktree is
+  destroyed: uncommitted changes, unpushed commits (an absent upstream is
+  its own answer), what gh reports about the branch's pull request, and
+  the never-forced `git worktree remove`. `wt rm`, `wt cleanup` and the
+  coordinator's sweep each keep their own policy over this one mechanism
+  — rm refuses an open PR, cleanup and the sweep require a merged one.
+  git and gh reach it through a runner function.
 - `internal/driver` — the six-operation contract, the port, namespace,
   state-path, cidr and machine drivers, the docker CLI seam, and the
   sequencing: apply in dependency order with machine forced first among
@@ -79,10 +90,10 @@ configuration; neither binary branches on repo identity.
   per-session classification cache (`WT_GUARD_CACHE`) the generated guard
   hook sets — keyed on cwd, validated by the stat identity of the root's
   `.git` entry (the root dir's own mtime is unusable: the case-sensitivity
-  probe bumps it every call), dropped and reclassified with a one-time
+  probe writes a file there), dropped and reclassified with a one-time
   note when the worktree is removed mid-session.
-- `internal/managed` — the generated-artefact block convention: the `.env`
-  block's own markers, `# wt-field:` records, replace-only-the-block
+- `internal/managed` — the managed block convention, declared once for
+  every file the tool writes (`internal/envfile` imports it): the markers, `# wt-field:` records, replace-only-the-block
   regeneration, the unbalanced-marker refusal, append-to-a-markerless-file
   (the CLAUDE.md tripwire joining a repo's own text).
 - `internal/artefact` — the phase-7 generated artefacts, rendered per
@@ -94,7 +105,12 @@ configuration; neither binary branches on repo identity.
   onboarding skill and the tests drive it; `cmd/wt` never imports it.
 - `internal/platform` — M8: symlink-resolved path realisation (on Windows
   via `GetFinalPathNameByHandleW`, which also canonicalises long paths and
-  mapped drives), the mount's case-sensitivity probe, the socket path, the
+  mapped drives), `SamePath` (the one do-these-name-the-same-directory
+  predicate), the mount's case-sensitivity probe (answered once per
+  directory per process), the hook shell (`sh -c` on every platform,
+  resolved from Git for Windows on Windows and refused by name where no
+  POSIX shell exists, because hook commands are shell commands), the
+  socket path, the
   named-pipe transport on Windows (owner-only ACL, pipe_windows.go), peer
   credentials (the pipe's ACL is the whole of host identity on Windows),
   the private store-dir permission model (0700 on unix; the current-user
@@ -109,9 +125,11 @@ configuration; neither binary branches on repo identity.
 - `internal/descriptor` — the per-worktree allocation record: type,
   reader, atomic writer, the shared-block and isolation-state builders,
   and the `info/exclude` ignore rule.
-- `internal/envfile` — the `.env` managed block: replace-only-the-block
-  re-runs, the duplicate strip, the first-write seed from the main
-  checkout, the unbalanced-marker refusal.
+- `internal/envfile` — the `.env` delivery channel: the duplicate strip,
+  the first-write seed from the main checkout, and the dotenv-specific
+  half of the block. The markers and the block primitives are
+  `internal/managed`'s, so one convention covers every file the tool
+  writes.
 - `internal/generate` — the generated Go descriptor reader, stdlib-only
   and gofmt-clean by construction.
 - `internal/protocol` — the wire between the two binaries: message types,
@@ -121,7 +139,10 @@ configuration; neither binary branches on repo identity.
   `registry.json`, `bands.json` (with per-base spans) and `specs.json`
   (the per-app spec cache reclamation falls back to).
 - `internal/coord` — the coordinator's request core, socket server and the
-  in-process harness; one writer serialises here. Since phase 6: the fleet
+  in-process harness; one writer serialises here. The mutex covers the
+  store, not the drivers: materialise, teardown, the reaper and the sweep
+  release it and hold a per-`(app, slug)` claim instead (`claim.go`), so
+  a VM start does not queue every other client behind it. Since phase 6: the fleet
   verbs (`list` with the stale/unverifiable/reclaimable/foreign markers
   and owner-only secret redaction, `doctor` reading everything and
   writing nothing, `reconcile` reusing init's and rm's repair paths on

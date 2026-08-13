@@ -1,0 +1,23 @@
+# Invalid: aa and bb reference each other. xstate is left over too — a
+# cycle member references it — but is not itself on the cycle, so the
+# refusal must still name aa and bb rather than the dead end.
+version: 1
+app: cycle-leaf-app
+slots:
+  max: 4
+resources:
+  - type: state-path
+    name: xstate
+    template: "{home}/x"
+  - type: namespace
+    name: aa
+    kind: compose
+    template: "{bb}-{xstate}"
+  - type: namespace
+    name: bb
+    kind: compose
+    template: "{aa}"
+emit:
+  descriptor:
+    filename: wt-env.yaml
+    format: yaml

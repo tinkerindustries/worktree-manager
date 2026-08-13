@@ -33,13 +33,13 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/identity"
 	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/mrgeoffrich/worktree-manager/internal/treecheck"
 )
 
 // rmResult is the one JSON object `wt rm --json` prints.
@@ -72,7 +72,7 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 	slug := fs.String("slug", "", "the worktree's slug (default: the cwd's basename when cwd is a worktree)")
 	keepProcesses := fs.Bool("keep-processes", false, "do not signal processes bound to the worktree's ports")
 	var purgeFlags []string
-	fs.Var(stringListFlag{target: &purgeFlags}, "purge", "purge this state-path resource on teardown (repeatable)")
+	fs.Var(stringList(&purgeFlags), "purge", "purge this state-path resource on teardown (repeatable)")
 
 	// The spec must load before the keep flags can be registered, and the
 	// spec's location depends on --cwd, so the flag's value is pre-scanned
@@ -276,14 +276,14 @@ func rmNoEntry(stdout, stderr io.Writer, jsonOut bool, sp *spec.Spec, slug, call
 	if root == "" {
 		e := New(ExitFailure,
 			fmt.Sprintf("no registry entry for %s/%s and no git worktree named %q in this repository: nothing to remove", sp.App, slug, slug),
-			"check the slug with 'wt list' (phase 6) or 'git worktree list', then re-run")
+			"check the slug with 'wt list' or 'git worktree list', then re-run")
 		WriteError(stderr, e)
 		return e.Code
 	}
 	if fi, err := os.Stat(root); err != nil || !fi.IsDir() {
 		e := New(ExitFailure,
 			fmt.Sprintf("no registry entry for %s/%s and the worktree directory %s is already gone: nothing to remove", sp.App, slug, root),
-			"check the slug with 'wt list' (phase 6) or 'git worktree list', then re-run")
+			"check the slug with 'wt list' or 'git worktree list', then re-run")
 		WriteError(stderr, e)
 		return e.Code
 	}
@@ -304,27 +304,29 @@ func rmNoEntry(stdout, stderr io.Writer, jsonOut bool, sp *spec.Spec, slug, call
 	return ExitOK
 }
 
+// rmMaxLines caps how many changed paths or unpushed commits a refusal
+// names.
+const rmMaxLines = 5
+
 // rmSafetyChecks runs the three tree-reading checks, in order, and returns
 // the exit code: 0 when all pass, 3 on any hit, 4 when the PR check cannot
 // run (gh missing or unauthenticated — a safety check that cannot run
-// fails closed).
+// fails closed). The checks themselves live in internal/treecheck; what is
+// here is rm's policy on each answer.
 func rmSafetyChecks(root string, stderr io.Writer) int {
 	// 1. Uncommitted changes.
-	if out, err := runGitOutput(root, "status", "--porcelain"); err != nil {
+	res, err := treecheck.Uncommitted(root, treecheck.Git)
+	if err != nil {
 		e := New(ExitUnavailable,
 			fmt.Sprintf("the uncommitted-changes check could not run in %s: %v", root, err),
 			"fix git, then re-run rm")
 		WriteError(stderr, e)
 		return e.Code
-	} else if strings.TrimSpace(out) != "" {
-		lines := strings.Split(strings.TrimSpace(out), "\n")
-		shown := lines
-		if len(shown) > 5 {
-			shown = shown[:5]
-		}
+	}
+	if !res.OK() {
 		e := New(ExitRefused,
 			fmt.Sprintf("refusing to remove %s: it has uncommitted changes (%d changed path(s), first: %s)",
-				root, len(lines), strings.Join(shown, "; ")),
+				root, len(res.Lines), res.First(rmMaxLines)),
 			"commit or stash the changes, then re-run rm")
 		WriteError(stderr, e)
 		return e.Code
@@ -332,31 +334,25 @@ func rmSafetyChecks(root string, stderr io.Writer) int {
 
 	// 2. Unpushed commits: `git log @{u}..HEAD`. An absent upstream is
 	// itself a stop, not a pass (B11.10).
-	out, err := runGitOutput(root, "log", "@{u}..HEAD", "--oneline")
+	res, err = treecheck.Unpushed(root, treecheck.Git)
+	if errors.Is(err, treecheck.ErrNoUpstream) {
+		e := New(ExitRefused,
+			fmt.Sprintf("refusing to remove %s: the branch has no upstream, and an absent upstream is itself a stop, not a pass", root),
+			"push the branch (git push -u origin <branch>) or set an upstream, then re-run rm")
+		WriteError(stderr, e)
+		return e.Code
+	}
 	if err != nil {
-		msg := err.Error()
-		if strings.Contains(msg, "no upstream") || strings.Contains(msg, "@{u}") || strings.Contains(msg, "unknown revision") {
-			e := New(ExitRefused,
-				fmt.Sprintf("refusing to remove %s: the branch has no upstream, and an absent upstream is itself a stop, not a pass", root),
-				"push the branch (git push -u origin <branch>) or set an upstream, then re-run rm")
-			WriteError(stderr, e)
-			return e.Code
-		}
 		e := New(ExitUnavailable,
 			fmt.Sprintf("the unpushed-commits check could not run in %s: %v", root, err),
 			"fix git, then re-run rm")
 		WriteError(stderr, e)
 		return e.Code
 	}
-	if strings.TrimSpace(out) != "" {
-		lines := strings.Split(strings.TrimSpace(out), "\n")
-		shown := lines
-		if len(shown) > 5 {
-			shown = shown[:5]
-		}
+	if !res.OK() {
 		e := New(ExitRefused,
 			fmt.Sprintf("refusing to remove %s: it has %d unpushed commit(s), first: %s",
-				root, len(lines), strings.Join(shown, "; ")),
+				root, len(res.Lines), res.First(rmMaxLines)),
 			"push the commits, then re-run rm")
 		WriteError(stderr, e)
 		return e.Code
@@ -374,38 +370,29 @@ func rmSafetyChecks(root string, stderr io.Writer) int {
 }
 
 // checkOpenPR asks gh whether the branch has an open PR. It returns
-// (ExitOK, "") when there is none; otherwise the exit code and the message:
-// 3 when a PR is open, 4 when the check could not run.
+// (ExitOK, "") when there is none and when the PR has already merged or
+// closed — that is the end of a branch's life, and rm is how the worktree
+// goes with it. Otherwise the exit code and the message: 3 when a PR is
+// open, 4 when the check could not run.
 func checkOpenPR(root string) (int, string) {
-	gh, err := exec.LookPath("gh")
+	pr, err := treecheck.PRState(root, treecheck.Gh)
 	if err != nil {
-		return ExitUnavailable, "the open-PR check cannot run: gh is not installed or not on PATH"
-	}
-	cmd := exec.Command(gh, "pr", "view", "--json", "number,state")
-	cmd.Dir = root
-	out, err := cmd.CombinedOutput()
-	text := string(out)
-	if err == nil {
-		var pr struct {
-			Number int    `json:"number"`
-			State  string `json:"state"`
+		var ue *treecheck.UnavailableError
+		if errors.As(err, &ue) {
+			switch {
+			case ue.NotInstalled:
+				return ExitUnavailable, "the open-PR check cannot run: gh is not installed or not on PATH"
+			case ue.NotAuthenticated:
+				return ExitUnavailable, fmt.Sprintf("the open-PR check could not run: gh is not authenticated (%s)", ue.Detail)
+			}
+			return ExitUnavailable, fmt.Sprintf("the open-PR check could not run in %s: gh failed (%s)", root, ue.Detail)
 		}
-		if jerr := json.Unmarshal(out, &pr); jerr == nil && pr.Number > 0 {
-			return ExitRefused, fmt.Sprintf("refusing to remove %s: branch has an open PR #%d (%s); the PR points at the branch, and the remote branch is never deleted", root, pr.Number, pr.State)
-		}
-		return ExitRefused, fmt.Sprintf("refusing to remove %s: gh reports an open PR for this branch", root)
+		return ExitUnavailable, fmt.Sprintf("the open-PR check could not run in %s: %v", root, err)
 	}
-	lower := strings.ToLower(text)
-	if strings.Contains(lower, "no pull requests found") {
-		return ExitOK, "" // the check ran: no PR
+	if pr.Open() {
+		return ExitRefused, fmt.Sprintf("refusing to remove %s: branch has an open PR #%d (%s); the PR points at the branch, and the remote branch is never deleted", root, pr.Number, pr.State)
 	}
-	// gh is present but could not answer: unauthenticated, not a GitHub
-	// repo, or broken. A safety check that cannot run fails closed (B11.10).
-	detail := fmt.Sprintf("the open-PR check could not run in %s: gh failed (%s)", root, strings.TrimSpace(text))
-	if strings.Contains(lower, "auth") || strings.Contains(lower, "authenticate") || strings.Contains(lower, "login") {
-		detail = fmt.Sprintf("the open-PR check could not run: gh is not authenticated (%s)", strings.TrimSpace(text))
-	}
-	return ExitUnavailable, detail
+	return ExitOK, ""
 }
 
 // ghRemedy names the fix for each gh failure.
@@ -425,15 +412,14 @@ func ghRemedy(code int, detail string) string {
 	return ""
 }
 
-// gitWorktreeRemove runs `git worktree remove <root>` from inside the tree,
-// never with --force: git refusing is signal that a check missed something
-// (B11.11), and the refusal is reported as itself.
+// gitWorktreeRemove runs `git worktree remove <root>`, never with --force:
+// git refusing is signal that a check missed something (B11.11), and the
+// refusal is reported as itself.
 func gitWorktreeRemove(root string, stderr io.Writer) int {
-	cmd := exec.Command("git", "-C", root, "worktree", "remove", root)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if err := treecheck.WorktreeRemove(root, treecheck.Git); err != nil {
 		e := New(ExitFailure,
 			fmt.Sprintf("git worktree remove refused to remove %s: %s — git refusing indicates a safety check missed something; nothing was forced",
-				root, strings.TrimSpace(string(out))),
+				root, err),
 			"resolve what git names, then re-run rm")
 		WriteError(stderr, e)
 		return e.Code
@@ -523,26 +509,11 @@ func writeRmReport(stdout, stderr io.Writer, jsonOut bool, r rmResult) int {
 
 // runGitOutput runs one git command with cwd and returns its stdout.
 func runGitOutput(cwd string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = cwd
-	out, err := cmd.Output()
+	out, err := treecheck.Git(cwd, args...)
 	if err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(ee.Stderr)))
-		}
 		return "", err
 	}
 	return string(out), nil
-}
-
-// stringListFlag collects repeated string flags.
-type stringListFlag struct{ target *[]string }
-
-func (f stringListFlag) String() string { return "" }
-func (f stringListFlag) Set(v string) error {
-	*f.target = append(*f.target, v)
-	return nil
 }
 
 // preScanFlag finds a flag's value in the raw args before the flag package

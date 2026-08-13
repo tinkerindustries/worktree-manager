@@ -227,7 +227,7 @@ func factSheet(sp *spec.Spec, band map[string]int) []string {
 			}
 			lines = append(lines, fmt.Sprintf("- %s: state-path, %s", r.Name, mode))
 		case "namespace":
-			lines = append(lines, fmt.Sprintf("- %s: namespace (%s)", r.Name, namespaceKind(r)))
+			lines = append(lines, fmt.Sprintf("- %s: namespace (%s)", r.Name, spec.NamespaceKind(r)))
 		default:
 			lines = append(lines, fmt.Sprintf("- %s: %s", r.Name, r.Type))
 		}
@@ -246,14 +246,6 @@ func startHookRun(sp *spec.Spec) string {
 		return sp.Hooks.Start.Run
 	}
 	return ""
-}
-
-// namespaceKind applies the kind default (compose).
-func namespaceKind(r *spec.Resource) string {
-	if r.Kind != nil {
-		return *r.Kind
-	}
-	return spec.DefaultNamespaceKind
 }
 
 // tripwireLines is the CLAUDE.md tripwire's block content: the three facts

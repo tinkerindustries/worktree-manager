@@ -74,9 +74,10 @@ func rmCoord(t *testing.T, worktree string, handlers map[string]func(*protocol.R
 }
 
 // fakeGh writes a gh executable on PATH. The script's exit code and stderr
-// mimic real gh's contract: exit 0 with PR JSON means an open PR, exit 1
-// with "no pull requests found" means none, exit 4 with an auth message
-// means unauthenticated.
+// mimic real gh's contract: exit 0 with PR JSON means a PR exists, in
+// whatever state the JSON names — gh answers the same way for OPEN, MERGED
+// and CLOSED. Exit 1 with "no pull requests found" means none, exit 4 with
+// an auth message means unauthenticated.
 func fakeGh(t *testing.T, script string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -158,6 +159,46 @@ func TestRmStopsOnOpenPR(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "PR #42") {
 		t.Errorf("stderr = %q, want the open PR named", stderr)
+	}
+}
+
+// TestRmProceedsPastAFinishedPR: a merged or closed PR is the end of the
+// branch's life, and rm is how the worktree goes with it. gh reports both
+// the same way it reports an open one — exit 0 with the state in the JSON —
+// so the state is what decides, not gh's exit code.
+func TestRmProceedsPastAFinishedPR(t *testing.T) {
+	for _, state := range []string{"MERGED", "CLOSED"} {
+		t.Run(state, func(t *testing.T) {
+			main, worktree, _ := rmFixture(t)
+			sock := rmCoord(t, worktree, nil)
+			t.Setenv("WT_SOCKET", sock)
+			fakeGh(t, `echo '{"number":42,"state":"`+state+`"}'`)
+
+			code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1")
+			if code != ExitOK {
+				t.Fatalf("exit = %d, want %d; stderr: %s", code, ExitOK, stderr)
+			}
+			if _, err := os.Stat(worktree); err == nil {
+				t.Errorf("the worktree %s survived rm", worktree)
+			}
+		})
+	}
+}
+
+// TestRmStopsOnADraftPR: a draft PR still points at the branch, so it is an
+// open PR for rm's purposes.
+func TestRmStopsOnADraftPR(t *testing.T) {
+	main, worktree, _ := rmFixture(t)
+	sock := rmCoord(t, worktree, nil)
+	t.Setenv("WT_SOCKET", sock)
+	fakeGh(t, `echo '{"number":43,"state":"DRAFT"}'`)
+
+	code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1")
+	if code != ExitRefused {
+		t.Fatalf("exit = %d, want %d; stderr: %s", code, ExitRefused, stderr)
+	}
+	if !strings.Contains(stderr, "PR #43") {
+		t.Errorf("stderr = %q, want the draft PR named", stderr)
 	}
 }
 

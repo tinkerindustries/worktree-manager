@@ -16,8 +16,8 @@ func TestFixtureHooksEmitCoverage(t *testing.T) {
 
 	anyHook := func(pred func(h *Hook) bool) bool {
 		for _, s := range fixtures {
-			for _, name := range hookNames {
-				if h := hookByName(&s.Hooks, name); h != nil && pred(h) {
+			for _, name := range HookNames {
+				if h := HookByName(&s.Hooks, name); h != nil && pred(h) {
 					return true
 				}
 			}
@@ -34,10 +34,10 @@ func TestFixtureHooksEmitCoverage(t *testing.T) {
 	}
 
 	// The six hook names, each exercised at least once.
-	for _, name := range hookNames {
+	for _, name := range HookNames {
 		found := false
 		for _, s := range fixtures {
-			if hookByName(&s.Hooks, name) != nil {
+			if HookByName(&s.Hooks, name) != nil {
 				found = true
 			}
 		}
@@ -235,5 +235,33 @@ func TestFixtureReservedAndShared(t *testing.T) {
 	}
 	if !sharedByDefault {
 		t.Error("plain-app has no resource with default: shared")
+	}
+}
+
+// TestEveryTypeFieldListHasARule: the per-type "not valid for this type"
+// lists are string literals, and a typo in one would disable a validation
+// rule with no compile error. Every name in every list must have an entry
+// in fieldSet.
+func TestEveryTypeFieldListHasARule(t *testing.T) {
+	lists := [][]string{
+		{"kind", "files", "pool", "on_exhaustion", "template", "default", "flag", "seed", "purge", "driver", "max_concurrent", "keep_flag"},
+		{"form", "size", "offset", "pool", "on_exhaustion", "default", "flag", "seed", "purge", "driver", "max_concurrent", "keep_flag"},
+		{"form", "offset", "kind", "files", "template", "default", "flag", "seed", "purge", "driver", "max_concurrent", "keep_flag"},
+		{"form", "size", "offset", "kind", "files", "pool", "on_exhaustion", "driver", "max_concurrent", "keep_flag"},
+		{"form", "size", "offset", "kind", "files", "pool", "on_exhaustion", "default", "flag", "seed", "purge"},
+	}
+	seen := map[string]bool{}
+	for _, list := range lists {
+		for _, f := range list {
+			seen[f] = true
+			if _, ok := fieldSet[f]; !ok {
+				t.Errorf("field %q appears in a per-type list with no rule in fieldSet", f)
+			}
+		}
+	}
+	for f := range fieldSet {
+		if !seen[f] {
+			t.Errorf("fieldSet has a rule for %q that no per-type list names", f)
+		}
 	}
 }

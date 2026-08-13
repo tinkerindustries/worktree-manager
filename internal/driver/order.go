@@ -8,19 +8,6 @@ package driver
 
 import "github.com/mrgeoffrich/worktree-manager/internal/spec"
 
-// resourceByName finds one resource of the spec by name.
-func resourceByName(s *spec.Spec, name string) *spec.Resource {
-	if s == nil {
-		return nil
-	}
-	for i := range s.Resources {
-		if s.Resources[i].Name == name {
-			return &s.Resources[i]
-		}
-	}
-	return nil
-}
-
 // DependencyOrder returns the resource names in dependency order — every
 // resource after everything its template references — restricted to the
 // resources keep accepts. The order is deterministic: a depth-first walk
@@ -39,13 +26,13 @@ func DependencyOrder(s *spec.Spec, keep func(*spec.Resource) bool) []string {
 			return
 		}
 		visited[name] = true
-		r := resourceByName(s, name)
+		r := spec.ResourceByName(s, name)
 		if r == nil {
 			return
 		}
 		if r.Template != nil {
 			for _, v := range templateVarsOf(*r.Template) {
-				if resourceByName(s, v) != nil {
+				if spec.ResourceByName(s, v) != nil {
 					visit(v)
 				}
 			}
@@ -83,7 +70,7 @@ func (r Registry) ApplyOrder(s *spec.Spec) []string {
 func machinesFirst(order []string, s *spec.Spec, r Registry) []string {
 	var machines, rest []string
 	for _, name := range order {
-		res := resourceByName(s, name)
+		res := spec.ResourceByName(s, name)
 		d := r.Driver(res.Type)
 		if res.Type == "machine" && d != nil {
 			machines = append(machines, name)
