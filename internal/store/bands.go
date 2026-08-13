@@ -1,8 +1,7 @@
 package store
 
 import (
-	"errors"
-	"os"
+	"strconv"
 )
 
 // BandsFileName is the band ledger's filename inside the store: it maps each
@@ -37,6 +36,15 @@ type Reservation struct {
 	Note  string   `json:"note"`
 }
 
+// PortsStrings renders the reservation's ports for a message.
+func (r Reservation) PortsStrings() []string {
+	out := make([]string, len(r.Ports))
+	for i, p := range r.Ports {
+		out[i] = strconv.Itoa(p)
+	}
+	return out
+}
+
 // BandsFile is bands.json.
 type BandsFile struct {
 	Versioned
@@ -46,15 +54,9 @@ type BandsFile struct {
 
 // ReadBands loads the band ledger; a missing file is an empty ledger.
 func (s *Store) ReadBands() (BandsFile, error) {
-	var f BandsFile
-	if err := s.Load(BandsFileName, &f); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			f = BandsFile{Versioned: Versioned{SchemaVersion: SchemaVersion}}
-			return f, nil
-		}
-		return BandsFile{}, err
-	}
-	return f, nil
+	return loadFile(s, BandsFileName, func() BandsFile {
+		return BandsFile{Versioned: Versioned{SchemaVersion: SchemaVersion}}
+	})
 }
 
 // WriteBands persists the band ledger atomically.

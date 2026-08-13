@@ -402,7 +402,7 @@ exit "$code"
 	}
 
 	// Denied: exit 2, the deny JSON with the reason, and WT_GUARD_CACHE set.
-	code, out, errb := run([]string{"FAKE_GUARD_EXIT=3"}, payload)
+	code, out, _ = run([]string{"FAKE_GUARD_EXIT=3"}, payload)
 	if code != 2 {
 		t.Errorf("deny: exit %d, want 2", code)
 	}
@@ -419,7 +419,7 @@ exit "$code"
 	}
 
 	// Guard fails: fail open and say so.
-	code, out, errb = run([]string{"FAKE_GUARD_EXIT=7"}, payload)
+	code, out, errb := run([]string{"FAKE_GUARD_EXIT=7"}, payload)
 	if code != 0 || !strings.Contains(out, `"permissionDecision":"allow"`) {
 		t.Errorf("guard failure: exit %d, stdout %q", code, out)
 	}

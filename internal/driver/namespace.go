@@ -60,7 +60,7 @@ func (*Namespace) Derive(r *spec.Resource, s *spec.Spec, ctx spec.Context) (any,
 // — never a claim on the slot. Without a reachable daemon the probe is
 // unavailable, which does not block allocation.
 func (*Namespace) Probe(r *spec.Resource, value any, env Env) ProbeResult {
-	if namespaceKind(r) != "compose" {
+	if spec.NamespaceKind(r) != "compose" {
 		// plain: a string the application uses however it likes; nothing
 		// external holds it.
 		return ProbeFree
@@ -99,7 +99,7 @@ func (*Namespace) Probe(r *spec.Resource, value any, env Env) ProbeResult {
 // And teardown continues past a failure, collecting what survived: stopping
 // early would leave more behind than continuing does (03-drivers.md §5).
 func (*Namespace) Teardown(r *spec.Resource, value any, env Env) error {
-	if namespaceKind(r) != "compose" {
+	if spec.NamespaceKind(r) != "compose" {
 		return nil // plain: nothing the tool created, nothing it destroys
 	}
 	project, ok := value.(string)
@@ -288,7 +288,7 @@ func (*Namespace) Apply(*spec.Resource, any, Env) (ApplyResult, error) { return 
 // worktree, because it changes nothing and may report "cannot check from
 // here" (03-drivers.md §8).
 func (*Namespace) Verify(r *spec.Resource, value any, env Env) ([]Finding, error) {
-	if namespaceKind(r) != "compose" {
+	if spec.NamespaceKind(r) != "compose" {
 		return nil, nil
 	}
 	var findings []Finding
@@ -333,14 +333,6 @@ func pinnedComposeName(data []byte) (string, error) {
 // BlastRadius is the shared-block prose for a namespace resource.
 func (*Namespace) BlastRadius(r *spec.Resource, s *spec.Spec) string {
 	return "the compose project name is shared: every worktree attaches to the same containers, volumes and networks, and the second worktree silently joins the first one's stack"
-}
-
-// namespaceKind applies the kind default (compose).
-func namespaceKind(r *spec.Resource) string {
-	if r.Kind != nil {
-		return *r.Kind
-	}
-	return spec.DefaultNamespaceKind
 }
 
 // matchReservation returns the host-global reservation whose reserved name

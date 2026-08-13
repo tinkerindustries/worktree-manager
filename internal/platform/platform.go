@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 )
 
 // RealPath returns the absolute, symlink-resolved form of path.
@@ -42,6 +43,30 @@ func RealPath(path string) (string, error) {
 		return "", err
 	}
 	return canonical(resolved), nil
+}
+
+// SamePath reports whether two paths name the same file or directory,
+// comparing their realised forms so two spellings of one directory compare
+// equal. Two paths that both fail to realise are the same only when they are
+// literally equal: a path that does not exist has no identity beyond its
+// spelling. One realising and the other not is the error, because the answer
+// is then unknown rather than false.
+//
+// Getting this wrong once made init refuse its own worktree as a slug
+// collision, which also broke idempotence, so there is one of these.
+func SamePath(a, b string) (bool, error) {
+	ra, errA := RealPath(a)
+	rb, errB := RealPath(b)
+	switch {
+	case errA == nil && errB == nil:
+		return ra == rb, nil
+	case errA != nil && errB != nil:
+		return a == b, nil
+	case errA != nil:
+		return false, errA
+	default:
+		return false, errB
+	}
 }
 
 // canonical applies the platform's path canonicalisation on top of symlink
@@ -84,6 +109,13 @@ func CaseSensitive(dir string) (bool, error) {
 	if runtime.GOOS == "windows" {
 		return false, nil
 	}
+	// The answer is a property of the mount and cannot change under a
+	// running process, so it is probed once per directory. Without the
+	// cache, a read-only predicate like identity.Contains writes a file
+	// into the worktree root on every call.
+	if v, ok := caseSensitiveCache.Load(dir); ok {
+		return v.(bool), nil
+	}
 	randBytes := make([]byte, 8)
 	if _, err := rand.Read(randBytes); err != nil {
 		return false, fmt.Errorf("case-sensitivity probe of %s: %w", dir, err)
@@ -99,10 +131,16 @@ func CaseSensitive(dir string) (bool, error) {
 	f.Close()
 	defer os.Remove(probe)
 	if _, err := os.Stat(filepath.Join(dir, strings.ToUpper(base))); err == nil {
-		return false, nil // the upper-cased spelling names the same file
+		caseSensitiveCache.Store(dir, false) // the upper-cased spelling names the same file
+		return false, nil
 	} else if os.IsNotExist(err) {
+		caseSensitiveCache.Store(dir, true)
 		return true, nil
 	} else {
 		return false, fmt.Errorf("case-sensitivity probe of %s: %w", dir, err)
 	}
 }
+
+// caseSensitiveCache holds each probed directory's answer for the life of
+// the process. Failures are not cached: the next call probes again.
+var caseSensitiveCache sync.Map

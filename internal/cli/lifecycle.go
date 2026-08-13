@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/descriptor"
 	"github.com/mrgeoffrich/worktree-manager/internal/identity"
@@ -83,6 +82,14 @@ func loadSpec(startDir string, stderr io.Writer) (*spec.Spec, int) {
 		WriteError(stderr, e)
 		return nil, e.Code
 	}
+	// Validation happens here rather than only server-side: `wt start`
+	// contacts no coordinator, so without this it would run hooks off an
+	// unvalidated spec.
+	if err := spec.Validate(sp); err != nil {
+		e := New(ExitFailure, err.Error(), fmt.Sprintf("fix %s, then re-run", specPath))
+		WriteError(stderr, e)
+		return nil, e.Code
+	}
 	return sp, ExitOK
 }
 
@@ -102,14 +109,36 @@ func readDescriptorIfPresent(path, format string) (*descriptor.Descriptor, error
 	return d, nil
 }
 
-// resolveWorktreePath joins a spec-declared path against the worktree root
-// unless it is absolute.
-func resolveWorktreePath(root, p string) string {
-	if filepath.IsAbs(p) {
-		return filepath.Clean(p)
+// persistSticky writes the sticky parameters a run chose back into the
+// descriptor (04-lifecycle.md §5.2), merged with the persisted set so one
+// run's choices never drop another run's. A write failure is a warning:
+// the choice is not recorded and will be re-made, which is a worse run
+// rather than a failed one.
+func persistSticky(d *descriptor.Descriptor, dpath, format string, chosen map[string]string, stderr io.Writer) {
+	if len(chosen) == 0 {
+		return
 	}
-	return filepath.Join(root, p)
+	merged := stickyParamsOf(d)
+	for k, v := range chosen {
+		merged[k] = v
+	}
+	d.Extras = withStickyParams(d.Extras, merged)
+	if err := descriptor.Write(dpath, format, d); err != nil {
+		fmt.Fprintf(stderr, "warning: persisting the chosen hook parameters into %s failed: %v; the choice is not recorded and will be re-made next run\n", dpath, err)
+	}
 }
+
+// buildHooks and startHooks split the spec's one hook list into the two
+// phases the init sequence runs: install, prepull and build bring the tree
+// to buildable (step 5); start, seed and health bring the stack up (step
+// 7). `wt start` runs the second phase alone. Both come from
+// spec.HookNames, so a seventh hook is declared in one place.
+const startPhaseFirst = 3
+
+var (
+	buildHooks = spec.HookNames[:startPhaseFirst]
+	startHooks = spec.HookNames[startPhaseFirst:]
+)
 
 // clientHome is the client's home directory — the best available {home}
 // for templates the client resolves (the .env keys and the hook

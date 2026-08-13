@@ -22,6 +22,9 @@ type Server struct {
 	h   *Handler
 	log *slog.Logger
 	wg  sync.WaitGroup
+
+	// tcpSlots bounds the loopback TCP listener's concurrent connections.
+	tcpSlots chan struct{}
 }
 
 // NewServer wraps a handler in the socket loop.
@@ -29,7 +32,7 @@ func NewServer(h *Handler, log *slog.Logger) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{h: h, log: log}
+	return &Server{h: h, log: log, tcpSlots: make(chan struct{}, maxTCPConns)}
 }
 
 // Serve listens on socketPath and serves connections until ctx is
@@ -133,11 +136,30 @@ func (s *Server) serveListeners(ctx context.Context, lns ...serveListener) error
 					closeAll()
 					return
 				}
+				if l.tcp {
+					// The TCP surface's token is checked after the hello,
+					// and the hello has its own deadline, so an
+					// unauthenticated peer on loopback could otherwise hold
+					// as many connections as it opened. The bound is
+					// per-listener and refuses rather than queues, so a
+					// legitimate client fails fast instead of hanging.
+					select {
+					case s.tcpSlots <- struct{}{}:
+					default:
+						conn.Close()
+						s.log.Warn("refused a loopback TCP connection: the listener is at its connection limit",
+							"limit", maxTCPConns)
+						continue
+					}
+				}
 				s.wg.Add(1)
-				go func() {
+				go func(tcp bool) {
 					defer s.wg.Done()
-					s.serveConn(ctx, conn, l.tcp)
-				}()
+					if tcp {
+						defer func() { <-s.tcpSlots }()
+					}
+					s.serveConn(ctx, conn, tcp)
+				}(l.tcp)
 			}
 		}(l)
 	}
@@ -151,10 +173,18 @@ func (s *Server) serveListeners(ctx context.Context, lns ...serveListener) error
 	return nil
 }
 
-// sweepInterval is how often the resident coordinator ages reserving
-// entries out. A stale reservation blocks a slot for at most one interval,
-// which is the whole cost of not sweeping lazily inside allocate.
-const sweepInterval = time.Minute
+// maxTCPConns bounds the loopback TCP listener's concurrent connections.
+// The platform listener needs no bound: the socket's permissions and the
+// pipe's ACL are the whole of who may open one.
+const maxTCPConns = 64
+
+// sweeperTick is how often the resident coordinator's timer fires. It is
+// the ageing timer's own interval — a stale reservation blocks a slot for
+// at most one tick, which is the whole cost of not sweeping lazily inside
+// allocate — and the throttle the slower timers hang off. Handler's
+// sweepInterval method is a different period: how often the cleanup sweep
+// runs.
+const sweeperTick = time.Minute
 
 // startSweeper runs the coordinator's own timers for the life of the
 // process: the reserving-ageing timer (a reserving entry past its timeout
@@ -167,7 +197,7 @@ const sweepInterval = time.Minute
 // by the wait group — they hold no in-flight request.
 func (s *Server) startSweeper(ctx context.Context) {
 	go func() {
-		t := time.NewTicker(sweepInterval)
+		t := time.NewTicker(sweeperTick)
 		defer t.Stop()
 		lastReclaim := time.Now()
 		lastSweep := time.Now()

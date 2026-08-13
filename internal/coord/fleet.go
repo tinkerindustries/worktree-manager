@@ -310,12 +310,7 @@ func (h *Handler) doctorEntry(e *store.Entry, clients store.ClientsFile, specs s
 	// stripped by the next init (D6, 05-delivery.md §3.2); doctor reports
 	// it first so the drift is visible rather than silent.
 	if sp.Emit.Env != nil {
-		envPath := e.Path
-		if !filepath.IsAbs(sp.Emit.Env.Path) {
-			envPath = filepath.Join(e.Path, sp.Emit.Env.Path)
-		} else {
-			envPath = sp.Emit.Env.Path
-		}
+		envPath := spec.WorktreePath(e.Path, sp.Emit.Env.Path)
 		if outside, oerr := envfile.OutsideBlockKeys(envPath, sp.Emit.Env.Keys); oerr == nil && len(outside) > 0 {
 			*findings = append(*findings, protocol.DoctorFinding{
 				App: app, Slug: slug, Level: "warning",
@@ -374,7 +369,7 @@ func (h *Handler) doctorEntry(e *store.Entry, clients store.ClientsFile, specs s
 		// The compose-project-gone check: an active entry whose compose
 		// project has no objects at all has lost its stack (drift row:
 		// "compose project gone").
-		if e.State == store.StateActive && res.Type == "namespace" && namespaceKind(res) == "compose" {
+		if e.State == store.StateActive && res.Type == "namespace" && spec.NamespaceKind(res) == "compose" {
 			if project, ok := value.Value.(string); ok && project != "" && env.Docker != nil {
 				if verr := env.Docker.Version(); verr == nil {
 					if objs, oerr := projectObjectsCount(env.Docker, project); oerr == nil && objs == 0 {
@@ -494,25 +489,11 @@ func (h *Handler) bandsForDrift() store.BandsFile {
 // called a match.
 func registryHasPath(reg store.RegistryFile, path string) bool {
 	for _, e := range reg.Entries {
-		if pathsEqual(e.Path, path) {
+		if same, _ := platform.SamePath(e.Path, path); same {
 			return true
 		}
 	}
 	return false
-}
-
-// pathsEqual reports whether two paths name the same directory, comparing
-// the symlink-resolved forms when both resolve.
-func pathsEqual(a, b string) bool {
-	if a == b {
-		return true
-	}
-	ra, aerr := platform.RealPath(a)
-	rb, berr := platform.RealPath(b)
-	if aerr != nil || berr != nil {
-		return false
-	}
-	return ra == rb
 }
 
 // doctorBands reports two apps whose registered port bands overlap — the
@@ -571,7 +552,7 @@ func (h *Handler) doctorCeilings(appSpecs map[string]*spec.Spec, occupiedByApp m
 			*findings = append(*findings, protocol.DoctorFinding{
 				App: app, Level: "warning",
 				Message: fmt.Sprintf("app %q is approaching its slot ceiling: %d of %d slots are occupied (%d free)", app, occupied, max, free),
-				Remedy:  "run 'wt cleanup' to reclaim your slots (it lands in phase 8); until then 'wt rm --slug <slug>' frees an entry's slot",
+				Remedy:  "run 'wt cleanup' to reclaim your slots, or 'wt rm --slug <slug>' to free one entry's slot",
 			})
 		}
 	}
@@ -651,18 +632,17 @@ func (h *Handler) reconcile(s *Session, req *protocol.Request) *protocol.Respons
 		if e.State == store.StateReserving {
 			created, perr := time.Parse(time.RFC3339Nano, e.CreatedAt)
 			if perr == nil && now.Sub(created) >= ReservingTimeout {
-				// Roll the allocation back: drop the entry, the same
-				// outcome the coordinator's own timer produces.
-				idx := -1
-				for i := range reg.Entries {
-					if reg.Entries[i].App == ref.App && reg.Entries[i].Slug == ref.Slug {
-						idx = i
-						break
-					}
-				}
-				reg.Entries = append(reg.Entries[:idx], reg.Entries[idx+1:]...)
-				if err := h.st.WriteRegistry(reg); err != nil {
-					return h.storeErr("writing the registry", err)
+				// Roll the allocation back by handle, the same outcome the
+				// coordinator's own timer produces: a client that died after
+				// materialise left real objects whose only handle is this
+				// entry, so the teardown runs before the entry goes.
+				tresp := h.teardownEntry(s, e, &args.Spec, nil, nil)
+				if tresp.Error != nil {
+					out = append(out, protocol.ReconcileOutcome{
+						App: ref.App, Slug: ref.Slug, Action: "rolled-back",
+						Note: fmt.Sprintf("teardown did not free the slot: %s", tresp.Error.Msg),
+					})
+					continue
 				}
 				out = append(out, protocol.ReconcileOutcome{App: ref.App, Slug: ref.Slug, Action: "rolled-back"})
 				continue
@@ -678,8 +658,16 @@ func (h *Handler) reconcile(s *Session, req *protocol.Request) *protocol.Respons
 		// Allowed for an aged-out ephemeral owner by the reclamation rule:
 		// teardown works from a handle held in the registry
 		// (ARCHITECTURE.md §10.2).
-		reap := h.reap(e, &args.Spec, false, false)
-		tresp := h.teardownEntry(s, e, reg, &args.Spec, nil, nil)
+		var reap protocol.ReapReport
+		if cerr := h.runUnlocked(ref.App, ref.Slug, func() {
+			reap = h.reap(e, &args.Spec, false, false)
+		}); cerr != nil {
+			out = append(out, protocol.ReconcileOutcome{
+				App: ref.App, Slug: ref.Slug, Action: "skipped", Note: cerr.Msg,
+			})
+			continue
+		}
+		tresp := h.teardownEntry(s, e, &args.Spec, nil, nil)
 		if tresp.Error != nil {
 			out = append(out, protocol.ReconcileOutcome{
 				App: ref.App, Slug: ref.Slug, Action: "torn-down",
@@ -776,8 +764,19 @@ func (h *Handler) ReclaimEphemeral(now time.Time) (int, error) {
 	}
 	interval := h.reclaimInterval()
 	reclaimed := 0
+	// Snapshotted by identity and looked up fresh each time: the teardown
+	// rewrites the registry, so an index into the slice read here would not
+	// survive the first reclamation.
+	type candidate struct{ app, slug string }
+	var candidates []candidate
 	for i := range reg.Entries {
-		e := &reg.Entries[i]
+		candidates = append(candidates, candidate{reg.Entries[i].App, reg.Entries[i].Slug})
+	}
+	for _, c := range candidates {
+		e := registryEntry(reg, c.app, c.slug)
+		if e == nil {
+			continue // gone since the snapshot
+		}
 		if !e.Ephemeral || !clientAgedOut(clients, e.Owner, e.OwnerKind, now, interval) {
 			continue
 		}
@@ -792,7 +791,7 @@ func (h *Handler) ReclaimEphemeral(now time.Time) (int, error) {
 				"app", e.App, "slug", e.Slug, "owner", e.Owner)
 			continue
 		}
-		tresp := h.teardownEntry(nil, e, reg, sp, nil, nil)
+		tresp := h.teardownEntry(nil, e, sp, nil, nil)
 		if tresp.Error != nil {
 			h.log.Warn("reclamation teardown left resources behind",
 				"app", e.App, "slug", e.Slug, "err", tresp.Error.Msg)
@@ -808,7 +807,44 @@ func (h *Handler) ReclaimEphemeral(now time.Time) (int, error) {
 			return reclaimed, err
 		}
 	}
+	if err := h.pruneClients(clients, reg, now, interval); err != nil {
+		return reclaimed, err
+	}
 	return reclaimed, nil
+}
+
+// pruneClients drops the client rows that can no longer be reached: an
+// ephemeral client that has aged out and owns no entry. An ephemeral
+// client's identity is a fresh session id per connection and `wt` runs once
+// per operation, so without this the table grows by a row per invocation
+// and every per-entry scan over it grows with it.
+//
+// A host or named client's row is kept however old it is: its identity is
+// stable, so the row is the record of a client that will be back.
+func (h *Handler) pruneClients(clients store.ClientsFile, reg store.RegistryFile, now time.Time, interval time.Duration) error {
+	owners := make(map[[2]string]bool, len(reg.Entries))
+	for _, e := range reg.Entries {
+		owners[[2]string{e.OwnerKind, e.Owner}] = true
+	}
+	kept := clients.Clients[:0]
+	dropped := 0
+	for _, c := range clients.Clients {
+		if c.Ephemeral && !owners[[2]string{c.Kind, c.Identity}] &&
+			clientAgedOut(clients, c.Identity, c.Kind, now, interval) {
+			dropped++
+			continue
+		}
+		kept = append(kept, c)
+	}
+	if dropped == 0 {
+		return nil
+	}
+	clients.Clients = kept
+	if err := h.st.WriteClients(clients); err != nil {
+		return err
+	}
+	h.log.Info("pruned aged-out ephemeral client rows that own no entries", "dropped", dropped)
+	return nil
 }
 
 // specForEntry finds the spec a teardown or a check can use for one entry:
@@ -867,25 +903,33 @@ func (h *Handler) reclaimInterval() time.Duration {
 // reclamation, and reclaiming on missing data would be destruction without
 // a measurement.
 func clientAgedOut(clients store.ClientsFile, identity, kind string, now time.Time, interval time.Duration) bool {
-	for _, c := range clients.Clients {
-		if c.Kind == kind && c.Identity == identity {
-			ts, err := time.Parse(time.RFC3339Nano, c.LastSeen)
-			if err != nil {
-				return false
-			}
-			return now.Sub(ts) >= interval
+	c := findClient(clients, kind, identity)
+	if c == nil {
+		return false
+	}
+	ts, err := time.Parse(time.RFC3339Nano, c.LastSeen)
+	if err != nil {
+		return false
+	}
+	return now.Sub(ts) >= interval
+}
+
+// findClient looks one client row up by kind and identity, nil when the
+// table has no row for it.
+func findClient(clients store.ClientsFile, kind, identity string) *store.ClientEntry {
+	for i := range clients.Clients {
+		if clients.Clients[i].Kind == kind && clients.Clients[i].Identity == identity {
+			return &clients.Clients[i]
 		}
 	}
-	return false
+	return nil
 }
 
 // lastSeenOf renders a client's last-seen time from the table, or a
 // stand-in when the row is missing.
 func lastSeenOf(clients store.ClientsFile, identity, kind string) string {
-	for _, c := range clients.Clients {
-		if c.Kind == kind && c.Identity == identity {
-			return c.LastSeen
-		}
+	if c := findClient(clients, kind, identity); c != nil {
+		return c.LastSeen
 	}
 	return "never recorded"
 }
@@ -921,14 +965,6 @@ func projectObjectsCount(d driver.Docker, project string) (int, error) {
 		return 0, err
 	}
 	return len(containers) + len(networks) + len(volumes), nil
-}
-
-// namespaceKind applies the kind default (compose).
-func namespaceKind(r *spec.Resource) string {
-	if r.Kind != nil {
-		return *r.Kind
-	}
-	return spec.DefaultNamespaceKind
 }
 
 // doctorMachines reports an app approaching its machine capacity — the

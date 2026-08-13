@@ -7,7 +7,7 @@ deliberately both named `ARCHITECTURE.md` (plan.md §7).
 
 ## Packages
 
-One module, `github.com/mrgeoffrich/worktree-manager`, two binaries, eleven
+One module, `github.com/mrgeoffrich/worktree-manager`, two binaries, twelve
 internal packages:
 
 ```
@@ -29,9 +29,10 @@ internal/cli  verb dispatch, flag parsing, output, the exit-code error
               and the lifecycle verbs — init (the seven-step sequence
               with rollback up to activation, the four attach outcomes),
               start (the bring-up hooks, no coordinator), rm (the three
-              tree-reading safety checks, then reap + teardown + git
-              worktree remove), and the hook sequencer (sticky
-              parameters, health polling, process-group timeouts)
+              tree-reading safety checks from internal/treecheck, then
+              reap + teardown + git worktree remove), and the hook
+              sequencer (sticky parameters, health polling,
+              process-group timeouts)
 internal/spec the wt.yaml schema: parser, validator, template evaluator,
               the walk-up finder, the quoted YAML emitter
 internal/identity  M1: classification, root resolution, containment,
@@ -39,8 +40,12 @@ internal/identity  M1: classification, root resolution, containment,
               and the nested-worktree refusal
 internal/platform  M8: path realisation (on Windows via
               GetFinalPathNameByHandleW, which also canonicalises long
-              paths and mapped drives), the mount's case-sensitivity
-              probe, the port-probe socket options (SO_REUSEADDR set on
+              paths and mapped drives), SamePath (the one
+              do-these-name-the-same-directory predicate), the mount's
+              case-sensitivity probe (answered once per directory per
+              process), the hook shell (sh -c everywhere, resolved from
+              Git for Windows on Windows and refused by name when no
+              POSIX shell exists — hook commands are shell commands), the port-probe socket options (SO_REUSEADDR set on
               unix, unset on Windows — the one GOOS branch callers never
               see), the socket path (and the tcp:// form DialSocket
               dials — the loopback TCP surface's client half), the
@@ -65,9 +70,11 @@ internal/platform  M8: path realisation (on Windows via
 internal/descriptor  M5: the per-worktree allocation record, its reader
               (yaml and json), its atomic writer, the shared-block and
               isolation-state builders, and the info/exclude ignore rule
-internal/envfile  M5: the .env delivery channel — the wt-managed block,
-              the duplicate strip, the first-write seed from the main
-              checkout, and the unbalanced-marker refusal
+internal/envfile  M5: the .env delivery channel — the duplicate strip,
+              the first-write seed from the main checkout, and the
+              dotenv-specific half of the managed block; the markers and
+              the block primitives are internal/managed's, so one
+              convention covers every file the tool writes
 internal/managed  M7: the generated-artefact block convention — the .env
               block's own markers, the `# wt-field:` records doctor
               compares, replace-only-the-block regeneration, the
@@ -126,13 +133,21 @@ internal/driver  M3: the six-operation driver contract, the port,
               sequencing (apply in dependency order with machine forced
               first among its dependents, teardown in reverse continuing
               past failures)
+internal/treecheck  the checks that must pass before a worktree is
+              destroyed: uncommitted changes, unpushed commits (an
+              absent upstream is its own answer), what gh reports about
+              the branch's pull request, and the never-forced `git
+              worktree remove`. Three callers run them — `wt rm`, `wt
+              cleanup` and the coordinator's sweep — each keeping its own
+              policy over one mechanism, so they cannot disagree about
+              what git and gh said. Both binaries link it
 ```
 
 Import rules, fixed for the whole plan:
 
 - `cmd/wt` → `internal/cli` → `internal/spec`, `internal/identity`,
-  `internal/descriptor`, `internal/platform`, `internal/protocol`.
-  Nothing else.
+  `internal/descriptor`, `internal/platform`, `internal/protocol`,
+  `internal/treecheck`. Nothing else.
 - `cmd/wt` may **never** import `internal/store`, `internal/coord`,
   `internal/driver` or `internal/fleet` — they are coordinator-only, and
   that separation is what keeps `WT_HOME` unreadable by a client.
@@ -140,7 +155,8 @@ Import rules, fixed for the whole plan:
   runs `go list -deps` over the real dependency graph, so a transitive
   import fails the suite too.
 - `internal/coord` → `internal/store`, `internal/protocol`,
-  `internal/platform`, `internal/driver`, `internal/artefact` (the drift
+  `internal/platform`, `internal/driver`, `internal/treecheck`,
+  `internal/artefact` (the drift
   check compares against `artefact.FieldsFor`, the renderer's own field
   set — the recorded and compared sides cannot disagree).
   Coordinator-only.
@@ -150,7 +166,9 @@ Import rules, fixed for the whole plan:
   verb payloads carry the parsed spec, per ARCHITECTURE.md §8.1); both
   binaries link it.
 - `internal/driver` → `internal/spec`, `internal/platform`,
-  `internal/identity`. Coordinator-only: `cmd/wt` may never import it.
+  `internal/identity`, `internal/store` (`driver.Reservation` is the
+  ledger's own type; a driver reads a reservation and never writes one).
+  Coordinator-only: `cmd/wt` may never import it.
 - `internal/identity` → `internal/spec`, `internal/platform`,
   `internal/descriptor`. It contains no platform branch of its own.
 - `internal/descriptor` → `internal/spec` (the `spec.Resolved` shape of its
@@ -158,7 +176,8 @@ Import rules, fixed for the whole plan:
   shared block) and `internal/platform` (the atomic write). It never
   imports the coordinator's store — the client-side emitters cannot.
 - `internal/envfile` → `internal/spec` (the emit.env templates resolve
-  through `spec.Substitute`) and `internal/platform` (the atomic write).
+  through `spec.Substitute`), `internal/platform` (the atomic write) and
+  `internal/managed` (the markers and the block primitives).
 - `internal/generate` → `internal/spec` (the spec the reader is generated
   from) plus `go/format` from the standard library. The generated source
   itself imports only the standard library — it is copied into an adopted
@@ -169,6 +188,8 @@ Import rules, fixed for the whole plan:
   binary.
 - `internal/managed` → the standard library. The block convention is
   line-based text; nothing else to it.
+- `internal/treecheck` → the standard library. git and gh reach it through
+  a runner function, so the coordinator passes its own seam.
 - `internal/platform` imports only the standard library and is the only
   package that may branch on `GOOS`; no `runtime.GOOS ==` and no
   `_darwin.go` build tag exists anywhere else.
@@ -472,11 +493,24 @@ stays atomic under a single rename. The entry's fields are
   across its connection goroutines. The concurrency test is
   `TestConcurrentAllocationsGetDistinctSlots`: two goroutines allocate
   against one app and get different slots.
+- The mutex covers the store, not the drivers (`claim.go`). Materialise,
+  teardown, the reaper and the scheduled sweep release it and hold a claim
+  on their own `(app, slug)` instead: a VM start takes minutes and a
+  compose teardown takes as long as docker takes, and the product's
+  premise is several worktrees side by side, which means several clients.
+  Two rules make the swap safe — the outcome is recorded against a
+  registry re-read after the lock is retaken, and a second operation on a
+  claimed entry is refused rather than queued, because two teardowns of
+  one entry race on the same objects. `claim_test.go` holds a driver open
+  and asserts that another client's `list` is still served.
 - `Server` is the socket loop with graceful shutdown: context
   cancellation (SIGINT/SIGTERM from `cmd/wtd`), in-flight requests
   allowed to finish, socket file removed on exit. It also runs the
-  reserving-ageing sweeper: `AgeReserving` drops a `reserving` entry past
-  its 10-minute timeout on a one-minute tick — the resident process needs
+  reserving-ageing sweeper: `AgeReserving` tears a `reserving` entry past
+  its 10-minute timeout down by handle on a one-minute tick, sharing
+  `resolveReserving` with the restart recovery — a client that died after
+  materialise left real objects the entry is the only handle to, so ageing
+  out is a teardown and not a delete. The resident process needs
   no scheduler for this, and the timeout also covers a client that died
   mid-sequence.
 

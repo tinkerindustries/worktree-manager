@@ -52,8 +52,6 @@ func UsageError(remedy, format string, args ...any) *Error {
 
 // WriteError prints one error to the diagnostics stream, message and remedy.
 // An error without a remedy is a defect and is reported as one.
-// WriteError prints one error to the diagnostics stream, message and remedy.
-// An error without a remedy is a defect and is reported as one.
 func WriteError(w io.Writer, err error) {
 	var ce *Error
 	if !errors.As(err, &ce) {

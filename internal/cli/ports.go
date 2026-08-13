@@ -10,8 +10,6 @@ package cli
 // declared with `wt bands reserve --host` (plan.md §8, R6).
 
 import (
-	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"text/tabwriter"
@@ -47,43 +45,12 @@ func runPorts(args []string, stdout, stderr io.Writer) int {
 // `wt bands reserve --host`. The scan's bounded-coverage notes (what it
 // could not see and why) go to stderr; the listeners are the result.
 func runPortsScan(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("ports scan", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	jsonOut := fs.Bool("json", false, "print exactly one JSON object on stdout")
-	if err := fs.Parse(args); err != nil {
-		return ExitUsage
-	}
-	if fs.NArg() > 0 {
-		WriteError(stderr, UsageError(
-			"run 'wt ports scan' with no arguments",
-			"unexpected arguments: %v", fs.Args()))
-		return ExitUsage
-	}
+	return coordVerb("ports scan", args, stdout, stderr, "ports.scan", nil, writePortsTable)
+}
 
-	sess, err := dialCoordinator()
-	if err != nil {
-		WriteError(stderr, err)
-		return err.Code
-	}
-	defer sess.Close()
-	raw, err := sess.request("ports.scan", nil)
-	if err != nil {
-		WriteError(stderr, err)
-		return err.Code
-	}
-	var res protocol.PortsScanResult
-	if err := json.Unmarshal(raw, &res); err != nil {
-		WriteError(stderr, New(ExitFailure, fmt.Sprintf("decoding the ports.scan response: %v", err), ""))
-		return ExitFailure
-	}
-
-	if *jsonOut {
-		if err := WriteJSON(stdout, res); err != nil {
-			WriteError(stderr, New(ExitFailure, err.Error(), ""))
-			return ExitFailure
-		}
-		return ExitOK
-	}
+// writePortsTable prints one line per LISTEN socket, with the scan's
+// bounded-coverage notes on stderr.
+func writePortsTable(stdout, stderr io.Writer, res *protocol.PortsScanResult) int {
 	for _, n := range res.Notes {
 		fmt.Fprintf(stderr, "note: %s\n", n)
 	}

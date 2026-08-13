@@ -1,9 +1,6 @@
 package store
 
 import (
-	"errors"
-	"os"
-
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 )
 
@@ -28,12 +25,10 @@ type SpecsFile struct {
 
 // ReadSpecs loads the spec cache; a missing file is an empty cache.
 func (s *Store) ReadSpecs() (SpecsFile, error) {
-	var f SpecsFile
-	if err := s.Load(SpecsFileName, &f); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			f = SpecsFile{Versioned: Versioned{SchemaVersion: SchemaVersion}}
-			return f, nil
-		}
+	f, err := loadFile(s, SpecsFileName, func() SpecsFile {
+		return SpecsFile{Versioned: Versioned{SchemaVersion: SchemaVersion}}
+	})
+	if err != nil {
 		return SpecsFile{}, err
 	}
 	if f.Specs == nil {

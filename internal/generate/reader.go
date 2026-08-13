@@ -291,6 +291,10 @@ func gitOut(dir string, args ...string) (string, error) {
 // symlink-resolved forms: on macOS a temp root under /var resolves to
 // /private/var, and the plain strings would disagree with git's own
 // resolution.
+//
+// This is the one path comparison that does not call platform.SamePath: the
+// generated reader ships into the user's repository and imports nothing
+// outside the standard library.
 func samePath(dir, a, b string) bool {
 	abs := func(p string) string {
 		if filepath.IsAbs(p) {

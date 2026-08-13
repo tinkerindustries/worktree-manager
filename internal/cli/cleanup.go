@@ -22,17 +22,19 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/mrgeoffrich/worktree-manager/internal/treecheck"
 )
 
 // cleanupRow is one entry's outcome; text and JSON share the same shape.
@@ -235,40 +237,42 @@ func runCleanup(args []string, stdout, stderr io.Writer) int {
 // function serves the dry-run preview and the real run, which is what
 // makes the preview exactly what the real run does.
 func cleanupDecision(e protocol.ListEntry) cleanupRow {
-	out, gerr := runGitOutput(e.Path, "status", "--porcelain")
+	skip := func(detail string) cleanupRow {
+		return cleanupRow{Slug: e.Slug, Action: "skipped", Detail: detail}
+	}
+
+	res, gerr := treecheck.Uncommitted(e.Path, treecheck.Git)
 	if gerr != nil {
-		return cleanupRow{Slug: e.Slug, Action: "skipped",
-			Detail: fmt.Sprintf("the uncommitted-changes check could not run: %v", gerr)}
+		return skip(fmt.Sprintf("the uncommitted-changes check could not run: %v", gerr))
 	}
-	if strings.TrimSpace(out) != "" {
-		lines := strings.Split(strings.TrimSpace(out), "\n")
-		return cleanupRow{Slug: e.Slug, Action: "skipped",
-			Detail: fmt.Sprintf("the tree has %d uncommitted change(s), first: %s", len(lines), lines[0])}
+	if !res.OK() {
+		return skip(fmt.Sprintf("the tree has %d uncommitted change(s), first: %s", len(res.Lines), res.First(1)))
 	}
 
-	branch, berr := runGitOutput(e.Path, "rev-parse", "--abbrev-ref", "HEAD")
-	if berr != nil || strings.TrimSpace(branch) == "HEAD" {
-		return cleanupRow{Slug: e.Slug, Action: "skipped",
-			Detail: "the worktree is not on a branch (detached HEAD); a branch is what a PR points at"}
+	if _, ok := treecheck.OnBranch(e.Path, treecheck.Git); !ok {
+		return skip("the worktree is not on a branch (detached HEAD); a branch is what a PR points at")
 	}
-	out, uerr := runGitOutput(e.Path, "log", "@{u}..HEAD", "--oneline")
+	res, uerr := treecheck.Unpushed(e.Path, treecheck.Git)
 	if uerr != nil {
-		return cleanupRow{Slug: e.Slug, Action: "skipped",
-			Detail: fmt.Sprintf("the unpushed-commits check could not run (an absent upstream is itself a stop): %v", uerr)}
+		return skip(fmt.Sprintf("the unpushed-commits check could not run (an absent upstream is itself a stop): %v", uerr))
 	}
-	if strings.TrimSpace(out) != "" {
-		lines := strings.Split(strings.TrimSpace(out), "\n")
-		return cleanupRow{Slug: e.Slug, Action: "skipped",
-			Detail: fmt.Sprintf("the branch has %d unpushed commit(s), first: %s", len(lines), lines[0])}
+	if !res.OK() {
+		return skip(fmt.Sprintf("the branch has %d unpushed commit(s), first: %s", len(res.Lines), res.First(1)))
 	}
 
-	merged, prDetail := checkMergedPR(e.Path)
-	if !merged {
-		return cleanupRow{Slug: e.Slug, Action: "skipped", Detail: prDetail}
+	pr, perr := treecheck.PRState(e.Path, treecheck.Gh)
+	if perr != nil {
+		return skip(fmt.Sprintf("gh could not answer whether this branch's PR is merged (%v); the branch is skipped", perr))
+	}
+	if !pr.Merged() {
+		if pr.State == treecheck.StateNone {
+			return skip(pr.Describe())
+		}
+		return skip(fmt.Sprintf("%s, not merged", pr.Describe()))
 	}
 	return cleanupRow{Slug: e.Slug, Action: "would-clean",
 		Detail: fmt.Sprintf("%s; would tear down %s and run git worktree remove %s",
-			prDetail, strings.Join(sortedResourceNames(e.Resources), ", "), e.Path)}
+			pr.Describe(), strings.Join(slices.Sorted(maps.Keys(e.Resources)), ", "), e.Path)}
 }
 
 // cleanupGitRemoveDetail runs the git half of a cleaned entry — `git
@@ -282,9 +286,8 @@ func cleanupGitRemoveDetail(e protocol.ListEntry) string {
 	if isStandalone(e.Path) {
 		return "; the tree is a standalone clone, not a git worktree; its directory is left in place"
 	}
-	cmd := exec.Command("git", "-C", e.Path, "worktree", "remove", e.Path)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Sprintf("; the entry is gone but git refused to remove the tree (%s); nothing was forced", strings.TrimSpace(string(out)))
+	if err := treecheck.WorktreeRemove(e.Path, treecheck.Git); err != nil {
+		return fmt.Sprintf("; the entry is gone but git refused to remove the tree (%s); nothing was forced", err)
 	}
 	return "; git worktree remove ran"
 }
@@ -303,53 +306,13 @@ func noteSuffix(note string) string {
 // nothing (06-fleet.md §7.1: gh missing or unauthenticated stops the whole
 // verb rather than falling back to a heuristic).
 func ghGate() (int, string) {
-	if _, err := exec.LookPath("gh"); err != nil {
+	err := treecheck.AuthStatus(treecheck.Gh)
+	if err == nil {
+		return ExitOK, ""
+	}
+	var ue *treecheck.UnavailableError
+	if errors.As(err, &ue) && ue.NotInstalled {
 		return ExitUnavailable, "cleanup is gated on gh: the GitHub CLI is not installed or not on PATH"
 	}
-	out, err := exec.Command("gh", "auth", "status").CombinedOutput()
-	if err != nil {
-		// gh auth status exits non-zero exactly when the CLI is not
-		// authenticated (or is broken, which is the same gate): the
-		// message is not reliable across gh versions, the exit code is.
-		return ExitUnavailable, fmt.Sprintf("gh is not authenticated or cannot answer ('gh auth status' failed: %s)",
-			strings.TrimSpace(string(out)))
-	}
-	return ExitOK, ""
-}
-
-// checkMergedPR asks gh whether the branch's PR is merged. It returns
-// (merged, detail); when gh cannot answer, merged is false and the detail
-// names why — the branch is skipped, never guessed at (guessing at merge
-// status is how a sweep deletes work, 06-fleet.md §7.1).
-func checkMergedPR(root string) (bool, string) {
-	cmd := exec.Command("gh", "pr", "view", "--json", "state,number")
-	cmd.Dir = root
-	out, err := cmd.CombinedOutput()
-	if err == nil {
-		var pr struct {
-			Number int    `json:"number"`
-			State  string `json:"state"`
-		}
-		if jerr := json.Unmarshal(out, &pr); jerr == nil && pr.Number > 0 {
-			if pr.State == "MERGED" {
-				return true, fmt.Sprintf("PR #%d is merged", pr.Number)
-			}
-			return false, fmt.Sprintf("PR #%d is %s, not merged", pr.Number, pr.State)
-		}
-	}
-	lower := strings.ToLower(string(out))
-	if strings.Contains(lower, "no pull requests found") {
-		return false, "no pull request for this branch"
-	}
-	return false, fmt.Sprintf("gh could not answer whether this branch's PR is merged (%s); the branch is skipped", strings.TrimSpace(string(out)))
-}
-
-// sortedResourceNames lists a resource table's names in sorted order.
-func sortedResourceNames(resources map[string]spec.Resolved) []string {
-	names := make([]string, 0, len(resources))
-	for name := range resources {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+	return ExitUnavailable, fmt.Sprintf("gh is not authenticated or cannot answer ('gh auth status' failed: %v)", err)
 }

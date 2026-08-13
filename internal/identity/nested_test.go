@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 )
 
 // buildNestedRepo creates a repository with one linked worktree, then a
@@ -47,10 +49,10 @@ func TestNestedInsideFindsACloneInsideAWorktree(t *testing.T) {
 	}
 	// The enclosing tree is the worktree, not the main checkout — the walk
 	// stops at the first enclosing git root.
-	if same, _ := samePath(enclosing, worktree); !same {
+	if same, _ := platform.SamePath(enclosing, worktree); !same {
 		t.Errorf("enclosing = %s, want the worktree %s", enclosing, worktree)
 	}
-	if same, _ := samePath(enclosing, main); same {
+	if same, _ := platform.SamePath(enclosing, main); same {
 		t.Errorf("enclosing = the main checkout %s; the direct enclosure is the worktree", enclosing)
 	}
 }
@@ -83,7 +85,7 @@ func TestNestedInsideThroughSymlink(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NestedInside through a symlink: %v", err)
 	}
-	if same, _ := samePath(enclosing, worktree); !same {
+	if same, _ := platform.SamePath(enclosing, worktree); !same {
 		t.Errorf("enclosing = %s, want the worktree %s (through the symlink)", enclosing, worktree)
 	}
 }

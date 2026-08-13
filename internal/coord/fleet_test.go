@@ -406,6 +406,73 @@ func TestReclaimEphemeralReclaimsAgedOutOnly(t *testing.T) {
 	if len(reg.Entries) != 2 {
 		t.Errorf("entries = %d, want the two host entries only", len(reg.Entries))
 	}
+
+	// The aged-out ephemeral client owns nothing now, so its row goes with
+	// its entries: an ephemeral identity is a fresh session id per
+	// connection, and the table would otherwise grow by a row per wt run.
+	clients, err = h.Store.ReadClients()
+	if err != nil {
+		t.Fatalf("reading clients: %v", err)
+	}
+	for _, c := range clients.Clients {
+		if c.Kind == protocol.KindEphemeral {
+			t.Errorf("the aged-out ephemeral client's row survived with no entries left: %+v", c)
+		}
+	}
+	if findClient(clients, protocol.KindHost, host.Identity.Key) == nil {
+		t.Error("the host client's row was pruned; a stable identity is a client that will be back")
+	}
+}
+
+// TestPruneKeepsAnEphemeralClientThatStillOwnsEntries: a row is only
+// droppable once nothing points at it, so an aged-out client whose entries
+// could not be torn down keeps its row and its last-seen time.
+func TestPruneKeepsAnEphemeralClientThatStillOwnsEntries(t *testing.T) {
+	h := fleetHarness(t)
+	sp := fleetSpec(t)
+	eph, reply := h.Connect(protocol.KindEphemeral, "")
+	if reply.Error != nil {
+		t.Fatalf("ephemeral hello refused: %+v", reply.Error)
+	}
+	if _, perr := allocate(t, h, eph, sp, "wt-eph"); perr != nil {
+		t.Fatalf("ephemeral allocation refused: %+v", perr)
+	}
+	// No spec cache entry and no visible path: reclamation skips the entry,
+	// so the client still owns it.
+	if err := h.Store.WriteSpecs(store.SpecsFile{}); err != nil {
+		t.Fatalf("clearing the spec cache: %v", err)
+	}
+	reg, err := h.Store.ReadRegistry()
+	if err != nil {
+		t.Fatalf("reading the registry: %v", err)
+	}
+	for i := range reg.Entries {
+		reg.Entries[i].PathVisible = false
+	}
+	if err := h.Store.WriteRegistry(reg); err != nil {
+		t.Fatalf("writing the registry: %v", err)
+	}
+	clients, err := h.Store.ReadClients()
+	if err != nil {
+		t.Fatalf("reading clients: %v", err)
+	}
+	for i := range clients.Clients {
+		clients.Clients[i].LastSeen = time.Now().UTC().Add(-2 * h.H.ReclaimInterval).Format(time.RFC3339Nano)
+	}
+	if err := h.Store.WriteClients(clients); err != nil {
+		t.Fatalf("writing clients: %v", err)
+	}
+
+	if _, err := h.H.ReclaimEphemeral(time.Now()); err != nil {
+		t.Fatalf("reclaiming: %v", err)
+	}
+	clients, err = h.Store.ReadClients()
+	if err != nil {
+		t.Fatalf("reading clients: %v", err)
+	}
+	if findClient(clients, protocol.KindEphemeral, eph.Identity.Key) == nil {
+		t.Error("the client row was pruned while it still owned an entry; the entry's owner is now unresolvable")
+	}
 }
 
 // TestReclaimEphemeralSkipsWithoutSpec: an aged-out entry whose spec is

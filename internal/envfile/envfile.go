@@ -28,15 +28,19 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/managed"
 	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 )
 
 // StartMarker and EndMarker delimit the wt-managed block. The block is the
-// only thing a re-run touches; anything above or below survives.
+// only thing a re-run touches; anything above or below survives. They are
+// internal/managed's markers: one convention for every wt-managed block in
+// every file the tool writes, declared once so a change to one cannot
+// strand the files the other wrote.
 const (
-	StartMarker = "# --- managed by wt; edits below are overwritten ---"
-	EndMarker   = "# --- end ---"
+	StartMarker = managed.StartMarker
+	EndMarker   = managed.EndMarker
 )
 
 // Report is what an Update did, so the caller can say so: whether anything
@@ -54,38 +58,9 @@ type Report struct {
 
 // MarkersError is the refusal to write when the managed markers are
 // unbalanced or nested (05-delivery.md §8): it names the offending line
-// numbers.
-type MarkersError struct {
-	// StartLines and EndLines are the 1-based line numbers of the markers
-	// found, in file order. A valid file holds exactly one of each, the
-	// start before the end.
-	StartLines []int
-	EndLines   []int
-}
-
-func (e *MarkersError) Error() string {
-	describe := func(what string, lines []int) string {
-		if len(lines) == 0 {
-			return "no " + what + " marker"
-		}
-		nums := make([]string, len(lines))
-		for i, l := range lines {
-			nums[i] = fmt.Sprintf("line %d", l)
-		}
-		return what + " marker(s) at " + strings.Join(nums, ", ")
-	}
-	start, end := describe("start", e.StartLines), describe("end", e.EndLines)
-	switch {
-	case len(e.StartLines) > 1 || len(e.EndLines) > 1:
-		return fmt.Sprintf("refusing to write the .env: nested or duplicated managed markers (%s; %s)", start, end)
-	case len(e.StartLines) == 1 && len(e.EndLines) == 1 && e.StartLines[0] >= e.EndLines[0]:
-		return fmt.Sprintf("refusing to write the .env: the end marker at line %d precedes its start marker at line %d", e.EndLines[0], e.StartLines[0])
-	case len(e.StartLines) == 1:
-		return fmt.Sprintf("refusing to write the .env: the managed block is never closed (%s)", start)
-	default:
-		return fmt.Sprintf("refusing to write the .env: an end marker without a start marker (%s)", end)
-	}
-}
+// numbers. It is internal/managed's refusal, with the .env's own wording
+// carried in the Action field.
+type MarkersError = managed.MarkersError
 
 // Update rewrites path's wt-managed block. env is the spec's emit.env
 // section: the file's keys (each a template over the same variables as the
@@ -123,10 +98,10 @@ func Update(path string, env *spec.EnvEmit, ctx spec.Context, resolved map[strin
 		return rep, fmt.Errorf("reading %s: %w", path, err)
 	}
 
-	lines := splitLines(content)
-	starts, ends := findMarkers(lines)
-	if !validMarkers(starts, ends) {
-		return rep, &MarkersError{StartLines: starts, EndLines: ends}
+	lines := managed.SplitLines(content)
+	starts, ends := managed.FindMarkers(lines)
+	if !managed.ValidMarkers(starts, ends) {
+		return rep, &MarkersError{StartLines: starts, EndLines: ends, Action: "write the .env"}
 	}
 
 	// The block: replace it in place so hand edits above and below
@@ -204,8 +179,8 @@ func OutsideBlockKeys(path string, keys map[string]string) ([]string, error) {
 		}
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
-	lines := splitLines(content)
-	starts, ends := findMarkers(lines)
+	lines := managed.SplitLines(content)
+	starts, ends := managed.FindMarkers(lines)
 	kept := lines
 	if len(starts) == 1 && len(ends) == 1 {
 		kept = append(lines[:starts[0]-1], lines[ends[0]:]...)
@@ -220,48 +195,6 @@ func OutsideBlockKeys(path string, keys map[string]string) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
-}
-
-// splitLines splits content on newlines, dropping the final empty segment
-// and tolerating CRLF.
-func splitLines(content []byte) []string {
-	raw := strings.Split(strings.ReplaceAll(string(content), "\r\n", "\n"), "\n")
-	if len(raw) > 0 && raw[len(raw)-1] == "" {
-		raw = raw[:len(raw)-1]
-	}
-	return raw
-}
-
-// findMarkers returns the 1-based line numbers of the start and end
-// markers, in file order.
-func findMarkers(lines []string) (starts, ends []int) {
-	for i, line := range lines {
-		switch strings.TrimSpace(line) {
-		case StartMarker:
-			starts = append(starts, i+1)
-		case EndMarker:
-			ends = append(ends, i+1)
-		}
-	}
-	return starts, ends
-}
-
-// validMarkers accepts exactly one start before exactly one end: a second
-// marker of either kind is nested or duplicated, a lone one is unbalanced,
-// and an end before its start is refused (05-delivery.md §8, "refuse to
-// write when the managed markers are unbalanced or nested, and report the
-// line numbers").
-func validMarkers(starts, ends []int) bool {
-	if len(starts) > 1 || len(ends) > 1 {
-		return false
-	}
-	if len(starts) == 0 && len(ends) == 0 {
-		return true
-	}
-	if len(starts) == 1 && len(ends) == 1 {
-		return starts[0] < ends[0]
-	}
-	return false
 }
 
 // managedKeyDef reports which managed key the line defines, if any: an

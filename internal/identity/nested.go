@@ -63,7 +63,7 @@ func gitTreeRoot(dir string) (string, bool, error) {
 		// worktree registration): not a working tree root.
 		return "", false, nil
 	}
-	same, err := samePath(root, dir)
+	same, err := platform.SamePath(root, dir)
 	if err != nil {
 		return "", false, err
 	}

@@ -92,7 +92,7 @@ func machineFixture(t *testing.T, m platform.MachineRunner, keepFlag bool) (*spe
 		Home: "/home/wt", Worktree: "/home/wt/worktrees/wt-1",
 		Resolved: table, Machine: m,
 	}
-	return s, env, resourceByName(s, "vm")
+	return s, env, spec.ResourceByName(s, "vm")
 }
 
 func machineValue(t *testing.T, s *spec.Spec) string {

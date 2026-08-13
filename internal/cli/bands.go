@@ -57,6 +57,7 @@ func runBandsSuggest(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	jsonOut := fs.Bool("json", false, "print exactly one JSON object on stdout")
 	specPath := fs.String("spec", "", "the spec file to suggest bases for (default: the walk-up wt.yaml)")
+	cwd := fs.String("cwd", "", "find the spec from this directory (default: the process cwd)")
 	if err := fs.Parse(args); err != nil {
 		return ExitUsage
 	}
@@ -71,7 +72,7 @@ func runBandsSuggest(args []string, stdout, stderr io.Writer) int {
 	if path == "" {
 		// The walk-up rule, exactly as spec explain and bands reserve find
 		// the spec: the committed wt.yaml from cwd to the worktree root.
-		found, err := spec.FindSpecPath(".")
+		found, err := spec.FindSpecPath(specStart(*cwd))
 		if err != nil {
 			var nae *spec.NotAdoptedError
 			if errors.As(err, &nae) {
@@ -147,49 +148,12 @@ func runBandsSuggest(args []string, stdout, stderr io.Writer) int {
 // bases each app holds and the host-global reservations no app may allocate
 // from. It is the onboarding skill's read of the machine's port facts.
 func runBandsList(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("bands list", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	jsonOut := fs.Bool("json", false, "print exactly one JSON object on stdout")
-	if err := fs.Parse(args); err != nil {
-		return ExitUsage
-	}
-	if fs.NArg() > 0 {
-		WriteError(stderr, UsageError(
-			"run 'wt bands list' with no arguments",
-			"unexpected arguments: %v", fs.Args()))
-		return ExitUsage
-	}
-
-	sess, err := dialCoordinator()
-	if err != nil {
-		WriteError(stderr, err)
-		return err.Code
-	}
-	defer sess.Close()
-	raw, err := sess.request("bands.list", nil)
-	if err != nil {
-		WriteError(stderr, err)
-		return err.Code
-	}
-	var res protocol.BandsListResult
-	if err := json.Unmarshal(raw, &res); err != nil {
-		WriteError(stderr, New(ExitFailure, fmt.Sprintf("decoding the bands.list response: %v", err), ""))
-		return ExitFailure
-	}
-
-	if *jsonOut {
-		if err := WriteJSON(stdout, res); err != nil {
-			WriteError(stderr, New(ExitFailure, err.Error(), ""))
-			return ExitFailure
-		}
-		return ExitOK
-	}
-	return writeBandsTable(stdout, &res)
+	return coordVerb("bands list", args, stdout, stderr, "bands.list", nil, writeBandsTable)
 }
 
 // writeBandsTable prints the ledger in text form: one line per app band,
 // one per host reservation, both sorted.
-func writeBandsTable(stdout io.Writer, res *protocol.BandsListResult) int {
+func writeBandsTable(stdout, stderr io.Writer, res *protocol.BandsListResult) int {
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "BANDS\t")
 	fmt.Fprintln(w, "APP\tBASE")
@@ -258,13 +222,14 @@ func runBandsReserve(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	jsonOut := fs.Bool("json", false, "print exactly one JSON object on stdout")
 	host := fs.Bool("host", false, "reserve host-global ports or project names instead of registering an app band")
-	var bases baseList
-	fs.Var(&bases, "base", "band base for one port resource, <name>=<port>; repeatable")
-	var ports intList
-	fs.Var(&ports, "port", "host-globally reserved port; repeatable")
-	var names nameList
-	fs.Var(&names, "name", "host-globally reserved compose project name; repeatable")
+	var bases []string
+	fs.Var(stringList(&bases), "base", "band base for one port resource, <name>=<port>; repeatable")
+	var ports []int
+	fs.Var(portList(&ports), "port", "host-globally reserved port; repeatable")
+	var names []string
+	fs.Var(stringList(&names), "name", "host-globally reserved compose project name; repeatable")
 	note := fs.String("note", "", "what holds the reserved range (required with --host)")
+	cwd := fs.String("cwd", "", "find the spec from this directory (default: the process cwd)")
 	if err := fs.Parse(args); err != nil {
 		return ExitUsage
 	}
@@ -319,7 +284,7 @@ func runBandsReserve(args []string, stdout, stderr io.Writer) int {
 		// The band's required size comes from the committed spec, so the
 		// skill chooses only where the bases sit — the spec comes from the
 		// walk-up rule, the same way spec explain finds it.
-		specPath, err := spec.FindSpecPath(".")
+		specPath, err := spec.FindSpecPath(specStart(*cwd))
 		if err != nil {
 			var nae *spec.NotAdoptedError
 			if errors.As(err, &nae) {
@@ -411,34 +376,12 @@ func writeReserveTable(stdout io.Writer, res *protocol.ReserveBandResult) int {
 	return finish(w)
 }
 
-// intList is the repeatable --port flag.
-type intList []int
-
-func (l *intList) String() string {
-	parts := make([]string, 0, len(*l))
-	for _, p := range *l {
-		parts = append(parts, strconv.Itoa(p))
+// specStart is where the walk-up spec search begins: the --cwd directory,
+// or the process cwd. Every verb that reads the committed spec takes the
+// same flag.
+func specStart(cwd string) string {
+	if cwd == "" {
+		return "."
 	}
-	return strings.Join(parts, ",")
-}
-
-func (l *intList) Set(v string) error {
-	p, err := strconv.Atoi(v)
-	if err != nil {
-		return fmt.Errorf("%q is not a port number: %v", v, err)
-	}
-	*l = append(*l, p)
-	return nil
-}
-
-// nameList is the repeatable --name flag: the compose project names a host
-// reservation declares as co-resident production, which label-based teardown
-// must never reach (03-drivers.md §4.2, B8.2).
-type nameList []string
-
-func (l *nameList) String() string { return strings.Join(*l, ",") }
-
-func (l *nameList) Set(v string) error {
-	*l = append(*l, v)
-	return nil
+	return cwd
 }

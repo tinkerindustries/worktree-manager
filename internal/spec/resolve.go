@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -126,6 +127,37 @@ func (s *Spec) resourceByName(name string) *Resource {
 	return nil
 }
 
+// WorktreePath resolves a spec-declared path against a worktree root: an
+// absolute path is taken as it stands, a relative one is joined. The
+// descriptor, the .env block and every doctor check that has to find the
+// same file resolve it the same way.
+func WorktreePath(root, p string) string {
+	if filepath.IsAbs(p) {
+		return filepath.Clean(p)
+	}
+	return filepath.Join(root, p)
+}
+
+// ResourceByName finds one resource by name, nil when the spec does not
+// declare it. The spec owns the lookup so a caller cannot disagree with it
+// about what a name refers to.
+func ResourceByName(s *Spec, name string) *Resource {
+	if s == nil {
+		return nil
+	}
+	return s.resourceByName(name)
+}
+
+// NamespaceKind is a namespace resource's kind with the default applied.
+// The default lives here, with the schema, so adding a second kind is one
+// edit rather than one per package that reads a namespace.
+func NamespaceKind(r *Resource) string {
+	if r.Kind != nil {
+		return *r.Kind
+	}
+	return DefaultNamespaceKind
+}
+
 // validateContext checks the resolution inputs: the slug rule and the slot
 // ceiling, which are properties of the derivation.
 func validateContext(s *Spec, ctx Context) error {
@@ -235,7 +267,10 @@ func resolveCIDR(s *Spec, ctx Context, r *Resource) (string, error) {
 	}
 	size := *r.Size
 	block := uint64(1) << (32 - size)
-	poolStart := ip4ToUint32(poolNet.IP)
+	poolStart, ok := IP4ToUint32(poolNet.IP)
+	if !ok {
+		return "", &FieldError{Field: "resources", Reason: fmt.Sprintf("cidr resource %q: pool %q is not IPv4", r.Name, *r.Pool)}
+	}
 	poolBits, _ := poolNet.Mask.Size()
 	poolSize := uint64(1) << (32 - poolBits)
 	offset := uint64(ctx.Slot-1) * block
@@ -258,7 +293,7 @@ func resolveCIDR(s *Spec, ctx Context, r *Resource) (string, error) {
 		}
 		return value, nil
 	}
-	start := ip4FromUint32(poolStart + offset)
+	start := IP4FromUint32(poolStart + offset)
 	value := start.String() + "/" + strconv.Itoa(size)
 	if err := checkResolvedCap(s, r, value); err != nil {
 		return "", err
@@ -266,12 +301,20 @@ func resolveCIDR(s *Spec, ctx Context, r *Resource) (string, error) {
 	return value, nil
 }
 
-func ip4ToUint32(ip net.IP) uint64 {
-	ip = ip.To4()
-	return uint64(ip[0])<<24 | uint64(ip[1])<<16 | uint64(ip[2])<<8 | uint64(ip[3])
+// IP4ToUint32 turns an IPv4 address into the number the block arithmetic
+// uses, and reports whether the address was IPv4 at all. Validation refuses
+// a non-IPv4 pool, so a false here is a caller working from something the
+// spec never allowed.
+func IP4ToUint32(ip net.IP) (uint64, bool) {
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return 0, false
+	}
+	return uint64(ip4[0])<<24 | uint64(ip4[1])<<16 | uint64(ip4[2])<<8 | uint64(ip4[3]), true
 }
 
-func ip4FromUint32(v uint64) net.IP {
+// IP4FromUint32 is IP4ToUint32's inverse.
+func IP4FromUint32(v uint64) net.IP {
 	return net.IPv4(byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
 }
 

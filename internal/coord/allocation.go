@@ -144,8 +144,8 @@ func (h *Handler) allocate(s *Session, req *protocol.Request) *protocol.Response
 			return &protocol.Response{Error: &protocol.Error{
 				Code: 3,
 				Msg:  fmt.Sprintf("app %q has no registered port band; allocation is refused", app),
-				Remedy: fmt.Sprintf("register the band from inside the repository: wt bands reserve --base <name>=<port>... " +
-					"(one base per port resource, e.g. --base api=4200)"),
+				Remedy: "register the band from inside the repository: wt bands reserve --base <name>=<port>... " +
+					"(one base per port resource, e.g. --base api=4200)",
 			}}
 		}
 		bases = band.Bases
@@ -193,16 +193,7 @@ func (h *Handler) allocate(s *Session, req *protocol.Request) *protocol.Response
 			return respErr(3, fmt.Sprintf("resolving the descriptor's slot %d: %v", args.SlotHint, rerr),
 				"check the spec and the band registration, then re-run")
 		}
-		reservedSet := make(map[int]bool, len(args.Spec.Reserved.Ports))
-		for _, p := range args.Spec.Reserved.Ports {
-			reservedSet[p] = true
-		}
-		resvSet := make(map[int]bool)
-		for _, r := range bands.Reservations {
-			for _, p := range r.Ports {
-				resvSet[p] = true
-			}
-		}
+		reservedSet, resvSet := exclusionSets(&args.Spec, bands)
 		if excluded(res, reservedSet, resvSet) {
 			return respErr(3, fmt.Sprintf("the descriptor's slot %d resolves to a port in the spec's reserved block or the host-global reservations; a hand-edited manifest is refused, never honoured",
 				args.SlotHint),
@@ -366,16 +357,7 @@ func (h *Handler) pickSlot(s *spec.Spec, reg store.RegistryFile, bands store.Ban
 	if s.Slots.Max != nil && *s.Slots.Max >= 1 {
 		max = *s.Slots.Max
 	}
-	reservedSet := make(map[int]bool, len(s.Reserved.Ports))
-	for _, p := range s.Reserved.Ports {
-		reservedSet[p] = true
-	}
-	resvSet := make(map[int]bool)
-	for _, r := range bands.Reservations {
-		for _, p := range r.Ports {
-			resvSet[p] = true
-		}
-	}
+	reservedSet, resvSet := exclusionSets(s, bands)
 	probe := h.Probe
 	if probe == nil {
 		probe = noProbe
@@ -385,7 +367,7 @@ func (h *Handler) pickSlot(s *spec.Spec, reg store.RegistryFile, bands store.Ban
 	var skipped []string
 
 	for slot := 1; slot <= max; slot++ {
-		if registrySlotHeld(reg, app, slot) {
+		if registrySlotEntry(reg, app, slot) != nil {
 			continue
 		}
 		resources, err := spec.Resolve(s, spec.Context{
@@ -498,12 +480,7 @@ func (h *Handler) checkOwner(s *Session, e *store.Entry) *protocol.Error {
 	}
 	lastSeen := "never recorded"
 	if f, err := h.st.ReadClients(); err == nil {
-		for _, c := range f.Clients {
-			if c.Kind == e.OwnerKind && c.Identity == e.Owner {
-				lastSeen = c.LastSeen
-				break
-			}
-		}
+		lastSeen = lastSeenOf(f, e.Owner, e.OwnerKind)
 	}
 	// The owner's key is redacted for the non-owner reading the refusal: a
 	// named client's key is its token, and the refusal must not hand it to
@@ -590,7 +567,7 @@ func (h *Handler) release(s *Session, req *protocol.Request) *protocol.Response 
 				ref.Slug, teardownNoteText(&reg.Entries[idx])),
 			fmt.Sprintf("re-run the teardown: wt rm --slug %s (or wt reconcile), which retries the teardown and drops the entry when nothing survives", ref.Slug))
 	}
-	reg.Entries = append(reg.Entries[:idx], reg.Entries[idx+1:]...)
+	dropEntry(&reg, ref.App, ref.Slug)
 	if err := h.st.WriteRegistry(reg); err != nil {
 		return h.storeErr("writing the registry", err)
 	}
@@ -598,34 +575,27 @@ func (h *Handler) release(s *Session, req *protocol.Request) *protocol.Response 
 }
 
 // AgeReserving is the coordinator's own timer's work: a reserving entry
-// older than timeout is aged out — the slot is released, covering a client
-// that died mid-sequence (ARCHITECTURE.md §11.2). A resident process needs
-// no scheduler for this; the server's sweeper calls it on an interval. It
-// returns how many entries were aged out.
+// older than timeout is aged out, covering a client that died mid-sequence
+// (ARCHITECTURE.md §11.2). A resident process needs no scheduler for this;
+// the server's sweeper calls it on an interval. It returns how many entries
+// were aged out.
+//
+// Ageing out is a teardown, not a delete. A client that died after
+// materialise and before activate left real objects — a compose project, a
+// state-path directory, a VM — whose only handle is the entry, so dropping
+// the entry orphans them. The work is the same rollback a restart does, and
+// is the same code: resolveReserving.
 func (h *Handler) AgeReserving(now time.Time, timeout time.Duration) (int, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	reg, err := h.st.ReadRegistry()
-	if err != nil {
-		return 0, err
-	}
 	cutoff := now.Add(-timeout)
-	kept := reg.Entries[:0]
-	aged := 0
-	for _, e := range reg.Entries {
-		if e.State == store.StateReserving {
-			if created, perr := time.Parse(time.RFC3339Nano, e.CreatedAt); perr == nil && created.Before(cutoff) {
-				aged++
-				continue
-			}
-		}
-		kept = append(kept, e)
-	}
-	if aged == 0 {
-		return 0, nil
-	}
-	reg.Entries = kept
-	return aged, h.st.WriteRegistry(reg)
+	return h.resolveReserving(
+		func(e *store.Entry) bool {
+			created, perr := time.Parse(time.RFC3339Nano, e.CreatedAt)
+			return perr == nil && created.Before(cutoff)
+		},
+		"this entry aged out while reserving and no spec could be found to tear it down; the slot stays held until the teardown is re-run with the spec",
+		"ageing out a reserving entry")
 }
 
 // storeErr turns a store failure into the wire error with the exit code and
@@ -672,6 +642,20 @@ func mustJSON(v any) json.RawMessage {
 	return data
 }
 
+// dropEntry removes one entry from the registry and reports whether it was
+// there. Every caller has already looked the entry up, so the report is
+// what keeps a lookup that went stale from splicing at index -1 and taking
+// the coordinator down.
+func dropEntry(reg *store.RegistryFile, app, slug string) bool {
+	for i := range reg.Entries {
+		if reg.Entries[i].App == app && reg.Entries[i].Slug == slug {
+			reg.Entries = append(reg.Entries[:i], reg.Entries[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
 // registryEntry finds one entry by app and slug.
 func registryEntry(reg store.RegistryFile, app, slug string) *store.Entry {
 	for i := range reg.Entries {
@@ -682,19 +666,28 @@ func registryEntry(reg store.RegistryFile, app, slug string) *store.Entry {
 	return nil
 }
 
-// registrySlotHeld reports whether any entry of the app holds the slot —
-// every state holds it: reserving, active and tearing-down all keep the
-// slot claimed (ARCHITECTURE.md §11.2).
-func registrySlotHeld(reg store.RegistryFile, app string, slot int) bool {
-	for i := range reg.Entries {
-		if reg.Entries[i].App == app && reg.Entries[i].Slot == slot {
-			return true
+// exclusionSets builds the two port sets an allocation must avoid: the
+// spec's own reserved block, and the ledger's host-global reservations.
+// The allocation path and the descriptor-rebuild path both consult them,
+// and a hand-edited manifest is refused by the same sets that steer a fresh
+// allocation.
+func exclusionSets(s *spec.Spec, bands store.BandsFile) (reserved, hostGlobal map[int]bool) {
+	reserved = make(map[int]bool, len(s.Reserved.Ports))
+	for _, p := range s.Reserved.Ports {
+		reserved[p] = true
+	}
+	hostGlobal = make(map[int]bool)
+	for _, r := range bands.Reservations {
+		for _, p := range r.Ports {
+			hostGlobal[p] = true
 		}
 	}
-	return false
+	return reserved, hostGlobal
 }
 
-// registrySlotEntry returns the entry holding an app's slot, if any.
+// registrySlotEntry returns the entry holding an app's slot, if any. Every
+// state holds the slot: reserving, active and tearing-down all keep it
+// claimed (ARCHITECTURE.md §11.2).
 func registrySlotEntry(reg store.RegistryFile, app string, slot int) *store.Entry {
 	for i := range reg.Entries {
 		if reg.Entries[i].App == app && reg.Entries[i].Slot == slot {

@@ -24,8 +24,8 @@ func runSpecExplain(args []string, stdout, stderr io.Writer) int {
 	jsonOut := fs.Bool("json", false, "print exactly one JSON object on stdout")
 	slot := fs.Int("slot", 0, "the slot to resolve (1..slots.max)")
 	slug := fs.String("slug", "", "the worktree slug (^[a-z0-9][a-z0-9-]*$, at most 32)")
-	var bases baseList
-	fs.Var(&bases, "base", "band base for one port resource, <name>=<port>; repeatable")
+	var bases []string
+	fs.Var(stringList(&bases), "base", "band base for one port resource, <name>=<port>; repeatable")
 	home := fs.String("home", "", "override {home} (default: the user's home directory)")
 	worktree := fs.String("worktree", "", "override {worktree} (default: cwd)")
 	if err := fs.Parse(args); err != nil {
@@ -141,20 +141,10 @@ func runSpecExplain(args []string, stdout, stderr io.Writer) int {
 	return writeExplainTable(stdout, parsed, *slug, table)
 }
 
-// baseList is the repeatable --base flag: one entry per port resource.
-type baseList []string
-
-func (b *baseList) String() string { return strings.Join(*b, ",") }
-
-func (b *baseList) Set(v string) error {
-	*b = append(*b, v)
-	return nil
-}
-
 // parseBases turns the --base flags into the band-base map, checking that
 // every base names a port resource, every port resource has a base, and
 // every port is a number.
-func parseBases(s *spec.Spec, list baseList) (map[string]int, error) {
+func parseBases(s *spec.Spec, list []string) (map[string]int, error) {
 	ports := map[string]bool{}
 	for i := range s.Resources {
 		if s.Resources[i].Type == "port" {

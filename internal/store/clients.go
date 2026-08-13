@@ -1,9 +1,6 @@
 package store
 
-import (
-	"errors"
-	"os"
-)
+import ()
 
 // ClientEntry is one row of the client table (ARCHITECTURE.md §8.2,
 // §10.2): the identity the coordinator assigned or verified, its kind, the
@@ -26,15 +23,9 @@ type ClientsFile struct {
 // ReadClients loads the client table; a missing file is an empty table —
 // the first connection writes it.
 func (s *Store) ReadClients() (ClientsFile, error) {
-	var f ClientsFile
-	if err := s.Load(ClientsFileName, &f); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			f = ClientsFile{Versioned: Versioned{SchemaVersion: SchemaVersion}}
-			return f, nil
-		}
-		return ClientsFile{}, err
-	}
-	return f, nil
+	return loadFile(s, ClientsFileName, func() ClientsFile {
+		return ClientsFile{Versioned: Versioned{SchemaVersion: SchemaVersion}}
+	})
 }
 
 // WriteClients persists the client table atomically.

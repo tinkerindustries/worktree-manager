@@ -95,15 +95,9 @@ type RegistryFile struct {
 // silent downgrade (02-coordination.md §11). A missing file is an empty
 // registry.
 func (s *Store) ReadRegistry() (RegistryFile, error) {
-	var f RegistryFile
-	if err := s.Load(RegistryFileName, &f); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			f = RegistryFile{Versioned: Versioned{SchemaVersion: SchemaVersion}}
-			return f, nil
-		}
-		return RegistryFile{}, err
-	}
-	return f, nil
+	return loadFile(s, RegistryFileName, func() RegistryFile {
+		return RegistryFile{Versioned: Versioned{SchemaVersion: SchemaVersion}}
+	})
 }
 
 // ReadRegistryList loads the registry for reading: "a registry written by a

@@ -1,0 +1,15 @@
+# Invalid: the pool parses as a CIDR but is IPv6, and the per-slot block
+# arithmetic is 32-bit throughout. Rejected at validation naming the field.
+version: 1
+app: ipv6-pool-app
+slots:
+  max: 4
+resources:
+  - type: cidr
+    name: subnet
+    pool: "fd00::/8"
+    size: 22
+emit:
+  descriptor:
+    filename: wt-env.yaml
+    format: yaml

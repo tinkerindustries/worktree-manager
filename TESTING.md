@@ -3,6 +3,11 @@
 Four layers, from plan.md §4. Each layer lives with the code it tests, and
 each runs under plain `go test ./...` unless it says otherwise.
 
+CI runs the suite under `-race` and gates on `staticcheck ./...`. The
+coordinator is a resident daemon with a goroutine per connection and
+background sweepers, so a race is a defect the suite is expected to catch,
+not a flake to re-run.
+
 ## Layer 1 — pure unit
 
 The rules that need no repository, no socket and no daemon: slug rules,

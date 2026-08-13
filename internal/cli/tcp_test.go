@@ -14,6 +14,7 @@ package cli
 // token or off loopback.
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -22,6 +23,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -67,9 +69,11 @@ func startWtdTCP(t *testing.T) (tcpAddr, sockPath string, stop func()) {
 	storeRoot := filepath.Join(t.TempDir(), "wt")
 	cmd := exec.Command(bin, "--socket", sock, "--tcp", "127.0.0.1:0", "--tcp-token", tcpTestToken)
 	cmd.Env = append(os.Environ(), "WT_HOME="+storeRoot)
-	var logBuf strings.Builder
-	cmd.Stdout = &logBuf
-	cmd.Stderr = &logBuf
+	// The log is read from this goroutine while exec's copiers write to it,
+	// so the buffer locks.
+	logBuf := &syncBuffer{}
+	cmd.Stdout = logBuf
+	cmd.Stderr = logBuf
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("starting wtd: %v", err)
 	}
@@ -406,4 +410,23 @@ func registrationFilenameForThisPlatform() string {
 	default:
 		return "com.mrgeoffrich.wtd.service"
 	}
+}
+
+// syncBuffer is a bytes.Buffer a reader and exec's output copiers may both
+// touch.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

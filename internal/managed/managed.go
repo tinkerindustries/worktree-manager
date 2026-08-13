@@ -43,11 +43,26 @@ const (
 const FieldPrefix = "# wt-field: "
 
 // MarkersError is the refusal to write when the managed markers are
-// unbalanced or nested (the .env rule, 05-delivery.md §8): it names the
-// offending line numbers.
+// unbalanced or nested (05-delivery.md §8): it names the offending line
+// numbers. Every wt-managed block in every file the tool writes refuses the
+// same way; Action names what was refused.
 type MarkersError struct {
+	// StartLines and EndLines are the 1-based line numbers of the markers
+	// found, in file order. A valid file holds exactly one of each, the
+	// start before the end.
 	StartLines []int
 	EndLines   []int
+	// Action names the refused operation, e.g. "write the .env". Empty
+	// reads as "regenerate".
+	Action string
+}
+
+// action is the refused operation named in the message.
+func (e *MarkersError) action() string {
+	if e.Action == "" {
+		return "regenerate"
+	}
+	return e.Action
 }
 
 func (e *MarkersError) Error() string {
@@ -64,13 +79,13 @@ func (e *MarkersError) Error() string {
 	start, end := describe("start", e.StartLines), describe("end", e.EndLines)
 	switch {
 	case len(e.StartLines) > 1 || len(e.EndLines) > 1:
-		return fmt.Sprintf("refusing to regenerate: nested or duplicated managed markers (%s; %s)", start, end)
+		return fmt.Sprintf("refusing to %s: nested or duplicated managed markers (%s; %s)", e.action(), start, end)
 	case len(e.StartLines) == 1 && len(e.EndLines) == 1 && e.StartLines[0] >= e.EndLines[0]:
-		return fmt.Sprintf("refusing to regenerate: the end marker at line %d precedes its start marker at line %d", e.EndLines[0], e.StartLines[0])
+		return fmt.Sprintf("refusing to %s: the end marker at line %d precedes its start marker at line %d", e.action(), e.EndLines[0], e.StartLines[0])
 	case len(e.StartLines) == 1:
-		return fmt.Sprintf("refusing to regenerate: the managed block is never closed (%s)", start)
+		return fmt.Sprintf("refusing to %s: the managed block is never closed (%s)", e.action(), start)
 	default:
-		return fmt.Sprintf("refusing to regenerate: an end marker without a start marker (%s)", end)
+		return fmt.Sprintf("refusing to %s: an end marker without a start marker (%s)", e.action(), end)
 	}
 }
 
@@ -102,9 +117,9 @@ func (b *Block) Lookup(name string) (string, bool) {
 // an empty block; a file with unbalanced or nested markers is refused with
 // the line numbers.
 func Parse(content []byte) (*Block, bool, error) {
-	lines := splitLines(content)
-	starts, ends := findMarkers(lines)
-	if !validMarkers(starts, ends) {
+	lines := SplitLines(content)
+	starts, ends := FindMarkers(lines)
+	if !ValidMarkers(starts, ends) {
 		return nil, false, &MarkersError{StartLines: starts, EndLines: ends}
 	}
 	if len(starts) == 0 {
@@ -149,26 +164,26 @@ func Render(fields map[string]string, content []string) []string {
 // where the repo's own text stays and the tripwire section joins it.
 // Unbalanced or nested markers refuse, naming the line numbers.
 func Replace(existing []byte, fields map[string]string, content []string) ([]byte, error) {
-	lines := splitLines(existing)
-	starts, ends := findMarkers(lines)
-	if !validMarkers(starts, ends) {
+	lines := SplitLines(existing)
+	starts, ends := FindMarkers(lines)
+	if !ValidMarkers(starts, ends) {
 		return nil, &MarkersError{StartLines: starts, EndLines: ends}
 	}
 	block := Render(fields, content)
 	if len(starts) == 0 {
 		// Append the block: nothing of the existing file is touched.
 		out := append(lines, block...)
-		return joinLines(out), nil
+		return JoinLines(out), nil
 	}
 	kept := append([]string{}, lines[:starts[0]-1]...)
 	kept = append(kept, block...)
 	kept = append(kept, lines[ends[0]:]...)
-	return joinLines(kept), nil
+	return JoinLines(kept), nil
 }
 
-// splitLines splits content on newlines, dropping the final empty segment
+// SplitLines splits content on newlines, dropping the final empty segment
 // and tolerating CRLF — the same rule the .env block uses.
-func splitLines(content []byte) []string {
+func SplitLines(content []byte) []string {
 	raw := strings.Split(strings.ReplaceAll(string(content), "\r\n", "\n"), "\n")
 	if len(raw) > 0 && raw[len(raw)-1] == "" {
 		raw = raw[:len(raw)-1]
@@ -176,9 +191,9 @@ func splitLines(content []byte) []string {
 	return raw
 }
 
-// joinLines re-joins the lines with a trailing newline, exactly like the
+// JoinLines re-joins the lines with a trailing newline, exactly like the
 // .env block writer.
-func joinLines(lines []string) []byte {
+func JoinLines(lines []string) []byte {
 	data := []byte(strings.Join(lines, "\n"))
 	if len(lines) > 0 {
 		data = append(data, '\n')
@@ -186,9 +201,9 @@ func joinLines(lines []string) []byte {
 	return data
 }
 
-// findMarkers returns the 1-based line numbers of the start and end
+// FindMarkers returns the 1-based line numbers of the start and end
 // markers, in file order.
-func findMarkers(lines []string) (starts, ends []int) {
+func FindMarkers(lines []string) (starts, ends []int) {
 	for i, line := range lines {
 		switch strings.TrimSpace(line) {
 		case StartMarker:
@@ -200,10 +215,10 @@ func findMarkers(lines []string) (starts, ends []int) {
 	return starts, ends
 }
 
-// validMarkers accepts exactly one start before exactly one end: a second
+// ValidMarkers accepts exactly one start before exactly one end: a second
 // marker of either kind is nested or duplicated, a lone one is unbalanced,
 // and an end before its start is refused (05-delivery.md §8).
-func validMarkers(starts, ends []int) bool {
+func ValidMarkers(starts, ends []int) bool {
 	if len(starts) > 1 || len(ends) > 1 {
 		return false
 	}

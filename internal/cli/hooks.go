@@ -24,10 +24,13 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -101,7 +104,7 @@ func (r *hookRunner) chosenValues() map[string]string {
 // It returns the name of the hook that failed, or "".
 func (r *hookRunner) runAll(hooks []string, h *spec.Hooks) (string, error) {
 	for _, name := range hooks {
-		hook := hookByName(h, name)
+		hook := spec.HookByName(h, name)
 		if hook == nil {
 			continue
 		}
@@ -139,20 +142,24 @@ func (r *hookRunner) runHook(name string, hook *spec.Hook) error {
 	fmt.Fprintf(r.stderr, "hook %s: %s\n", name, cmd)
 
 	var c *exec.Cmd
-	var ctx context.Context
+	ctx := context.Background()
 	timeout := r.hookTimeout(name, hook)
 	if timeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(context.Background(), timeout)
+		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
-		// CommandContext owns the kill-on-timeout plumbing; the Cancel
-		// override widens it from the shell to the shell's whole process
-		// group, so a timed-out hook cannot orphan its children.
-		c = exec.CommandContext(ctx, "sh", "-c", cmd)
+	}
+	c, serr := platform.ShellCommand(ctx, cmd)
+	if serr != nil {
+		return fmt.Errorf("hook %s cannot run: %v", name, serr)
+	}
+	if timeout > 0 {
+		// ShellCommand built the command with the timeout context, which
+		// owns the kill-on-timeout plumbing; the Cancel override widens it
+		// from the shell to the shell's whole process group, so a timed-out
+		// hook cannot orphan its children.
 		c.Cancel = func() error { return platform.KillGroup(c) }
 		c.WaitDelay = 5 * time.Second
-	} else {
-		c = exec.Command("sh", "-c", cmd)
 	}
 	c.Dir = r.worktree
 	c.Env = r.hookEnv()
@@ -167,7 +174,8 @@ func (r *hookRunner) runHook(name string, hook *spec.Hook) error {
 		return fmt.Errorf("hook %s timed out after %s; its process group was terminated", name, timeout)
 	}
 	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
 			return fmt.Errorf("hook %s failed with exit code %d; its output is above", name, ee.ExitCode())
 		}
 		return fmt.Errorf("hook %s failed: %v", name, err)
@@ -216,13 +224,21 @@ func (r *hookRunner) runHealth(hook *spec.Hook) error {
 			fmt.Fprintf(r.stderr, "hook health: last lines of the health check output:\n%s", tail.String())
 			return fmt.Errorf("health check timed out after %s: %v; the stack did not become usable", timeout, err)
 		}
+		// The wait is clamped to what is left of the budget, so a hook
+		// declaring a 15s timeout reports the timeout at 15s rather than at
+		// the end of a full poll interval past it.
+		wait := healthPollInterval
 		remaining := ""
 		if !deadline.IsZero() {
-			remaining = fmt.Sprintf(" (%s left)", time.Until(deadline).Round(time.Second))
+			left := time.Until(deadline)
+			if left < wait {
+				wait = left
+			}
+			remaining = fmt.Sprintf(" (%s left)", left.Round(time.Second))
 		}
 		fmt.Fprintf(r.stderr, "hook health: attempt %d failed: %v; retrying in %s%s\n",
-			attempt, err, healthPollInterval, remaining)
-		time.Sleep(healthPollInterval)
+			attempt, err, wait.Round(time.Second), remaining)
+		time.Sleep(wait)
 	}
 }
 
@@ -230,7 +246,10 @@ func (r *hookRunner) runHealth(hook *spec.Hook) error {
 // the output to stderr while also writing it into tail (the ring buffer
 // the timeout dump reads).
 func (r *hookRunner) runCommandCapture(cmd string, tail *tailBuffer) error {
-	c := exec.Command("sh", "-c", cmd)
+	c, serr := platform.ShellCommand(context.Background(), cmd)
+	if serr != nil {
+		return serr
+	}
 	c.Dir = r.worktree
 	c.Env = r.hookEnv()
 	c.Stdout = io.MultiWriter(r.stderr, tail)
@@ -238,7 +257,8 @@ func (r *hookRunner) runCommandCapture(cmd string, tail *tailBuffer) error {
 	platform.StartInOwnGroup(c)
 	err := c.Run()
 	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
 			return fmt.Errorf("exit code %d", ee.ExitCode())
 		}
 		return err
@@ -309,7 +329,7 @@ func (r *hookRunner) resolveCommand(name string, hook *spec.Hook) (string, error
 	// Substitute the params first (spec.Substitute does not know them),
 	// then the resources and builtins.
 	out := hook.Run
-	for _, p := range sortedKeys(values) {
+	for _, p := range slices.Sorted(maps.Keys(values)) {
 		out = strings.ReplaceAll(out, "{"+p+"}", values[p])
 	}
 	cmd, err := spec.Substitute(out, r.ctx, r.resolved)
@@ -328,7 +348,7 @@ func (r *hookRunner) resolveCommand(name string, hook *spec.Hook) (string, error
 func (r *hookRunner) paramValues(name string, hook *spec.Hook) (map[string]string, []string, error) {
 	values := map[string]string{}
 	var missing []string
-	for _, p := range sortedKeys(hook.Params) {
+	for _, p := range slices.Sorted(maps.Keys(hook.Params)) {
 		param := hook.Params[p]
 		if v, ok := r.explicit[p]; ok {
 			values[p] = v
@@ -356,26 +376,6 @@ func (r *hookRunner) paramValues(name string, hook *spec.Hook) (map[string]strin
 		missing = append(missing, p)
 	}
 	return values, missing, nil
-}
-
-// hookByName mirrors the spec package's lookup so the runner can address
-// hooks by name without exporting the mapping.
-func hookByName(h *spec.Hooks, name string) *spec.Hook {
-	switch name {
-	case "install":
-		return h.Install
-	case "prepull":
-		return h.Prepull
-	case "build":
-		return h.Build
-	case "start":
-		return h.Start
-	case "seed":
-		return h.Seed
-	case "health":
-		return h.Health
-	}
-	return nil
 }
 
 // sortedKeys is shared with show.go (the client's table output sorts the

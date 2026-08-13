@@ -5,9 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"text/tabwriter"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/descriptor"
@@ -227,14 +228,14 @@ func writeShowTable(stdout io.Writer, d *descriptor.Descriptor) {
 	fmt.Fprintf(w, "description:\t%s\n", d.Description)
 
 	fmt.Fprintln(w, "\nRESOURCE\tTYPE\tVALUE")
-	names := sortedKeys(d.Resources)
+	names := slices.Sorted(maps.Keys(d.Resources))
 	for _, name := range names {
 		r := d.Resources[name]
 		fmt.Fprintf(w, "%s\t%s\t%v\n", name, r.Type, r.Value)
 	}
 
 	fmt.Fprintln(w, "\nSTATE")
-	stateNames := sortedKeys(d.State)
+	stateNames := slices.Sorted(maps.Keys(d.State))
 	for _, name := range stateNames {
 		s := d.State[name]
 		if s == nil || s.Isolated == nil {
@@ -250,17 +251,8 @@ func writeShowTable(stdout io.Writer, d *descriptor.Descriptor) {
 	}
 
 	fmt.Fprintln(w, "\nEXTRAS")
-	for _, k := range sortedKeys(d.Extras) {
+	for _, k := range slices.Sorted(maps.Keys(d.Extras)) {
 		fmt.Fprintf(w, "%s:\t%v\n", k, d.Extras[k])
 	}
 	finish(w)
-}
-
-func sortedKeys[M ~map[string]V, V any](m M) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }

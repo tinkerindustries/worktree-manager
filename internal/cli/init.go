@@ -58,10 +58,7 @@ import (
 
 // initHookPhases are the two hook phases of the sequence: the build phase
 // (step 5) and the bring-up phase (step 7), in run order.
-var initHookPhases = [][]string{
-	{"install", "prepull", "build"},
-	{"start", "seed", "health"},
-}
+var initHookPhases = [][]string{buildHooks, startHooks}
 
 // initResult is the one JSON object `wt init --json` prints.
 type initResult struct {
@@ -212,7 +209,8 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	// with exit 3 and asks for an explicit slug — two worktree directories
 	// with the same basename are otherwise indistinguishable in every
 	// listing the user reads afterwards (04-lifecycle.md §2.3).
-	if res.Path != "" && !samePath(res.Path, cls.WorktreeRoot) {
+	samePath, _ := platform.SamePath(res.Path, cls.WorktreeRoot)
+	if res.Path != "" && !samePath {
 		e := New(ExitRefused,
 			fmt.Sprintf("slug %q already names entry %q at %s, which is a different path from %s",
 				name, res.Slug, res.Path, cls.WorktreeRoot),
@@ -235,12 +233,8 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	if res.ProbeNote != "" {
 		notes = append(notes, res.ProbeNote)
 	}
-	for _, s := range res.Skipped {
-		notes = append(notes, s)
-	}
-	for _, n := range res.Notes {
-		notes = append(notes, n)
-	}
+	notes = append(notes, res.Skipped...)
+	notes = append(notes, res.Notes...)
 
 	// Step 3: materialise — driver apply in dependency order. On a failure
 	// whose rollback was clean the client drops the entry (release); on a
@@ -333,7 +327,7 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	envPath := ""
 	envExisted := false
 	if sp.Emit.Env != nil {
-		envPath = resolveWorktreePath(cls.WorktreeRoot, sp.Emit.Env.Path)
+		envPath = spec.WorktreePath(cls.WorktreeRoot, sp.Emit.Env.Path)
 		if _, serr := os.Stat(envPath); serr == nil {
 			envExisted = true
 		}
@@ -405,19 +399,7 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	}
 
 	persist := func() {
-		if len(runner.chosenValues()) == 0 {
-			return
-		}
-		// Merge into the persisted set: a run that chooses one new sticky
-		// parameter must not drop the choices earlier runs made.
-		merged := stickyParamsOf(d)
-		for k, v := range runner.chosenValues() {
-			merged[k] = v
-		}
-		d.Extras = withStickyParams(d.Extras, merged)
-		if err := descriptor.Write(dpath, sp.Emit.Descriptor.Format, d); err != nil {
-			fmt.Fprintf(stderr, "warning: persisting the chosen hook parameters into %s failed: %v; the choice is not recorded and will be re-made next run\n", dpath, err)
-		}
+		persistSticky(d, dpath, sp.Emit.Descriptor.Format, runner.chosenValues(), stderr)
 	}
 
 	for phase, hooks := range initHookPhases {
@@ -480,25 +462,12 @@ func attachOutcome(entryExisted, descriptorExisted bool) string {
 
 // stringMapFlag is the flag.Value for the repeatable --param name=value
 // flag: the flag package calls Set once per occurrence.
-type stringMapFlag map[string]string
-
-func (m stringMapFlag) String() string { return "" }
-
-func (m stringMapFlag) Set(v string) error {
-	name, value, ok := strings.Cut(v, "=")
-	if !ok || name == "" {
-		return fmt.Errorf("--param expects <name>=<value>, got %q", v)
-	}
-	m[name] = value
-	return nil
-}
-
 // initDryRun prints what init would do and changes nothing.
 func initDryRun(stdout, stderr io.Writer, jsonOut bool, cls *identity.Classification, sp *spec.Spec, slug, description, dpath string, existing *descriptor.Descriptor) int {
 	var hooks []string
 	for _, phase := range initHookPhases {
 		for _, name := range phase {
-			if hookByName(&sp.Hooks, name) != nil {
+			if spec.HookByName(&sp.Hooks, name) != nil {
 				hooks = append(hooks, name)
 			}
 		}
@@ -555,26 +524,4 @@ func writeInitTable(stdout io.Writer, r *initResult) {
 		fmt.Fprintln(stdout)
 		writeShowTable(stdout, r.Descriptor)
 	}
-}
-
-// samePath reports whether two recorded worktree paths name the same
-// directory. The comparison resolves symlinks on both sides first: on macOS
-// /var is a symlink to /private/var and /tmp to /private/tmp, so an entry
-// written with one spelling and a classification carrying the other are the
-// same directory and differ as strings. Comparing them raw made init refuse
-// its own worktree as a slug collision, which also broke idempotence.
-//
-// A path that cannot be resolved — the recorded one may name a directory
-// inside a container this host cannot see — falls back to the raw
-// comparison rather than being called a collision.
-func samePath(a, b string) bool {
-	if a == b {
-		return true
-	}
-	ra, aerr := platform.RealPath(a)
-	rb, berr := platform.RealPath(b)
-	if aerr != nil || berr != nil {
-		return false
-	}
-	return ra == rb
 }
