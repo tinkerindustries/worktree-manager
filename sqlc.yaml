@@ -1,0 +1,31 @@
+# sqlc configuration for the coordinator's store. sqlc is a build-time
+# tool (go.mod `tool` directive, pinned in go.mod); its output is
+# committed and must be regenerated with `go tool sqlc generate` whenever
+# internal/store/schema.sql or internal/store/query.sql changes. The
+# generated code uses database/sql, so the runtime dependency list stays
+# at two. Run from the repository root, as CI will.
+version: "2"
+overrides:
+  go:
+    rename:
+      # The model structs are named Row* so they cannot collide with the
+      # public store types (Entry, Band, ClientEntry, ...) the wrappers
+      # convert them to. Keys are the singular table names, the form sqlc
+      # applies the rename to.
+      entry: "EntryRow"
+      band: "BandRow"
+      reservation: "ReservationRow"
+      client: "ClientRow"
+      spec: "SpecRow"
+      reservation_port: "ReservationPortRow"
+      reservation_name: "ReservationNameRow"
+      meta: "MetaRow"
+sql:
+  - engine: "sqlite"
+    schema: "internal/store/schema.sql"
+    queries: "internal/store/query.sql"
+    gen:
+      go:
+        package: "store"
+        out: "internal/store"
+        emit_empty_slices: true
