@@ -3,6 +3,7 @@ package platform
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -126,9 +127,9 @@ type InstallSupervisorOpts struct {
 	// running `wt daemon install`.
 	WtdPath string
 	// TCPAddr and TCPToken enable the opt-in loopback TCP surface in the
-	// registration: the unit starts wtd with --tcp/--tcp-token so the
-	// supervisor-managed coordinator listens on TCP exactly like a
-	// foreground one. Both or neither (validated by ValidateTCPConfig); a
+	// registration: the unit starts wtd with --addr/--container-token so
+	// the supervisor-managed coordinator listens exactly like a foreground
+	// one. Both or neither (validated by ValidateTCPConfig); a
 	// registration file that carries the token is written 0600 on unix so
 	// a machine's other users cannot read it out of the unit file.
 	TCPAddr  string
@@ -220,13 +221,13 @@ func installLaunchAgent(opts InstallSupervisorOpts) (InstallSupervisorResult, er
 // launchdPlist is the LaunchAgent property list. RunAtLoad starts the
 // coordinator when the user logs in, KeepAlive restarts it if it exits —
 // the lifecycle launchd socket activation would have provided, without the
-// C API. With the loopback TCP surface configured, ProgramArguments
-// carries --tcp and --tcp-token; each argument is its own element, so the
+// C API. With the container token configured, ProgramArguments carries
+// --addr and --container-token; each argument is its own element, so the
 // token needs no escaping beyond the XML text rules.
 func launchdPlist(wtdPath, tcpAddr, tcpToken string) []byte {
 	args := []string{wtdPath}
 	if tcpAddr != "" {
-		args = append(args, "--tcp", tcpAddr, "--tcp-token", tcpToken)
+		args = append(args, "--addr", tcpAddr, "--container-token", tcpToken)
 	}
 	var elems strings.Builder
 	for _, a := range args {
@@ -273,8 +274,10 @@ func CoordinatorBinaryPath() (string, error) {
 
 // CoordinatorStartCommand is the command that starts the coordinator, for
 // the exit-5 remedy and daemon status (plan.md §3: every error names the
-// command that fixes it).
-func CoordinatorStartCommand(socketPath string) string {
+// command that fixes it). endpoint is the resolved base URL (""
+// when unresolved); the foreground form names the listen address so the
+// user starts wtd where the client expects it.
+func CoordinatorStartCommand(endpoint string) string {
 	switch runtime.GOOS {
 	case "darwin":
 		return "wt daemon install"
@@ -283,11 +286,22 @@ func CoordinatorStartCommand(socketPath string) string {
 	case "windows":
 		return "register and start the coordinator: wt daemon install (installs the logon task)"
 	default:
-		if socketPath == "" {
-			return "run wtd in the foreground with WT_SOCKET set"
+		addr := endpointAddr(endpoint)
+		if addr == "" {
+			return "run wtd in the foreground: wtd (listening on 127.0.0.1:7833 by default)"
 		}
-		return fmt.Sprintf("run wtd in the foreground: WT_SOCKET=%s wtd", socketPath)
+		return fmt.Sprintf("run wtd in the foreground: wtd --addr %s", addr)
 	}
+}
+
+// endpointAddr extracts the host:port from a base URL, for the
+// foreground start command's --addr.
+func endpointAddr(endpoint string) string {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return u.Host
 }
 
 // DaemonFixes carries the three broken-state remedies daemon status names.
@@ -301,33 +315,37 @@ type DaemonFixes struct {
 }
 
 // DaemonFixesFor returns the platform's remedies in the platform's terms.
-func DaemonFixesFor(socketPath string) DaemonFixes {
-	start := CoordinatorStartCommand(socketPath)
+// endpoint is the resolved base URL, feeding the running-but-unreachable
+// check text.
+func DaemonFixesFor(endpoint string) DaemonFixes {
+	start := CoordinatorStartCommand(endpoint)
+	addr := endpointAddr(endpoint)
+	check := "— and check that WT_ENDPOINT (or endpoint.json) names the address the coordinator listens on"
 	switch runtime.GOOS {
 	case "darwin":
 		domain := fmt.Sprintf("gui/%d/%s", os.Getuid(), LaunchAgentLabel)
 		return DaemonFixes{
 			NotRegistered:      "register and start the coordinator: wt daemon install",
 			RegisteredStopped:  fmt.Sprintf("start the coordinator: launchctl kickstart %s (or re-run: wt daemon install)", domain),
-			RunningUnreachable: fmt.Sprintf("restart the coordinator: launchctl kickstart -k %s — and check that WT_SOCKET names the socket the coordinator listens on", domain),
+			RunningUnreachable: fmt.Sprintf("restart the coordinator: launchctl kickstart -k %s %s", domain, check),
 		}
 	case "linux":
 		return DaemonFixes{
 			NotRegistered:      "register and start the coordinator: wt daemon install",
 			RegisteredStopped:  fmt.Sprintf("start the coordinator: systemctl --user start %s (or re-run: wt daemon install)", SystemdSocketFilename),
-			RunningUnreachable: fmt.Sprintf("restart the coordinator: systemctl --user restart %s — and check that WT_SOCKET matches the socket unit's ListenStream (systemctl --user cat %s)", SystemdSocketFilename, SystemdSocketFilename),
+			RunningUnreachable: fmt.Sprintf("restart the coordinator: systemctl --user restart %s — and check that the socket unit's ListenStream matches %s (systemctl --user cat %s)", SystemdSocketFilename, addr, SystemdSocketFilename),
 		}
 	case "windows":
 		return DaemonFixes{
 			NotRegistered:      "register and start the coordinator: wt daemon install",
 			RegisteredStopped:  fmt.Sprintf("start the coordinator: schtasks /Run /TN %s (or re-run: wt daemon install)", WindowsTaskName),
-			RunningUnreachable: fmt.Sprintf("restart the coordinator: schtasks /End /TN %s, then schtasks /Run /TN %s — and check that WT_SOCKET names the pipe the coordinator listens on", WindowsTaskName, WindowsTaskName),
+			RunningUnreachable: fmt.Sprintf("restart the coordinator: schtasks /End /TN %s, then schtasks /Run /TN %s %s", WindowsTaskName, WindowsTaskName, check),
 		}
 	default:
 		return DaemonFixes{
 			NotRegistered:      start,
 			RegisteredStopped:  start,
-			RunningUnreachable: start + " — and check that WT_SOCKET names the socket the coordinator listens on",
+			RunningUnreachable: start + " " + check,
 		}
 	}
 }
