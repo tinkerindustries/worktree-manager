@@ -4,6 +4,38 @@ Versioning, the cross-compile matrix, the compatibility policy for the three
 independent versions, the distribution and the installer, rollback, and how
 a release is cut.
 
+## Versioning
+
+The release version is a **semantic version** (semver.org 2.0.0) and the
+git tag is that version with a `v` in front: `v0.2.0`, `v1.0.0-rc.1`. This
+is checked in two places, so a misnamed tag never reaches a binary:
+
+- the release workflow refuses a tag that is not `v<semver>` before it
+  builds anything, and
+- `dist/build.sh` refuses a version argument that is not semver, whether
+  the workflow or a person passed it.
+
+With no argument `dist/build.sh` derives the version from the checkout, and
+what it derives is always semver: an exact tag is that release (`0.2.0`), a
+commit past the nearest tag is a development build named after the tag it
+descends from (`0.2.0-dev.7+gabc1234`, which sorts above 0.2.0 and below
+0.2.1), and a checkout with no tags at all is `0.0.0-dev+g<commit>`. There
+is no longer any way to stamp a bare commit hash into `wt --version`, which
+was the previous default and ordered against nothing.
+
+What each field means here:
+
+| Field | Bumps when |
+|---|---|
+| MAJOR | a documented command, flag, exit code, descriptor field or spec field is removed or changes meaning — anything an adopted repository's `wt.yaml` or a script around `wt` could be relying on |
+| MINOR | a verb, a flag or a spec field is added, backwards compatibly |
+| PATCH | a fix that changes no interface |
+| `-prerelease` | a release cut for testing: published as a GitHub prerelease, so it is never offered as "latest" |
+
+While the major is 0 the minor carries the breaking changes, as semver
+allows: 0.x is not a stability promise, and the three contract versions
+below are what actually gate compatibility.
+
 ## The three independent versions
 
 Three contracts version independently, and each one follows the same
@@ -36,10 +68,12 @@ other than the one it knows, naming the version found.
 ## Binary versioning
 
 The two binaries are built from the one module and ship together (one
-distribution per platform). The release version is the git tag,
-`v0.x.y`; `wtd` logs it at startup (`cmd/wtd`). A release bumps one or more
-of the three contract versions above exactly when that contract's shape
-changed — an old binary pair must never be able to half-read a new one.
+distribution per platform), and both carry the same version and commit,
+stamped by `dist/build.sh` with `-ldflags -X`. The release version is the
+git tag without its `v` (see "Versioning"); `wtd` logs it at startup and
+both binaries print it from `--version`. A release bumps one or more of the
+three contract versions above exactly when that contract's shape changed —
+an old binary pair must never be able to half-read a new one.
 
 ## Cross-compile matrix
 
@@ -48,15 +82,20 @@ Both binaries build statically, `CGO_ENABLED=0`, for every cell:
 | GOOS | GOARCH |
 |---|---|
 | darwin | arm64, amd64 |
-| linux | amd64 |
+| linux | amd64, arm64 |
 | windows | amd64 |
 
 ```sh
 CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build ./...
 CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build ./...
 CGO_ENABLED=0 GOOS=linux  GOARCH=amd64 go build ./...
+CGO_ENABLED=0 GOOS=linux  GOARCH=arm64 go build ./...
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./...
 ```
+
+`linux/arm64` is not only a Linux desktop cell: it is the architecture a
+container built on an Apple Silicon machine runs, so it is the cell that
+puts the client into a local Docker image ("Container clients" below).
 
 CI runs the matrix on every push (`.github/workflows/ci.yml`).
 
@@ -69,7 +108,7 @@ module by `dist/build.sh` and published by the release workflow
 | Artefact | Format | Contains |
 |---|---|---|
 | `wt-<version>-darwin-arm64.tar.gz`, `wt-<version>-darwin-amd64.tar.gz` | tar.gz | `wt`, `wtd`, `install.sh`, `README.txt`, `SHA256SUMS` |
-| `wt-<version>-linux-amd64.tar.gz` | tar.gz | `wt`, `wtd`, `install.sh`, `README.txt`, `SHA256SUMS` |
+| `wt-<version>-linux-amd64.tar.gz`, `wt-<version>-linux-arm64.tar.gz` | tar.gz | `wt`, `wtd`, `install.sh`, `README.txt`, `SHA256SUMS` |
 | `wt-<version>-windows-amd64.zip` | zip | `wt.exe`, `wtd.exe`, `install.ps1`, `README.txt`, `SHA256SUMS` |
 | `SHA256SUMS` | text | the sha256 of every archive, for verification before installing |
 
@@ -116,9 +155,18 @@ cd wt-<version>-<os>-<arch>
   which — the second user on a machine cannot bind the first's port, and a
   registration naming a port it can never take is a coordinator that never
   starts.
-- `--container-token <token>` admits container clients. The two flags are
-  independent: a custom address needs no token, and a token needs no
-  custom address. The token is a secret — never echoed by the installer,
+- `--container-token <token>` admits container clients, and
+  `--allow-host <host>` (repeatable) names a `Host` header value the
+  coordinator will accept beyond loopback and its own address — what a
+  container reaching the host by name needs ("Container clients" below).
+  These are all independent settings: a custom address needs no token, a
+  token needs no custom address, and either can be given without the
+  other.
+- `--client-only` installs the `wt` client alone — no `wtd`, no supervisor
+  registration. It is the container install, and it refuses alongside
+  `--addr`, `--container-token` and `--allow-host`, which configure a
+  coordinator it does not install. Its `--uninstall` removes the client and
+  deregisters nothing. The token is a secret — never echoed by the installer,
   the registration that carries it is written 0600 on unix, and it should
   be generated with a strong random source and kept out of shell history
   (`WT_CONTAINER_TOKEN` exists for that).
@@ -177,23 +225,81 @@ through virtiofs, which cannot carry a live socket, so a container client
 on a Mac could not reach the coordinator at all without an opt-in TCP
 surface. There is no longer anything to opt into.
 
-Containers remain opt-in at the *identity* layer: absent
-`--container-token`, the coordinator admits host clients only.
+A container runs the **client alone**. It never runs `wtd`: a coordinator
+inside the image would own its own store and hand out resources the host
+knows nothing about, which is the one thing the whole design exists to
+prevent. `install.sh --client-only` is that install — it copies `wt`,
+verifies it against the archive's `SHA256SUMS` like any other install, and
+registers nothing.
 
-- Enable: `install.sh --container-token <token>`,
-  `wt daemon install --container-token ...`, or run
-  `wtd --container-token ...` in the foreground. At least 16 characters,
-  and no whitespace — it is carried in unit files and command lines.
-- Connect: `WT_ENDPOINT=http://<host>:<port>` plus
-  `WT_CLIENT_TOKEN=<token>`. The token is the whole of a container's
-  identity; it is compared in constant time, and a missing token and a
-  wrong one get the same refusal so the surface is not an oracle.
-- A disposable container adds `WT_CLIENT_EPHEMERAL=1`. The two now
-  compose: the token admits it and the flag marks its entries
-  reclaimable. It calls `POST /v1/session` once and uses the issued
-  session id as its bearer thereafter.
-- In a container, reach the host's loopback: `--network host` on Linux, or
-  `http://host.docker.internal:<port>` on Docker Desktop.
+Three things have to line up, and each is a deliberate opt-in at the
+coordinator:
+
+1. **Admission.** Absent `--container-token`, the coordinator admits host
+   clients only. At least 16 characters, no whitespace — it is carried in
+   unit files and command lines.
+2. **The Host header.** The coordinator refuses any request whose `Host`
+   is neither loopback nor its own address — the DNS-rebinding guard, which
+   is what keeps a web page in the user's browser out of the API. A
+   container reaching the host by name sends that name as its `Host`, so
+   the name must be allowed: `--allow-host host.docker.internal`
+   (repeatable). Nothing is inferred; a `Host` that was not named is still
+   refused, and the refusal names the flag that would admit it.
+3. **Reachability.** `--network host` on Linux, or
+   `host.docker.internal` on Docker Desktop (add
+   `--add-host host.docker.internal:host-gateway` on plain Docker).
+
+Set the coordinator up once on the host:
+
+```sh
+./install.sh --container-token "$(openssl rand -hex 24)" \
+             --allow-host host.docker.internal
+```
+
+Put the client in the image — the linux archive matching the container's
+architecture, which on an Apple Silicon machine is `linux-arm64`:
+
+```dockerfile
+FROM debian:bookworm-slim
+ARG WT_VERSION=0.2.0
+ARG TARGETARCH
+ADD https://github.com/mrgeoffrich/worktree-manager/releases/download/v${WT_VERSION}/wt-${WT_VERSION}-linux-${TARGETARCH}.tar.gz /tmp/wt.tar.gz
+RUN set -eu; \
+    mkdir -p /tmp/wt && tar xzf /tmp/wt.tar.gz -C /tmp/wt; \
+    /tmp/wt/install.sh --client-only --prefix /usr/local; \
+    rm -rf /tmp/wt /tmp/wt.tar.gz
+```
+
+`TARGETARCH` is Docker's own build argument and is already `amd64` or
+`arm64` — the same spelling `GOARCH` uses, which is why the archive names
+can be interpolated directly. The installer verifies the binary against
+the archive's `SHA256SUMS` before copying it, so the build fails on a
+tampered or truncated download rather than baking one into the image.
+
+Then run it pointed at the host:
+
+```sh
+docker run --rm \
+  -e WT_ENDPOINT=http://host.docker.internal:7833 \
+  -e WT_CLIENT_TOKEN="$WT_CONTAINER_TOKEN" \
+  -e WT_CLIENT_EPHEMERAL=1 \
+  --add-host host.docker.internal:host-gateway \
+  myimage wt list
+```
+
+- The port is the one the install pinned — `wt daemon status` on the host,
+  or the `base_url` in `endpoint.json`, says which. The installer prints it
+  too.
+- The token is the whole of a container's identity: it is compared in
+  constant time, and a missing token and a wrong one get the same refusal
+  so the surface is not an oracle.
+- `WT_CLIENT_EPHEMERAL=1` marks a disposable container. It composes with
+  the token rather than conflicting: the token admits it and the flag marks
+  its entries reclaimable. It calls `POST /v1/session` once and uses the
+  issued session id as its bearer thereafter, so a coordinator restart
+  mid-`init` does not strand it.
+- The store is never shared into a container. It gets `WT_ENDPOINT` and
+  `WT_CLIENT_TOKEN` and mounts nothing.
 
 ## Rollback
 
@@ -268,12 +374,36 @@ is the only boundary.
 ## How a release is cut
 
 1. The full check set passes on the branch:
-   `go build ./...`, `go test ./...`, `gofmt -l cmd internal` (empty),
-   `go vet ./...`, and the cross-compile matrix above.
-2. Tag `v0.x.y` on the merged branch and push the tag.
+   `go build ./...`, `go test -race ./...`, `gofmt -l cmd internal`
+   (empty), `go vet ./...`, `staticcheck ./...` (empty), and the
+   cross-compile matrix above.
+2. Choose the version by the table in "Versioning". Tag it on the merged
+   branch and push the tag:
+
+   ```sh
+   git tag -a v0.2.0 -m "Worktree Manager 0.2.0"
+   git push origin v0.2.0
+   ```
+
+   The workflow refuses a tag that is not `v<semver>` before it builds, so
+   a typo costs a tag rather than a bad release. A tag with a prerelease
+   identifier (`v1.0.0-rc.1`) is published as a GitHub prerelease.
 3. The release workflow builds the distribution (`dist/build.sh`) and
-   attaches the archives and `SHA256SUMS` to the tag's release. Cutting by
-   hand is the same one command: `dist/build.sh 0.x.y`.
+   attaches the archives and `SHA256SUMS` to the tag's release.
+
+   **Cutting by hand** is the same script, and is the whole release when
+   the workflow cannot run (a runner outage, or a repository whose Actions
+   minutes are unavailable):
+
+   ```sh
+   dist/build.sh 0.2.0                      # writes dist/out/
+   gh release create v0.2.0 dist/out/wt-*.tar.gz dist/out/wt-*.zip \
+     dist/out/SHA256SUMS --title "Worktree Manager v0.2.0"
+   ```
+
+   A local build is also enough on its own: the archives in `dist/out/`
+   are the distribution, and a Dockerfile can `COPY` one in instead of
+   downloading it from a release.
 4. Verify the artefacts: `sha256sum -c SHA256SUMS` inside the release
    assets, then a temp-prefix install on each platform —
    `./install.sh --prefix /tmp/wt-prefix` — and `wt daemon status --prefix`

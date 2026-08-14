@@ -125,9 +125,29 @@ func (c *Client) Version() (*api.VersionInfo, *Error) {
 		return nil, &Error{Code: 5, Msg: fmt.Sprintf("coordinator unreachable at %s: %v", c.base, err)}
 	}
 	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &Error{Code: 5, Msg: fmt.Sprintf("coordinator at %s closed before the version report: %v", c.base, err)}
+	}
+	// A refusal reaches this endpoint too — the Host check and the
+	// X-Wt-Client requirement gate it like every other route — and its body
+	// is the Response envelope, not a version range. It must be returned as
+	// itself: an error envelope decodes into VersionInfo without complaint,
+	// leaving the zero range, and the caller would then report a version
+	// mismatch against a coordinator whose version was never read.
+	var envelope api.Response
+	if err := json.Unmarshal(data, &envelope); err == nil && envelope.Error != nil {
+		return nil, &Error{Code: envelope.Error.Code, Msg: envelope.Error.Msg, Remedy: envelope.Error.Remedy}
+	}
 	var info api.VersionInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+	if err := json.Unmarshal(data, &info); err != nil {
 		return nil, &Error{Code: 5, Msg: fmt.Sprintf("the coordinator at %s did not answer /version with a version range: %v", c.base, err)}
+	}
+	// A range with no maximum is not a range. Something answered on this
+	// address that is not a coordinator; saying so beats reporting an
+	// overlap failure against 0..0.
+	if info.Max == 0 {
+		return nil, &Error{Code: 5, Msg: fmt.Sprintf("the coordinator at %s answered /version with no version range; something that is not wtd is listening there", c.base)}
 	}
 	return &info, nil
 }

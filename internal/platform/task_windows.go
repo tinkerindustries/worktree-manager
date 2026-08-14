@@ -67,13 +67,16 @@ func windowsTaskDir(prefix string) (string, error) {
 // admits no container while looking like it does. The token is validated
 // to contain no whitespace, which is what keeps it one argument in the
 // task's command line.
-func windowsTaskXML(wtdPath, addr, containerToken string) []byte {
+func windowsTaskXML(wtdPath, addr, containerToken string, allowedHosts []string) []byte {
 	var flags []string
 	if addr != "" {
 		flags = append(flags, "--addr", xmlEscape(addr))
 	}
 	if containerToken != "" {
 		flags = append(flags, "--container-token", xmlEscape(containerToken))
+	}
+	for _, h := range allowedHosts {
+		flags = append(flags, "--allow-host", xmlEscape(h))
 	}
 	args := ""
 	if len(flags) > 0 {
@@ -155,7 +158,7 @@ func schtasks(args ...string) error {
 // the task from the XML, /Run starts it now (the mirror of launchctl
 // kickstart). No elevation: a task in the user's own context registers
 // without one — one of the two reasons the logon task is the default.
-func installWindowsTask(prefix, wtdPath, addr, containerToken string) (InstallSupervisorResult, error) {
+func installWindowsTask(prefix, wtdPath, addr, containerToken string, allowedHosts []string) (InstallSupervisorResult, error) {
 	dir, err := windowsTaskDir(prefix)
 	if err != nil {
 		return InstallSupervisorResult{}, err
@@ -164,7 +167,7 @@ func installWindowsTask(prefix, wtdPath, addr, containerToken string) (InstallSu
 		return InstallSupervisorResult{}, fmt.Errorf("creating the task registration directory %s: %w", dir, err)
 	}
 	xmlPath := filepath.Join(dir, WindowsTaskFilename)
-	if err := os.WriteFile(xmlPath, windowsTaskXML(wtdPath, addr, containerToken), 0o600); err != nil {
+	if err := os.WriteFile(xmlPath, windowsTaskXML(wtdPath, addr, containerToken, allowedHosts), 0o600); err != nil {
 		return InstallSupervisorResult{}, fmt.Errorf("writing %s: %w", xmlPath, err)
 	}
 	if prefix != "" {

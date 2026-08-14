@@ -1,9 +1,11 @@
 name: release
 
-# A tagged push cuts the phase-9 release: dist/build.sh assembles one
-# archive per platform (both binaries plus the platform's installer) and
-# the artefacts are attached to the tag's GitHub release. The tag is the
-# release version (RELEASE.md, "How a release is cut"); nothing is
+# A tagged push cuts the release: dist/build.sh assembles one archive per
+# platform (both binaries plus the platform's installer) and the artefacts
+# are attached to the tag's GitHub release. The tag is the release version
+# and must be `v` followed by a semantic version (RELEASE.md, "Versioning";
+# semver.org 2.0.0) — a tag that is not is refused here before anything is
+# built, because the tag is the only name the binaries carry. Nothing is
 # published to a package manager channel and nothing is signed — the
 # PLAN-SCOPE.md non-goals for packaging.
 on:
@@ -23,13 +25,57 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
+      # The tag is checked before the build, so a misnamed tag costs
+      # nothing and produces no half-release. dist/build.sh applies the
+      # same rule to the version it is handed; this step exists so the
+      # failure names the tag rather than the version derived from it.
+      - name: check the tag is a semantic version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          if [ "$GITHUB_REF_NAME" = "$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not begin with v; a release tag is v<semver>, e.g. v0.2.0"
+            exit 1
+          fi
+          if ! printf '%s' "$version" | grep -Eq "$semver"; then
+            echo "::error::tag $GITHUB_REF_NAME is not v<semver> (MAJOR.MINOR.PATCH, optionally -prerelease and +build; see semver.org)"
+            exit 1
+          fi
+          # A tag carrying a prerelease identifier (v1.0.0-rc.1) is
+          # published as a prerelease, so it is not offered as the latest
+          # release and an installer script following "latest" skips it.
+          case "$version" in
+          *-*) echo "prerelease=true" >>"$GITHUB_OUTPUT" ;;
+          *) echo "prerelease=false" >>"$GITHUB_OUTPUT" ;;
+          esac
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+        id: tag
       - name: assemble the distribution
-        run: dist/build.sh "${GITHUB_REF_NAME#v}"
+        run: dist/build.sh "${{ steps.tag.outputs.version }}"
       - name: publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ steps.tag.outputs.prerelease }}
         run: |
+          notes=$(cat <<EOF
+          The $GITHUB_REF_NAME distribution: one archive per platform containing \`wt\` and \`wtd\` plus the installer (\`install.sh\`, \`install.ps1\`).
+
+          Verify with the \`SHA256SUMS\` attached here, unpack, and run the installer:
+
+          \`\`\`sh
+          ./install.sh                 # host install: both binaries, coordinator registered and started
+          ./install.sh --client-only   # container install: the wt client alone
+          \`\`\`
+
+          See RELEASE.md for versioning, the compatibility policy, container clients and rollback.
+          EOF
+          )
+          flags=""
+          if [ "$PRERELEASE" = "true" ]; then
+            flags="--prerelease"
+          fi
           gh release create "$GITHUB_REF_NAME" \
             dist/out/wt-*.tar.gz dist/out/wt-*.zip dist/out/SHA256SUMS \
             --title "Worktree Manager $GITHUB_REF_NAME" \
-            --notes "The $GITHUB_REF_NAME distribution: one archive per platform containing wt and wtd plus the installer (dist/install.sh, dist/install.ps1). See RELEASE.md for installation and rollback."
+            --notes "$notes" \
+            $flags

@@ -22,9 +22,42 @@ set -eu
 cd "$(dirname "$0")/.." # the repository root
 ROOT="$(pwd)"
 
+# The version is a semantic version (semver.org 2.0.0) without the tag's
+# leading "v": 0.2.0, 1.0.0-rc.1, 0.3.0-dev.7+gabc1234. The release tag is
+# that string with a v in front, which is what the release workflow passes
+# here. Anything else is refused rather than stamped into a binary —
+# `wt --version` is the only thing a user has to tell two builds apart,
+# and a bare commit hash does not order against anything.
+SEMVER='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+
+# derive_version answers "what is this checkout, in semver terms" when the
+# caller named no version. An exact tag is that release. A commit past the
+# nearest tag is a development build named after the tag it descends from,
+# so it sorts *below* the next release and above the last one. No tags at
+# all is 0.0.0-dev, which sorts below everything.
+derive_version() {
+	if desc="$(git describe --tags --match 'v[0-9]*' --exact-match 2>/dev/null)"; then
+		printf '%s' "${desc#v}"
+		return
+	fi
+	if desc="$(git describe --tags --match 'v[0-9]*' --long 2>/dev/null)"; then
+		base="${desc%-*-g*}"    # v0.2.0-7-gabc1234 -> v0.2.0
+		rest="${desc#"$base"-}" # 7-gabc1234
+		printf '%s-dev.%s+g%s' "${base#v}" "${rest%-g*}" "${rest#*-g}"
+		return
+	fi
+	printf '0.0.0-dev+g%s' "$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+}
+
 VERSION="${1:-}"
+VERSION="${VERSION#v}" # a tag may be passed whole; the version is its tail
 if [ -z "$VERSION" ]; then
-	VERSION="$(git describe --tags --always 2>/dev/null || echo 0.0.0-dev)"
+	VERSION="$(derive_version)"
+fi
+if ! printf '%s' "$VERSION" | grep -Eq "$SEMVER"; then
+	echo "build.sh: \"$VERSION\" is not a semantic version (MAJOR.MINOR.PATCH, optionally -prerelease and +build; see semver.org)" >&2
+	echo "build.sh: pass one, e.g. dist/build.sh 0.2.0, or pass nothing to derive it from the nearest v* tag" >&2
+	exit 2
 fi
 # The commit the binaries were built from, for `wt --version` / `wtd
 # --version`. Both binaries carry the same version and commit — they ship
@@ -74,6 +107,12 @@ Install:
                                 # a container sets WT_ENDPOINT and
                                 # WT_CLIENT_TOKEN to reach the coordinator
 
+  ./install.sh --client-only    # install the wt client alone: no wtd, no
+                                # supervisor registration. This is the
+                                # container install — the client reaches
+                                # the host's coordinator over WT_ENDPOINT
+                                # and WT_CLIENT_TOKEN.
+
   ./install.sh --dry-run        # print every action, change nothing
   ./install.sh --uninstall      # stop the coordinator, remove the
                                 # registration and the two binaries; the
@@ -91,6 +130,10 @@ stage_for() { # goos goarch ext bin-ext
 	EXT="$3"
 	BINEXT="$4"
 	STAGE="$(mktemp -d)"
+	# The trap is the abnormal-exit path; the normal path removes the stage
+	# at the end of this function, because a single EXIT trap can only name
+	# the last stage and the earlier cells' directories would otherwise
+	# survive the build.
 	trap 'rm -rf "$STAGE"' EXIT
 
 	CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -ldflags "$LDFLAGS" -o "$STAGE/wt$BINEXT" ./cmd/wt
@@ -125,6 +168,8 @@ stage_for() { # goos goarch ext bin-ext
 			"$STAGE" "wt$BINEXT" "wtd$BINEXT" install.ps1 README.txt SHA256SUMS
 		;;
 	esac
+
+	rm -rf "$STAGE"
 }
 
 build_cell() { # goos goarch
@@ -134,6 +179,11 @@ build_cell() { # goos goarch
 build_cell darwin arm64
 build_cell darwin amd64
 build_cell linux amd64
+# linux/arm64 is not only a Linux desktop cell: it is the architecture a
+# container built on an Apple Silicon machine runs, so the client that goes
+# into a local Docker image comes from here (RELEASE.md, "Container
+# clients"). Both linux cells therefore ship on every release.
+build_cell linux arm64
 stage_for windows amd64 zip .exe
 
 # The manifest: enough for a person (or a script) to verify every archive

@@ -289,6 +289,44 @@ func TestHTTPHostCheck(t *testing.T) {
 	}
 }
 
+// TestHTTPAllowedHosts: a Host named by --allow-host passes the guard,
+// with or without the port the client dialled, and every Host that was
+// not named is still refused. This is what lets a container reach the
+// host by name — host.docker.internal on Docker Desktop — without the
+// guard being opened to anything else.
+func TestHTTPAllowedHosts(t *testing.T) {
+	h := NewHarness(t, filepath.Join(tempRoot(t), "wt")).H
+	h.Token = httpHostToken
+	h.ContainerToken = httpContainerTok
+	srv := NewServer(h, nil)
+	srv.AllowedHosts = []string{"host.docker.internal"}
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+
+	for _, host := range []string{"host.docker.internal:7833", "host.docker.internal", "HOST.DOCKER.INTERNAL:7833"} {
+		resp, body := doRPC(t, ts, "GET", "/v1/ping", httpHostToken, nil, func(r *http.Request) {
+			r.Host = host
+		})
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("allowed Host %q: status = %d, want 200 (%s)", host, resp.StatusCode, body)
+		}
+	}
+
+	// The guard is opened to the named host, not to names in general.
+	resp, body := doRPC(t, ts, "GET", "/v1/ping", httpHostToken, nil, func(r *http.Request) {
+		r.Host = "attacker.example.com"
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("unnamed Host alongside an allow-host: status = %d, want 403", resp.StatusCode)
+	}
+	// The refusal names the flag that would admit it, and the host it
+	// would have to name — a container operator reading this message has
+	// the whole remedy in front of them.
+	if e := errorBody(t, body); !strings.Contains(e.Remedy, "--allow-host attacker.example.com") {
+		t.Errorf("refusal remedy does not name the flag and the host: %+v", e)
+	}
+}
+
 // TestHTTPXWtClientCheck: a request without X-Wt-Client: 1 is refused —
 // a browser cannot set a custom header on a simple-form POST, so this
 // forces a preflight that is never answered. No CORS header is ever sent

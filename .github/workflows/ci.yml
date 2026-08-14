@@ -122,6 +122,11 @@ jobs:
             goarch: amd64
           - goos: linux
             goarch: amd64
+          # The architecture a container built on an Apple Silicon machine
+          # runs, so this cell is what puts the client into a local Docker
+          # image (RELEASE.md, "Container clients").
+          - goos: linux
+            goarch: arm64
           - goos: windows
             goarch: amd64
     steps:

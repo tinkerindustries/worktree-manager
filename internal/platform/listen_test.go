@@ -68,16 +68,16 @@ func TestValidateContainerToken(t *testing.T) {
 // address without a container token — the ordinary case for a second user
 // on one machine — was refused outright.
 func TestValidateCoordinatorConfigTreatsSettingsIndependently(t *testing.T) {
-	if err := ValidateCoordinatorConfig("127.0.0.1:9001", "", false); err != nil {
+	if err := ValidateCoordinatorConfig("127.0.0.1:9001", "", false, nil); err != nil {
 		t.Errorf("a custom address with no container token = %v, want nil", err)
 	}
-	if err := ValidateCoordinatorConfig("", strings.Repeat("a", MinContainerTokenLength), false); err != nil {
+	if err := ValidateCoordinatorConfig("", strings.Repeat("a", MinContainerTokenLength), false, nil); err != nil {
 		t.Errorf("a container token with no custom address = %v, want nil", err)
 	}
-	if err := ValidateCoordinatorConfig("", "", false); err != nil {
+	if err := ValidateCoordinatorConfig("", "", false, nil); err != nil {
 		t.Errorf("neither setting = %v, want nil", err)
 	}
-	if err := ValidateCoordinatorConfig("127.0.0.1:9001", "short", false); err == nil {
+	if err := ValidateCoordinatorConfig("127.0.0.1:9001", "short", false, nil); err == nil {
 		t.Error("a short container token was accepted alongside a valid address")
 	}
 }
@@ -139,4 +139,33 @@ func freePort(t *testing.T) int {
 	}
 	defer ln.Close()
 	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// TestValidateAllowedHost: the shape rules for one --allow-host value. A
+// host is a host — not a URL, not an address with a port — because the
+// port is the coordinator's own and a second way to say it is a second
+// way to get it wrong.
+func TestValidateAllowedHost(t *testing.T) {
+	ok := []string{"host.docker.internal", "gateway.docker.internal", "localhost", "192.168.65.254", "[::1]"}
+	for _, h := range ok {
+		if err := ValidateAllowedHost(h); err != nil {
+			t.Errorf("ValidateAllowedHost(%q) = %v, want nil", h, err)
+		}
+	}
+	bad := map[string]string{
+		"":                            "empty",
+		"host.docker.internal:7833":   "port",
+		"http://host.docker.internal": "URL",
+		"host docker internal":        "whitespace",
+	}
+	for h, why := range bad {
+		if err := ValidateAllowedHost(h); err == nil {
+			t.Errorf("ValidateAllowedHost(%q) = nil, want a refusal (%s)", h, why)
+		}
+	}
+	// The whole configuration refuses when any one host does, so a bad
+	// value cannot reach a registration.
+	if err := ValidateCoordinatorConfig("", "", false, []string{"host.docker.internal", "http://nope"}); err == nil {
+		t.Error("ValidateCoordinatorConfig accepted an allowed host that is a URL")
+	}
 }

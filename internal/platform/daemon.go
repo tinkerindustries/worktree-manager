@@ -145,6 +145,14 @@ type InstallSupervisorOpts struct {
 	// registration so the started coordinator agrees with the check made
 	// here.
 	AllowRemote bool
+	// AllowedHosts are the extra Host header values the registered
+	// coordinator accepts beyond loopback and its own address
+	// (--allow-host, repeatable). A container that reaches the host by
+	// name — host.docker.internal on Docker Desktop — sends that name as
+	// its Host, and the DNS-rebinding guard refuses it until the operator
+	// names it here. Empty means the unit omits --allow-host and the
+	// guard admits loopback and the coordinator's own address alone.
+	AllowedHosts []string
 }
 
 // InstallSupervisorResult reports what registration wrote and whether the
@@ -176,16 +184,16 @@ func InstallSupervisor(opts InstallSupervisorOpts) (InstallSupervisorResult, err
 	if opts.WtdPath == "" {
 		return InstallSupervisorResult{}, errors.New("the registration file needs the coordinator binary path (wtd)")
 	}
-	if err := ValidateCoordinatorConfig(opts.Addr, opts.ContainerToken, opts.AllowRemote); err != nil {
+	if err := ValidateCoordinatorConfig(opts.Addr, opts.ContainerToken, opts.AllowRemote, opts.AllowedHosts); err != nil {
 		return InstallSupervisorResult{}, err
 	}
 	switch runtime.GOOS {
 	case "darwin":
 		return installLaunchAgent(opts)
 	case "linux":
-		return installSystemdUnits(opts.Prefix, opts.WtdPath, opts.Addr, opts.ContainerToken)
+		return installSystemdUnits(opts.Prefix, opts.WtdPath, opts.Addr, opts.ContainerToken, opts.AllowedHosts)
 	case "windows":
-		return installWindowsTask(opts.Prefix, opts.WtdPath, opts.Addr, opts.ContainerToken)
+		return installWindowsTask(opts.Prefix, opts.WtdPath, opts.Addr, opts.ContainerToken, opts.AllowedHosts)
 	}
 	return InstallSupervisorResult{}, ErrNoSupervisor
 }
@@ -262,7 +270,7 @@ func installLaunchAgent(opts InstallSupervisorOpts) (InstallSupervisorResult, er
 		// phase 9).
 		mode = 0o600
 	}
-	if err := os.WriteFile(path, launchdPlist(opts.WtdPath, opts.Addr, opts.ContainerToken), mode); err != nil {
+	if err := os.WriteFile(path, launchdPlist(opts.WtdPath, opts.Addr, opts.ContainerToken, opts.AllowedHosts), mode); err != nil {
 		return InstallSupervisorResult{}, fmt.Errorf("writing %s: %w", path, err)
 	}
 	if opts.Prefix != "" {
@@ -290,7 +298,7 @@ func installLaunchAgent(opts InstallSupervisorOpts) (InstallSupervisorResult, er
 // C API. With the container token configured, ProgramArguments carries
 // --addr and --container-token; each argument is its own element, so the
 // token needs no escaping beyond the XML text rules.
-func launchdPlist(wtdPath, addr, containerToken string) []byte {
+func launchdPlist(wtdPath, addr, containerToken string, allowedHosts []string) []byte {
 	args := []string{wtdPath}
 	// Each flag is emitted on its own terms. They were coupled while the
 	// TCP listener was opt-in as a pair; emitting them together now would
@@ -301,6 +309,9 @@ func launchdPlist(wtdPath, addr, containerToken string) []byte {
 	}
 	if containerToken != "" {
 		args = append(args, "--container-token", containerToken)
+	}
+	for _, h := range allowedHosts {
+		args = append(args, "--allow-host", h)
 	}
 	var elems strings.Builder
 	for _, a := range args {

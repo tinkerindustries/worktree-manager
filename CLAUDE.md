@@ -137,7 +137,9 @@ configuration; neither binary branches on repo identity.
   listen-address and container-token rails (`ValidateListenAddr`,
   `ValidateContainerToken` and the `ValidateCoordinatorConfig` that both
   `wtd` and `wt daemon install` run, so the two cannot disagree about what
-  a valid configuration is), the free-port probe that pins an address into
+  a valid configuration is), the allowed-Host rail (`ValidateAllowedHost` —
+  a host, never a URL and never an address with a port), the free-port
+  probe that pins an address into
   a registration (`ChooseRegistrationAddr`, over the same `ProbeBind` the
   port driver uses),
   the private store-dir permission model (0700 on unix; the current-user
@@ -223,7 +225,10 @@ configuration; neither binary branches on repo identity.
   to `tearing-down` with a note, before the first connection), the
   loopback TCP identity rule (a TCP connection must present the
   configured token — constant-time compare, one refusal for missing and
-  wrong — and named clients are the only kind TCP accepts), and the
+  wrong — and named clients are the only kind TCP accepts), the
+  DNS-rebinding Host guard and the `--allow-host` values that widen it by
+  name alone (`Server.AllowedHosts`; every Host not named is still
+  refused, and the refusal names the flag that would admit it), and the
   security-pass redaction (a named client's key is its token, so foreign
   keys in `list`, `clients list` and every error are a short hash;
   `bands.reserve` is host-client-only; `release` refuses a
@@ -231,12 +236,17 @@ configuration; neither binary branches on repo identity.
 - `cmd/wt`, `cmd/wtd`, `cmd/wtgen` — the two entry points and the
   generator. `wtd` takes `--addr` (default `127.0.0.1:7833`),
   `--allow-remote` (required for a non-loopback bind), `--container-token`
-  (16+ characters; absent, only host clients are admitted) and
+  (16+ characters; absent, only host clients are admitted),
+  `--allow-host` (repeatable; a `Host` header value accepted beyond
+  loopback and the coordinator's own address, which is how a container
+  reaching the host by name gets past the DNS-rebinding guard) and
   `--activate` (consume the systemd-passed listener). `cmd/wtgen` emits
   `api/openapi.yaml` and `internal/api/client`.
 - `dist/` — the phase-9 distribution: `build.sh` (one archive per
-  platform with both binaries plus the installer, run by the release
-  workflow on every `v*` tag; it writes a `SHA256SUMS` manifest outside
+  platform — darwin arm64/amd64, linux amd64/arm64, windows amd64 — with
+  both binaries plus the installer, run by the release workflow on every
+  `v*` tag; the version is semver or the build refuses, derived from the
+  nearest `v*` tag when none is given; it writes a `SHA256SUMS` manifest outside
   the archives and a second one inside each archive covering the two
   binaries, and wires the archive version and commit into both binaries
   with `-ldflags -X` so `wt --version`/`wtd --version` report them),
@@ -245,7 +255,9 @@ configuration; neither binary branches on repo identity.
   digest refuses, naming `--skip-verify`/`-SkipVerify` as the deliberate
   override — replace the binaries by copy-to-temp-then-rename, print what
   is being replaced and with what, support `--dry-run`/`-DryRun` (prints
-  every action and changes nothing) and `--uninstall`/`-Uninstall`
+  every action and changes nothing), `--client-only`/`-ClientOnly` (the
+  container install: the client alone, no coordinator and no registration,
+  refusing the flags that configure one) and `--uninstall`/`-Uninstall`
   (drive `wt daemon uninstall`, then remove the binaries; the store is
   never removed), then drive `wt daemon install`; an explicit `--prefix`
   is self-contained and loads nothing), `ziphelper.go` (the stdlib-only

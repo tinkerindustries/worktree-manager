@@ -34,6 +34,15 @@ type Server struct {
 	// socket activation (--activate) gets the same guard as a foreground
 	// listen.
 	addr string
+
+	// AllowedHosts are the extra Host header values this coordinator
+	// accepts beyond loopback and its own address (wtd --allow-host,
+	// repeatable). It exists for the one case the guard cannot otherwise
+	// serve: a container reaches the host by a name — host.docker.internal
+	// on Docker Desktop — and sends that name as its Host. Naming the value
+	// is the operator's opt-in; nothing is inferred, and every Host not
+	// named here is still refused.
+	AllowedHosts []string
 }
 
 // NewServer wraps a handler in the HTTP loop.
@@ -241,7 +250,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, &api.Error{
 			Code:   3,
 			Msg:    fmt.Sprintf("refused: the Host header %q is neither loopback nor the coordinator's address %s", r.Host, s.addr),
-			Remedy: "run the request against 127.0.0.1:7833 (or the address wtd is listening on), then re-run",
+			Remedy: fmt.Sprintf("run the request against %s, the address this coordinator is listening on; a container reaching the host by name needs that name allowed at the coordinator (wtd --allow-host %s, or wt daemon install --allow-host %s), then re-run", s.addr, hostOnly(r.Host), hostOnly(r.Host)),
 		})
 		return
 	}
@@ -426,24 +435,34 @@ func writeResult(w http.ResponseWriter, result json.RawMessage) {
 // keep a browser page out of the API (plan.md §7, "A browser page
 // reaches the API").
 func (s *Server) hostAllowed(host string) bool {
-	hostOnly := host
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		hostOnly = h
-	}
-	hostOnly = strings.ToLower(strings.Trim(hostOnly, "[]"))
-	if isLoopbackHost(hostOnly) {
+	want := hostOnly(host)
+	if isLoopbackHost(want) {
 		return true
 	}
-	if s.addr != "" {
-		addrHost := s.addr
-		if h, _, err := net.SplitHostPort(s.addr); err == nil {
-			addrHost = h
-		}
-		if strings.ToLower(strings.Trim(addrHost, "[]")) == hostOnly {
+	if s.addr != "" && hostOnly(s.addr) == want {
+		return true
+	}
+	// The operator's explicit additions, compared on the host alone: a
+	// container's Host carries the port it dialled, which is this
+	// coordinator's port by construction, and asking the operator to
+	// repeat it would only be a second way to get the same answer wrong.
+	for _, allowed := range s.AllowedHosts {
+		if hostOnly(allowed) == want {
 			return true
 		}
 	}
 	return false
+}
+
+// hostOnly is a Host header (or a host:port address) reduced to its host,
+// lowercased and unbracketed — the form every comparison in the Host
+// guard is made against.
+func hostOnly(host string) string {
+	h := host
+	if only, _, err := net.SplitHostPort(host); err == nil {
+		h = only
+	}
+	return strings.ToLower(strings.Trim(h, "[]"))
 }
 
 // isLoopbackHost reports whether host names a loopback address: the

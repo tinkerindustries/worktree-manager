@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"strings"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/platform"
@@ -254,6 +255,8 @@ func runDaemonInstall(args []string, stdout, stderr io.Writer) int {
 	addrFlag := fs.String("addr", "", "listen address to register (default: the coordinator's own default, or the next free port if it is taken)")
 	containerToken := fs.String("container-token", "", "the token that admits container clients; at least 16 characters. Absent, the coordinator accepts host clients only")
 	allowRemote := fs.Bool("allow-remote", false, "allow a non-loopback --addr (refused without this)")
+	var allowedHosts allowHostList
+	fs.Var(&allowedHosts, "allow-host", "a Host header value the coordinator accepts beyond loopback and its own address, e.g. host.docker.internal (repeatable); a container reaching the host by name needs its name here")
 	if err := fs.Parse(args); err != nil {
 		return ExitUsage
 	}
@@ -268,7 +271,7 @@ func runDaemonInstall(args []string, stdout, stderr io.Writer) int {
 	// its own terms — this is the same check wtd itself runs, so a
 	// registration that would be refused at the coordinator's first start
 	// is refused here instead (platform.ValidateCoordinatorConfig).
-	if err := platform.ValidateCoordinatorConfig(*addrFlag, *containerToken, *allowRemote); err != nil {
+	if err := platform.ValidateCoordinatorConfig(*addrFlag, *containerToken, *allowRemote, allowedHosts); err != nil {
 		WriteError(stderr, New(ExitUsage, err.Error(),
 			"re-run with a loopback address (or --allow-remote) and, if you configure one, a container token of at least 16 characters"))
 		return ExitUsage
@@ -324,6 +327,7 @@ func runDaemonInstall(args []string, stdout, stderr io.Writer) int {
 	res, err := platform.InstallSupervisor(platform.InstallSupervisorOpts{
 		Prefix: *prefix, WtdPath: wtd, Addr: addr,
 		ContainerToken: *containerToken, AllowRemote: *allowRemote,
+		AllowedHosts: allowedHosts,
 	})
 	if err != nil {
 		if errors.Is(err, platform.ErrNoSupervisor) {
@@ -375,4 +379,16 @@ func runDaemonInstall(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "%s\n", res.Note)
 	}
 	return ExitOK
+}
+
+// allowHostList collects a repeatable --allow-host flag. Each occurrence
+// appends, so the flag reads as "and also this host" rather than the last
+// one winning, and the registration carries every value the operator gave.
+type allowHostList []string
+
+func (l *allowHostList) String() string { return strings.Join(*l, ",") }
+
+func (l *allowHostList) Set(v string) error {
+	*l = append(*l, v)
+	return nil
 }

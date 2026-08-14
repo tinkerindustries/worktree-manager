@@ -72,13 +72,16 @@ func systemctl(args ...string) error {
 // rules, and a unit that carries the token is written 0600 (systemd
 // accepts it, and a machine's other users cannot read the token out of
 // the unit file — the security pass, phase 9).
-func systemdServiceUnit(wtdPath, addr, containerToken string) []byte {
+func systemdServiceUnit(wtdPath, addr, containerToken string, allowedHosts []string) []byte {
 	exec := systemdEscapeExec(wtdPath) + " --activate"
 	if addr != "" {
 		exec += " --addr " + systemdEscapeExec(addr)
 	}
 	if containerToken != "" {
 		exec += " --container-token " + systemdEscapeExec(containerToken)
+	}
+	for _, h := range allowedHosts {
+		exec += " --allow-host " + systemdEscapeExec(h)
 	}
 	return []byte(fmt.Sprintf(`[Unit]
 Description=Worktree Manager coordinator (wtd)
@@ -127,7 +130,7 @@ func systemdEscapeExec(p string) string {
 // both), --now for the immediate start that mirrors launchctl kickstart.
 // The service start consumes the socket unit's descriptor, so the
 // coordinator is listening as soon as the units are up.
-func installSystemdUnits(prefix, wtdPath, addr, containerToken string) (InstallSupervisorResult, error) {
+func installSystemdUnits(prefix, wtdPath, addr, containerToken string, allowedHosts []string) (InstallSupervisorResult, error) {
 	dir, err := systemdUserDir(prefix)
 	if err != nil {
 		return InstallSupervisorResult{}, err
@@ -145,7 +148,7 @@ func installSystemdUnits(prefix, wtdPath, addr, containerToken string) (InstallS
 		// accepts non-world-readable unit files.
 		mode = 0o600
 	}
-	if err := os.WriteFile(svc, systemdServiceUnit(wtdPath, addr, containerToken), mode); err != nil {
+	if err := os.WriteFile(svc, systemdServiceUnit(wtdPath, addr, containerToken, allowedHosts), mode); err != nil {
 		return InstallSupervisorResult{}, fmt.Errorf("writing %s: %w", svc, err)
 	}
 	if err := os.WriteFile(sock, systemdSocketUnit(), 0o644); err != nil {

@@ -91,13 +91,50 @@ func ValidateContainerToken(token string) error {
 	return nil
 }
 
-// ValidateCoordinatorConfig validates the pair a registration carries, each
-// on its own terms. It is the one check both wtd's flag parsing and
+// ValidateAllowedHost checks one --allow-host value: a name (or literal
+// address) the coordinator will accept in a Host header beyond loopback
+// and its own address. It is a host, not a URL and not an address with a
+// port — the port is the coordinator's own by construction — and it must
+// carry no whitespace, because it is carried in supervisor unit files and
+// command arguments like every other registration argument.
+//
+// A loopback name is accepted and does nothing: the guard already allows
+// loopback, so naming it is redundant rather than wrong, and refusing
+// would only make an operator delete a line that changed nothing.
+func ValidateAllowedHost(host string) error {
+	if host == "" {
+		return fmt.Errorf("an allowed host must not be empty; name the host a container reaches this machine by, such as host.docker.internal")
+	}
+	if strings.ContainsAny(host, " \t\r\n") {
+		return fmt.Errorf("the allowed host %q must not contain whitespace: it is carried in supervisor unit files and command arguments", host)
+	}
+	if strings.Contains(host, "/") {
+		return fmt.Errorf("the allowed host %q is a URL, not a host; pass the host alone, such as host.docker.internal", host)
+	}
+	// A bracketed IPv6 literal splits; anything else with a colon is an
+	// address with a port, which is a host and a port where a host was
+	// asked for.
+	if _, _, err := net.SplitHostPort(host); err == nil && !strings.HasPrefix(host, "[") {
+		return fmt.Errorf("the allowed host %q carries a port; pass the host alone — the port is this coordinator's own", host)
+	}
+	return nil
+}
+
+// ValidateCoordinatorConfig validates what a registration carries, each
+// part on its own terms. It is the one check both wtd's flag parsing and
 // `wt daemon install` run, so the two cannot disagree about what a valid
 // configuration is.
-func ValidateCoordinatorConfig(addr, token string, allowRemote bool) error {
+func ValidateCoordinatorConfig(addr, token string, allowRemote bool, allowedHosts []string) error {
 	if err := ValidateListenAddr(addr, allowRemote); err != nil {
 		return err
 	}
-	return ValidateContainerToken(token)
+	if err := ValidateContainerToken(token); err != nil {
+		return err
+	}
+	for _, h := range allowedHosts {
+		if err := ValidateAllowedHost(h); err != nil {
+			return err
+		}
+	}
+	return nil
 }

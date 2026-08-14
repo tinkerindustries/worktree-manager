@@ -14,7 +14,10 @@
 # The coordinator listens on a loopback HTTP port. -Addr overrides the
 # default; -ContainerToken admits container clients (16+ characters). The
 # two are independent: a custom port needs no token, and a token needs no
-# custom port.
+# custom port. -AllowHost names Host header values the coordinator accepts
+# beyond loopback and its own address, which is what a container reaching
+# the host by name — host.docker.internal on Docker Desktop — needs to get
+# past the DNS-rebinding guard.
 #
 # Before anything is copied the two binaries are verified against the
 # SHA256SUMS manifest this archive carries (build.sh writes it) — an
@@ -34,10 +37,20 @@
 # that still holds entries makes the verb (and so this script) refuse with
 # exit 3, naming `wt list` and `wt rm`; `wt daemon uninstall --force` is
 # the documented way past that refusal.
+#
+# -ClientOnly installs the wt client alone: wtd.exe is not copied and no
+# logon task is registered. That is the container install — a container
+# runs the client and reaches a coordinator that lives on the host, so a
+# wtd inside the image would be a second coordinator with its own store,
+# which is precisely what must not happen. It composes with -Prefix and
+# -DryRun, and it refuses alongside -Addr and -ContainerToken, which
+# configure a coordinator this install does not have.
 param(
     [string]$Prefix = "",
     [string]$Addr = "",
     [string]$ContainerToken = $env:WT_CONTAINER_TOKEN,
+    [string[]]$AllowHost = @(),
+    [switch]$ClientOnly,
     [switch]$SkipVerify,
     [switch]$DryRun,
     [switch]$Uninstall
@@ -48,7 +61,8 @@ $ErrorActionPreference = "Stop"
 function usage {
     @"
 usage: .\install.ps1 [-Prefix <dir>] [-Addr <addr>] [-ContainerToken <tok>]
-                     [-SkipVerify] [-DryRun] [-Uninstall]
+                     [-AllowHost <host>[,<host>]] [-ClientOnly] [-SkipVerify]
+                     [-DryRun] [-Uninstall]
 
   -Prefix <dir>          install the binaries into <dir>\bin and write the
                          task XML under <dir> (self-contained; nothing is
@@ -60,6 +74,18 @@ usage: .\install.ps1 [-Prefix <dir>] [-Addr <addr>] [-ContainerToken <tok>]
                          16 characters; WT_CONTAINER_TOKEN also works,
                          which keeps it out of shell history). Absent,
                          only host clients are admitted.
+  -AllowHost <host>      Host header values the coordinator accepts beyond
+                         loopback and its own address, e.g.
+                         host.docker.internal (comma-separated for more
+                         than one). A container reaching the host by name
+                         needs its name here, or the coordinator's
+                         DNS-rebinding guard refuses the request.
+  -ClientOnly            install the wt client alone — no wtd.exe, no
+                         logon task. The container install: the client
+                         reaches a coordinator on the host through
+                         WT_ENDPOINT and WT_CLIENT_TOKEN. Refuses
+                         alongside -Addr and -ContainerToken, which
+                         configure a coordinator this install has not got.
   -SkipVerify            install without checking the binaries against the
                          archive's SHA256SUMS (deliberate override; the
                          check runs by default and refuses on a mismatch
@@ -81,13 +107,35 @@ if ($Prefix -eq "") {
     $RegPrefix = $Prefix
 }
 
+# -ClientOnly installs no coordinator, so the two flags that configure one
+# have nothing to configure. Refusing is the house rule — a flag that is
+# silently dropped is worse than one that is rejected, because the operator
+# believes the container was given a token it never got.
+if ($ClientOnly) {
+    if ($Addr -ne "") {
+        Write-Error "-Addr configures the coordinator, which -ClientOnly does not install; set WT_ENDPOINT in the container instead"
+    }
+    if ($ContainerToken -ne "" -and $null -ne $ContainerToken) {
+        Write-Error "-ContainerToken configures the coordinator, which -ClientOnly does not install; set WT_CLIENT_TOKEN in the container instead"
+    }
+    if ($AllowHost.Count -gt 0) {
+        Write-Error "-AllowHost configures the coordinator, which -ClientOnly does not install; pass it where the coordinator is installed"
+    }
+}
+
+# $Bins is what this install handles: both binaries normally, the client
+# alone under -ClientOnly. Every step below — the presence check, the
+# verification, the copy, the removal — reads it, so the two shapes cannot
+# drift apart.
+$Bins = if ($ClientOnly) { @("wt.exe") } else { @("wt.exe", "wtd.exe") }
+
 # The archive's own directory: the two binaries must be right next to this
 # script, which is how the distribution is assembled. An uninstall does not
 # need them — it drives the already-installed wt — so the presence check is
 # the install path's.
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $Uninstall) {
-    foreach ($bin in @("wt.exe", "wtd.exe")) {
+    foreach ($bin in $Bins) {
         if (-not (Test-Path (Join-Path $ScriptDir $bin))) {
             Write-Error "$bin is missing from this distribution (install from the archive, not from a bare copy)"
         }
@@ -143,7 +191,7 @@ function Test-Binaries {
     if (-not (Test-Path $manifest)) {
         Write-Error "SHA256SUMS is missing from this distribution; refusing to install an archive this installer did not build (pass -SkipVerify to install anyway)"
     }
-    foreach ($bin in @("wt.exe", "wtd.exe")) {
+    foreach ($bin in $Bins) {
         $want = $null
         foreach ($line in Get-Content $manifest) {
             $fields = $line -split "\s+"
@@ -160,10 +208,27 @@ function Test-Binaries {
             Write-Error "checksum mismatch for $bin: the archive's SHA256SUMS says $want, the file hashes to $got (pass -SkipVerify to install anyway)"
         }
     }
-    Write-Host "verified wt.exe and wtd.exe against SHA256SUMS"
+    Write-Host "verified $($Bins -join ' and ') against SHA256SUMS"
 }
 
 if ($Uninstall) {
+    # A -ClientOnly uninstall removes the client and nothing else. It must
+    # not drive `wt daemon uninstall`: this install registered no
+    # coordinator, and inside a container the verb would refuse over the
+    # host's registry entries — entries a container has no business
+    # deciding about.
+    if ($ClientOnly) {
+        $wt = Join-Path $BinDir "wt.exe"
+        if ($DryRun) {
+            Write-Host "would remove: $wt"
+            Write-Host "no coordinator was registered by a -ClientOnly install; none is deregistered"
+            Write-Host "dry run: nothing was changed"
+            exit 0
+        }
+        Remove-Item -Force $wt -ErrorAction SilentlyContinue
+        Write-Host "removed wt.exe from $BinDir (no coordinator was registered by a -ClientOnly install)"
+        exit 0
+    }
     if ($DryRun) {
         # Print every action, change nothing.
         $wt = Join-Path $BinDir "wt.exe"
@@ -209,7 +274,13 @@ if ($SkipVerify) {
 Write-VersionLine
 
 if ($DryRun) {
-    Write-Host "would install wt.exe and wtd.exe into $BinDir"
+    Write-Host "would install $($Bins -join ' and ') into $BinDir"
+    if ($ClientOnly) {
+        Write-Host "client only: no coordinator is installed and nothing is registered"
+        Write-Host "the client reaches a coordinator through WT_ENDPOINT and WT_CLIENT_TOKEN"
+        Write-Host "dry run: nothing was changed"
+        exit 0
+    }
     if ($Addr) {
         Write-Host "address: $Addr (as given)"
     } else {
@@ -226,6 +297,7 @@ if ($DryRun) {
     if ($RegPrefix) { $cmd += " --prefix $RegPrefix" }
     if ($Addr) { $cmd += " --addr $Addr" }
     if ($ContainerToken) { $cmd += " --container-token <token>" }
+    foreach ($h in $AllowHost) { $cmd += " --allow-host $h" }
     Write-Host "would run: $cmd"
     Write-Host "dry run: nothing was changed"
     exit 0
@@ -236,15 +308,28 @@ if ($DryRun) {
 # the open file image makes Move-Item fail with a sharing violation — so
 # the coordinator's task is ended first; the `wt daemon install` below
 # re-registers and restarts it. A task that does not exist or is not
-# running makes schtasks fail, which is expected and ignored.
-& schtasks /End /TN "com.mrgeoffrich.wtd" 2>$null | Out-Null
+# running makes schtasks fail, which is expected and ignored. A
+# client-only install replaces no coordinator image, so it ends no task.
+if (-not $ClientOnly) {
+    & schtasks /End /TN "com.mrgeoffrich.wtd" 2>$null | Out-Null
+}
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
-foreach ($bin in @("wt.exe", "wtd.exe")) {
+foreach ($bin in $Bins) {
     $tmp = Join-Path $BinDir ".$bin.tmp"
     Copy-Item (Join-Path $ScriptDir $bin) $tmp -Force
     Move-Item -Force $tmp (Join-Path $BinDir $bin)
 }
-Write-Host "installed wt.exe and wtd.exe into $BinDir"
+Write-Host "installed $($Bins -join ' and ') into $BinDir"
+
+# A client-only install stops here: there is no coordinator to register,
+# and the endpoint the client talks to is given at run time by the two
+# environment variables rather than pinned at install time.
+if ($ClientOnly) {
+    Write-Host "client only: no coordinator was installed and nothing was registered"
+    Write-Host "point the client at one with WT_ENDPOINT=http://<host>:<port> and WT_CLIENT_TOKEN=<token>"
+    Write-Host "verify with: wt daemon status"
+    exit 0
+}
 
 # Register the coordinator with the Task Scheduler and start it: the
 # installer drives `wt daemon install`, which owns the logon-task
@@ -264,6 +349,9 @@ if ($Addr -ne "") {
 }
 if ($ContainerToken -ne "") {
     $regArgs += "--container-token", $ContainerToken
+}
+foreach ($h in $AllowHost) {
+    $regArgs += "--allow-host", $h
 }
 & $wt daemon install @regArgs --wtd $wtd
 if ($ContainerToken -ne "" -and $RegPrefix -eq "") {

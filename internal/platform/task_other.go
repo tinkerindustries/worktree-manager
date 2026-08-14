@@ -19,7 +19,7 @@ func windowsTaskDir(prefix string) (string, error) {
 func taskSchedulerRunning(prefix string) (bool, error) { return false, nil }
 
 // installWindowsTask refuses off windows.
-func installWindowsTask(prefix, wtdPath, addr, containerToken string) (InstallSupervisorResult, error) {
+func installWindowsTask(prefix, wtdPath, addr, containerToken string, allowedHosts []string) (InstallSupervisorResult, error) {
 	return InstallSupervisorResult{}, errors.New("no Task Scheduler on this platform")
 }
 

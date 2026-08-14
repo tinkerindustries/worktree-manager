@@ -407,7 +407,10 @@ Import rules, fixed for the whole plan:
   `subtle.ConstantTimeCompare`, with **one identical refusal** for a
   missing, wrong or wrong-kind token — the API must not be an oracle that
   distinguishes them. `http.MaxBytesReader` caps a body at 1 MiB, the
-  `Host` header must be loopback or the configured address, and
+  `Host` header must be loopback, the configured address or a value the
+  operator named with `--allow-host` (which is how a container reaching
+  the host by name — `host.docker.internal` — gets in, and nothing else
+  does), and
   `X-Wt-Client: 1` is required so no browser simple-form POST can reach
   the API. No CORS header is ever sent and no preflight answered.
   `ReadHeaderTimeout` is 10s.
@@ -889,7 +892,9 @@ changed:
 - **Browser reachability**: a loopback HTTP port is reachable from any
   page the user opens. Bearer auth alone would cover it, but `Host`
   validation, the required `X-Wt-Client: 1` header, no CORS headers and no
-  answered preflight make it structural.
+  answered preflight make it structural. `--allow-host` widens the `Host`
+  rule by exact name and by nothing else, so a container's hostname can be
+  admitted without admitting names in general.
 - **Proxy leakage**: the client's transport sets `Proxy: nil`.
   `http.DefaultTransport` honours `HTTP_PROXY`, which would have sent the
   coordinator's bearer token to a proxy from any shell that had one set.

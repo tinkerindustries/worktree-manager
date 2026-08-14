@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/api"
@@ -60,6 +61,8 @@ func run(args []string) int {
 	allowRemote := fs.Bool("allow-remote", false, "allow a non-loopback bind address (--addr off loopback is refused without this)")
 	activate := fs.Bool("activate", false, "consume the listening socket systemd passed via LISTEN_FDS (the systemd unit passes this; mutually exclusive with --addr)")
 	containerToken := fs.String("container-token", "", "the token that admits container clients (WT_CLIENT_TOKEN); 16+ characters; absent, only host clients are accepted")
+	var allowedHosts allowHostList
+	fs.Var(&allowedHosts, "allow-host", "a Host header value to accept beyond loopback and this coordinator's own address, e.g. host.docker.internal (repeatable); a container reaching the host by name needs its name here")
 	versionFlag := fs.Bool("version", false, "print the version and the commit, then exit")
 	if err := fs.Parse(args); err != nil {
 		return 1
@@ -78,7 +81,7 @@ func run(args []string) int {
 	// one this binary will start with, and neither can drift from the
 	// other's idea of what is valid. Containers stay opt-in: absent
 	// --container-token the coordinator accepts host clients only.
-	if err := platform.ValidateCoordinatorConfig(*addr, *containerToken, *allowRemote); err != nil {
+	if err := platform.ValidateCoordinatorConfig(*addr, *containerToken, *allowRemote, allowedHosts); err != nil {
 		fmt.Fprintf(os.Stderr, "wtd: %v\n", err)
 		return 1
 	}
@@ -133,6 +136,10 @@ func run(args []string) int {
 	}
 	log.Info("wtd startup recovery", "result", coord.RecoveryReport(recovered))
 	srv := coord.NewServer(h, log)
+	// The extra Host values the DNS-rebinding guard admits. Nothing is
+	// inferred: a container reaching this machine by name works because
+	// the operator named that host, and every other Host is still refused.
+	srv.AllowedHosts = allowedHosts
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -180,11 +187,24 @@ func run(args []string) int {
 		log.Error("reserving the coordinator's own port in the band ledger", "err", perr)
 		return 1
 	}
-	log.Info("wtd starting", "version", version, "store", root, "addr", listenAddr, "container_token", *containerToken != "")
+	log.Info("wtd starting", "version", version, "store", root, "addr", listenAddr, "container_token", *containerToken != "", "allow_host", strings.Join(allowedHosts, ","))
 	if err := srv.Serve(ctx, listenAddr); err != nil {
 		log.Error("coordinator stopped with an error", "err", err)
 		return 1
 	}
 	log.Info("wtd stopped")
 	return 0
+}
+
+// allowHostList collects a repeatable --allow-host flag. Each occurrence
+// appends, so the flag reads as "and also this host" rather than the last
+// one winning — an operator naming two container runtimes' names means
+// both.
+type allowHostList []string
+
+func (l *allowHostList) String() string { return strings.Join(*l, ",") }
+
+func (l *allowHostList) Set(v string) error {
+	*l = append(*l, v)
+	return nil
 }
