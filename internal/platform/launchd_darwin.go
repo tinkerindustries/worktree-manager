@@ -83,3 +83,34 @@ func launchdRunning() (bool, error) {
 	}
 	return strings.Contains(string(out), "state = running"), nil
 }
+
+// uninstallLaunchAgent reverses installLaunchAgent: stop and deregister the
+// agent (bootout), then remove the plist. A bootout of an agent that is not
+// loaded fails, which is expected and ignored — not loaded is the goal —
+// the same tolerance loadLaunchAgent gives it on the way in. The wait after
+// bootout mirrors loadLaunchAgent too: launchd tears the service down
+// asynchronously, and the plist is only removed once the label is genuinely
+// gone. If the label survives the wait, the result's note says so and names
+// the command that finishes the job.
+func uninstallLaunchAgent(prefix string) (UninstallSupervisorResult, error) {
+	path, err := SupervisorRegistrationPath(prefix)
+	if err != nil {
+		return UninstallSupervisorResult{}, err
+	}
+	res := UninstallSupervisorResult{RegistrationPath: path}
+	if prefix != "" {
+		// A test prefix never loaded anything: nothing to stop.
+		res.Removed, err = removeRegistrationFile(path)
+		return res, err
+	}
+	exec.Command("launchctl", "bootout", launchdDomain()+"/"+LaunchAgentLabel).Run()
+	waitForLaunchdUnload()
+	if launchdKnowsLabel() {
+		res.Note = fmt.Sprintf("launchd still reports the agent loaded; run 'launchctl bootout %s/%s' and check 'launchctl print %s/%s'",
+			launchdDomain(), LaunchAgentLabel, launchdDomain(), LaunchAgentLabel)
+	} else {
+		res.Stopped = true
+	}
+	res.Removed, err = removeRegistrationFile(path)
+	return res, err
+}
