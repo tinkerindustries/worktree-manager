@@ -67,15 +67,18 @@ func systemctl(args ...string) error {
 // Restart=always is the systemd analogue of launchd's KeepAlive. The
 // Requires/After pair ties the service to its socket unit, so the socket
 // exists whenever the service starts — including the login-time start.
-// With the opt-in loopback TCP surface configured, ExecStart also carries
-// --tcp and --tcp-token; each argument is quoted under systemd's rules, and
-// a unit that carries the token is written 0600 (systemd accepts it, and a
-// machine's other users cannot read the token out of the unit file — the
-// security pass, phase 9).
-func systemdServiceUnit(wtdPath, tcpAddr, tcpToken string) []byte {
+// With the container token configured, ExecStart also carries
+// --addr and --container-token; each argument is quoted under systemd's
+// rules, and a unit that carries the token is written 0600 (systemd
+// accepts it, and a machine's other users cannot read the token out of
+// the unit file — the security pass, phase 9).
+func systemdServiceUnit(wtdPath, addr, containerToken string) []byte {
 	exec := systemdEscapeExec(wtdPath) + " --activate"
-	if tcpAddr != "" {
-		exec += " --tcp " + systemdEscapeExec(tcpAddr) + " --tcp-token " + systemdEscapeExec(tcpToken)
+	if addr != "" {
+		exec += " --addr " + systemdEscapeExec(addr)
+	}
+	if containerToken != "" {
+		exec += " --container-token " + systemdEscapeExec(containerToken)
 	}
 	return []byte(fmt.Sprintf(`[Unit]
 Description=Worktree Manager coordinator (wtd)
@@ -124,7 +127,7 @@ func systemdEscapeExec(p string) string {
 // both), --now for the immediate start that mirrors launchctl kickstart.
 // The service start consumes the socket unit's descriptor, so the
 // coordinator is listening as soon as the units are up.
-func installSystemdUnits(prefix, wtdPath, tcpAddr, tcpToken string) (InstallSupervisorResult, error) {
+func installSystemdUnits(prefix, wtdPath, addr, containerToken string) (InstallSupervisorResult, error) {
 	dir, err := systemdUserDir(prefix)
 	if err != nil {
 		return InstallSupervisorResult{}, err
@@ -135,14 +138,14 @@ func installSystemdUnits(prefix, wtdPath, tcpAddr, tcpToken string) (InstallSupe
 	svc := filepath.Join(dir, SystemdServiceFilename)
 	sock := filepath.Join(dir, SystemdSocketFilename)
 	mode := os.FileMode(0o644)
-	if tcpToken != "" {
+	if containerToken != "" {
 		// The service unit carries the TCP token: 0600, so a machine's
 		// other users cannot read it out of the unit file and connect over
 		// the loopback surface (the security pass, phase 9). systemd
 		// accepts non-world-readable unit files.
 		mode = 0o600
 	}
-	if err := os.WriteFile(svc, systemdServiceUnit(wtdPath, tcpAddr, tcpToken), mode); err != nil {
+	if err := os.WriteFile(svc, systemdServiceUnit(wtdPath, addr, containerToken), mode); err != nil {
 		return InstallSupervisorResult{}, fmt.Errorf("writing %s: %w", svc, err)
 	}
 	if err := os.WriteFile(sock, systemdSocketUnit(), 0o644); err != nil {
@@ -150,7 +153,7 @@ func installSystemdUnits(prefix, wtdPath, tcpAddr, tcpToken string) (InstallSupe
 	}
 	if prefix != "" {
 		note := "registration written under a test prefix (" + svc + " and its paired socket unit " + sock + "); no systemd state was touched"
-		if tcpToken != "" {
+		if containerToken != "" {
 			note += "; the service unit carries the loopback TCP token"
 		}
 		return InstallSupervisorResult{

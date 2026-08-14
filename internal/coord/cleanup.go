@@ -27,7 +27,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 	"github.com/mrgeoffrich/worktree-manager/internal/treecheck"
@@ -97,18 +97,17 @@ func (h *Handler) SweepCleanup() (int, error) {
 
 	cleaned := 0
 	for _, c := range candidates {
-		reg, err := h.st.ReadRegistry()
+		e, ok, err := h.st.GetEntry(c.app, c.slug)
 		if err != nil {
 			return cleaned, err
 		}
-		e := registryEntry(reg, c.app, c.slug)
-		if e == nil {
+		if !ok {
 			continue // gone since the snapshot; nothing to clean
 		}
 		skip := func(reason string) {
 			h.log.Info("scheduled cleanup skipped an entry", "app", c.app, "slug", c.slug, "reason", reason)
 		}
-		if e.OwnerKind != protocol.KindHost || e.Owner != uid {
+		if e.OwnerKind != api.KindHost || e.Owner != uid {
 			skip("owned by another client; the sweep never adopts a view")
 			continue
 		}
@@ -141,12 +140,11 @@ func (h *Handler) SweepCleanup() (int, error) {
 		}
 		// The registry moved on while the checks ran; the teardown works
 		// from the entry as it stands now.
-		reg, err = h.st.ReadRegistry()
+		e, ok, err = h.st.GetEntry(c.app, c.slug)
 		if err != nil {
 			return cleaned, err
 		}
-		e = registryEntry(reg, c.app, c.slug)
-		if e == nil {
+		if !ok {
 			skip("the entry went away while the checks ran")
 			continue
 		}

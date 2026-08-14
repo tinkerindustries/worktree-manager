@@ -105,10 +105,12 @@ usage:
 every verb offers --json: exactly one JSON object on stdout, nothing else.
 results go to stdout, diagnostics to stderr.
 
-WT_SOCKET names the coordinator's location: a socket path, or the opt-in
-loopback TCP form tcp://host:port (clients on hosts where a socket cannot
-be shared into a container — Docker Desktop's virtiofs — dial the host's
-loopback TCP listener and present the token via WT_CLIENT_TOKEN).
+WT_ENDPOINT names the coordinator's location: a base URL such as
+http://127.0.0.1:7833 (default when unset and no endpoint.json exists).
+The coordinator writes endpoint.json — the base URL and the host token —
+into WT_HOME/$HOME/.wt at startup; a host client reads it, and a
+container, which never mounts the store, is given WT_ENDPOINT and
+WT_CLIENT_TOKEN explicitly.
 
 exit codes: 0 success, 1 failure, 2 usage error, 3 refused by a safety
 check, 4 required context unavailable, 5 coordinator unreachable.

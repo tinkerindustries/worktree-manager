@@ -19,8 +19,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
@@ -107,13 +107,13 @@ func sweepHarness(t *testing.T, sp *spec.Spec) (*Harness, *bytes.Buffer) {
 	}
 	h.InstallDrivers(driver.NewRegistry(&driver.Port{}))
 	harness := &Harness{Store: st, H: h}
-	sess, reply := harness.ConnectPeer(Peer{UID: os.Getuid(), Known: true}, protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	sess, cerr := harness.ConnectPeer(os.Getuid(), api.KindHost, "")
+	if cerr != nil {
+		t.Fatalf("connect refused: %+v", cerr)
 	}
-	if resp := h.Handle(context.Background(), sess, &protocol.Request{
+	if resp := h.Handle(context.Background(), sess, &api.Request{
 		Verb: "bands.reserve",
-		Args: mustJSON(&protocol.ReserveBandArgs{Spec: *sp, Bases: map[string]int{"api": 7500}}),
+		Args: mustJSON(&api.ReserveBandArgs{Spec: *sp, Bases: map[string]int{"api": 7500}}),
 	}); resp.Error != nil {
 		t.Fatalf("bands.reserve refused: %+v", resp.Error)
 	}
@@ -138,7 +138,7 @@ func fakeSweepGh(t *testing.T, h *Harness, merged func() string) {
 // sweepEntry allocates one entry for the sweep app.
 func sweepEntry(t *testing.T, h *Harness, sp *spec.Spec, slug, path string) {
 	t.Helper()
-	resp := h.Request(context.Background(), mustSession(t, h), verbAllocate, &protocol.AllocateArgs{
+	resp := h.Request(context.Background(), mustSession(t, h), verbAllocate, &api.AllocateArgs{
 		Spec: *sp, Slug: slug, Path: path,
 		DescriptorPath: filepath.Join(path, "wt-env.yaml"), Description: "a sweep worktree",
 	})
@@ -150,9 +150,9 @@ func sweepEntry(t *testing.T, h *Harness, sp *spec.Spec, slug, path string) {
 // mustSession connects the host user and returns the session.
 func mustSession(t *testing.T, h *Harness) *Session {
 	t.Helper()
-	sess, reply := h.ConnectPeer(Peer{UID: os.Getuid(), Known: true}, protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	sess, cerr := h.ConnectPeer(os.Getuid(), api.KindHost, "")
+	if cerr != nil {
+		t.Fatalf("connect refused: %+v", cerr)
 	}
 	return sess
 }
@@ -169,9 +169,9 @@ func TestSweepCleanupGhUnavailableCleansNothing(t *testing.T) {
 		return []byte("gh: not logged in"), fmt.Errorf("gh auth status failed")
 	}
 
-	cleaned, err := h.H.SweepCleanup()
-	if err != nil {
-		t.Fatalf("SweepCleanup: %v", err)
+	cleaned, rerr := h.H.SweepCleanup()
+	if rerr != nil {
+		t.Fatalf("SweepCleanup: %v", rerr)
 	}
 	if cleaned != 0 {
 		t.Fatalf("cleaned = %d, want 0 with gh unavailable", cleaned)
@@ -195,9 +195,9 @@ func TestSweepCleanupCleansMergedCleanOwnEntry(t *testing.T) {
 	sweepEntry(t, h, sp, "wt-1", worktree)
 	fakeSweepGh(t, h, func() string { return `{"number":7,"state":"MERGED"}` })
 
-	cleaned, err := h.H.SweepCleanup()
-	if err != nil {
-		t.Fatalf("SweepCleanup: %v", err)
+	cleaned, rerr := h.H.SweepCleanup()
+	if rerr != nil {
+		t.Fatalf("SweepCleanup: %v", rerr)
 	}
 	if cleaned != 1 {
 		t.Fatalf("cleaned = %d, want 1", cleaned)
@@ -205,9 +205,9 @@ func TestSweepCleanupCleansMergedCleanOwnEntry(t *testing.T) {
 	if _, serr := os.Stat(worktree); !os.IsNotExist(serr) {
 		t.Errorf("the worktree must be removed: %s still exists", worktree)
 	}
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	if len(reg.Entries) != 0 {
 		t.Errorf("the registry must be empty after the sweep: %+v", reg.Entries)
@@ -227,8 +227,8 @@ func TestSweepCleanupSkipsEverySkipLogged(t *testing.T) {
 	h, logBuf := sweepHarness(t, sp)
 
 	// The entry of another host client (a different uid).
-	other, _ := h.ConnectPeer(Peer{UID: 4242, Known: true}, protocol.KindHost, "")
-	if otherReply := h.Request(context.Background(), other, verbAllocate, &protocol.AllocateArgs{
+	other, _ := h.ConnectPeer(4242, api.KindHost, "")
+	if otherReply := h.Request(context.Background(), other, verbAllocate, &api.AllocateArgs{
 		Spec: *sp, Slug: "wt-foreign", Path: worktree,
 		DescriptorPath: filepath.Join(worktree, "wt-env.yaml"), Description: "someone else's",
 	}); otherReply.Error != nil {
@@ -250,9 +250,9 @@ func TestSweepCleanupSkipsEverySkipLogged(t *testing.T) {
 	// The dirty tree's PR would be merged if gh were asked per branch; the
 	// fake answers the same for every tree, which still exercises the
 	// dirty skip — the merged-PR question never gets that far.
-	cleaned, err := h.H.SweepCleanup()
-	if err != nil {
-		t.Fatalf("SweepCleanup: %v", err)
+	cleaned, rerr := h.H.SweepCleanup()
+	if rerr != nil {
+		t.Fatalf("SweepCleanup: %v", rerr)
 	}
 	if cleaned != 0 {
 		t.Fatalf("cleaned = %d, want 0: every candidate must be skipped", cleaned)
@@ -269,9 +269,9 @@ func TestSweepCleanupSkipsEverySkipLogged(t *testing.T) {
 			t.Errorf("the sweep must not touch %s", p)
 		}
 	}
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	if len(reg.Entries) != 4 {
 		t.Errorf("all four entries must survive the skip sweep: %+v", reg.Entries)
@@ -285,11 +285,11 @@ func TestSweepCleanupForeignEphemeralNeverAdopted(t *testing.T) {
 	sp := sweepSpec(t)
 	_, worktree := sweepRepo(t, sp)
 	h, logBuf := sweepHarness(t, sp)
-	eph, reply := h.Connect(protocol.KindEphemeral, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	eph, err := h.Connect(api.KindEphemeral, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
-	if resp := h.Request(context.Background(), eph, verbAllocate, &protocol.AllocateArgs{
+	if resp := h.Request(context.Background(), eph, verbAllocate, &api.AllocateArgs{
 		Spec: *sp, Slug: "wt-eph", Path: worktree,
 		DescriptorPath: filepath.Join(worktree, "wt-env.yaml"), Description: "a dead container's",
 	}); resp.Error != nil {
@@ -297,21 +297,21 @@ func TestSweepCleanupForeignEphemeralNeverAdopted(t *testing.T) {
 	}
 	// Age the owner out: reclamation would take this entry by handle.
 	h.H.ReclaimInterval = 0
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatal(err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatal(rerr)
 	}
-	for i := range reg.Entries {
-		reg.Entries[i].LastSeen = "2000-01-01T00:00:00Z"
-	}
-	if err := h.Store.WriteRegistry(reg); err != nil {
-		t.Fatal(err)
+	for _, e := range reg.Entries {
+		e.LastSeen = "2000-01-01T00:00:00Z"
+		if err := h.Store.UpsertEntry(e); err != nil {
+			t.Fatal(err)
+		}
 	}
 	fakeSweepGh(t, h, func() string { return `{"number":7,"state":"MERGED"}` })
 
-	cleaned, err := h.H.SweepCleanup()
-	if err != nil {
-		t.Fatalf("SweepCleanup: %v", err)
+	cleaned, rerr := h.H.SweepCleanup()
+	if rerr != nil {
+		t.Fatalf("SweepCleanup: %v", rerr)
 	}
 	if cleaned != 0 {
 		t.Fatalf("cleaned = %d, want 0: the sweep never adopts a view", cleaned)

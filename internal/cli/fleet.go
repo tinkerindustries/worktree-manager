@@ -9,7 +9,6 @@ package cli
 
 import (
 	"bytes"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -19,24 +18,27 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
+	apiclient "github.com/mrgeoffrich/worktree-manager/internal/api/client"
 )
 
 // runList implements `wt list [--json] [--wide]`: the whole registry
 // across every repo, with the stale / unverifiable / reclaimable / foreign
 // markers, secrets redacted unless --wide is given to the owning client.
 func runList(args []string, stdout, stderr io.Writer) int {
-	return coordVerb("list", args, stdout, stderr, "list",
-		func(fs *flag.FlagSet) func() any {
+	return coordVerb("list", args, stdout, stderr, api.VerbList,
+		func(fs *flag.FlagSet) func(*coordClient) (*api.ListResult, *apiclient.Error) {
 			wide := fs.Bool("wide", false, "show seed credentials (served to the owning client alone)")
-			return func() any { return &protocol.ListArgs{Wide: *wide} }
+			return func(sess *coordClient) (*api.ListResult, *apiclient.Error) {
+				return sess.client.List(&api.ListArgs{Wide: *wide})
+			}
 		}, writeListTable)
 }
 
 // writeListTable prints the registry in text form: one line per entry,
 // sorted by app then slot, with the markers in the flags column.
-func writeListTable(stdout, stderr io.Writer, res *protocol.ListResult) int {
-	entries := append([]protocol.ListEntry(nil), res.Entries...)
+func writeListTable(stdout, stderr io.Writer, res *api.ListResult) int {
+	entries := append([]api.ListEntry(nil), res.Entries...)
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].App != entries[j].App {
 			return entries[i].App < entries[j].App
@@ -71,12 +73,17 @@ func writeListTable(stdout, stderr io.Writer, res *protocol.ListResult) int {
 // diagnostics (stderr). Exit 0 when doctor ran, whatever it found —
 // findings are data, and a scheduled caller can branch on the JSON.
 func runDoctor(args []string, stdout, stderr io.Writer) int {
-	return coordVerb("doctor", args, stdout, stderr, "doctor", nil, writeDoctorReport)
+	return coordVerb("doctor", args, stdout, stderr, api.VerbDoctor,
+		func(*flag.FlagSet) func(*coordClient) (*api.DoctorResult, *apiclient.Error) {
+			return func(sess *coordClient) (*api.DoctorResult, *apiclient.Error) {
+				return sess.client.Doctor()
+			}
+		}, writeDoctorReport)
 }
 
 // writeDoctorReport prints the findings on stdout, each with the command
 // that fixes it, and the bounded-coverage notes on stderr.
-func writeDoctorReport(stdout, stderr io.Writer, res *protocol.DoctorResult) int {
+func writeDoctorReport(stdout, stderr io.Writer, res *api.DoctorResult) int {
 	for _, n := range res.Notes {
 		fmt.Fprintf(stderr, "note: %s\n", n)
 	}
@@ -97,11 +104,16 @@ func writeDoctorReport(stdout, stderr io.Writer, res *protocol.DoctorResult) int
 // kind, last seen, how many entries each owns, and which ephemeral clients
 // have aged out.
 func runClients(args []string, stdout, stderr io.Writer) int {
-	return coordVerb("clients", args, stdout, stderr, "clients.list", nil, writeClientsTable)
+	return coordVerb("clients", args, stdout, stderr, api.VerbClientsList,
+		func(*flag.FlagSet) func(*coordClient) (*api.ClientsListResult, *apiclient.Error) {
+			return func(sess *coordClient) (*api.ClientsListResult, *apiclient.Error) {
+				return sess.client.ClientsList()
+			}
+		}, writeClientsTable)
 }
 
 // writeClientsTable prints one line per known client.
-func writeClientsTable(stdout, stderr io.Writer, res *protocol.ClientsListResult) int {
+func writeClientsTable(stdout, stderr io.Writer, res *api.ClientsListResult) int {
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "IDENTITY\tKIND\tEPHEMERAL\tLAST SEEN\tENTRIES\tSTATE")
 	if len(res.Clients) == 0 {
@@ -176,15 +188,10 @@ func runReconcile(args []string, stdout, stderr io.Writer) int {
 	}
 	defer sess.Close()
 
-	raw, lerr := sess.request("list", &protocol.ListArgs{})
+	list, lerr := sess.client.List(&api.ListArgs{})
 	if lerr != nil {
-		WriteError(stderr, lerr)
+		WriteError(stderr, requestErr(sess.endpoint, api.VerbList, lerr))
 		return lerr.Code
-	}
-	var list protocol.ListResult
-	if err := json.Unmarshal(raw, &list); err != nil {
-		WriteError(stderr, New(ExitFailure, fmt.Sprintf("decoding the list response: %v", err), ""))
-		return ExitFailure
 	}
 
 	// The plan: one repair per eligible entry of this app. Eligibility is
@@ -246,10 +253,10 @@ func runReconcile(args []string, stdout, stderr io.Writer) int {
 	} else {
 		// The real run: init's repair path for the entries with a directory,
 		// the coordinator's reap-teardown-drop for the rest.
-		var coordinatorRefs []protocol.EntryRef
+		var coordinatorRefs []api.EntryRef
 		for _, p := range plan {
 			if p.action != "init" {
-				coordinatorRefs = append(coordinatorRefs, protocol.EntryRef{App: sp.App, Slug: p.slug})
+				coordinatorRefs = append(coordinatorRefs, api.EntryRef{App: sp.App, Slug: p.slug})
 				continue
 			}
 			var buf bytes.Buffer
@@ -262,15 +269,10 @@ func runReconcile(args []string, stdout, stderr io.Writer) int {
 			rows = append(rows, reconcileRow{Slug: p.slug, Action: "repaired", Detail: detail})
 		}
 		if len(coordinatorRefs) > 0 {
-			raw, rerr := sess.request("reconcile", &protocol.ReconcileArgs{App: sp.App, Spec: *sp, Refs: coordinatorRefs})
+			res, rerr := sess.client.Reconcile(&api.ReconcileArgs{App: sp.App, Spec: *sp, Refs: coordinatorRefs})
 			if rerr != nil {
-				WriteError(stderr, rerr)
+				WriteError(stderr, requestErr(sess.endpoint, api.VerbReconcile, rerr))
 				return rerr.Code
-			}
-			var res protocol.ReconcileResult
-			if err := json.Unmarshal(raw, &res); err != nil {
-				WriteError(stderr, New(ExitFailure, fmt.Sprintf("decoding the reconcile response: %v", err), ""))
-				return ExitFailure
 			}
 			for _, oc := range res.Outcomes {
 				rows = append(rows, reconcileRow{Slug: oc.Slug, Action: oc.Action, Detail: oc.Note})

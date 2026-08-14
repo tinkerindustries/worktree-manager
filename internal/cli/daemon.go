@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 )
 
@@ -153,11 +154,11 @@ func runDaemonStatus(args []string, stdout, stderr io.Writer) int {
 		WriteError(stderr, New(ExitFailure, fmt.Sprintf("asking the supervisor: %v", err), ""))
 		return ExitFailure
 	}
-	// The socket path feeds the fix text; if it cannot be resolved the
-	// state is still a state, and the fix says to set WT_SOCKET.
-	socketPath, _ := platform.SocketPath()
+	// The endpoint feeds the fix text; if it cannot be resolved the
+	// state is still a state, and the fix says to set WT_ENDPOINT.
+	base, _, _ := resolveEndpoint()
 	dialErr := daemonDeps.reachable()
-	res := daemonStatusOf(registered, running, dialErr, platform.DaemonFixesFor(socketPath))
+	res := daemonStatusOf(registered, running, dialErr, platform.DaemonFixesFor(base))
 	// The lingering caveat applies to every state on Linux: a systemd
 	// user unit stops at logout unless lingering is enabled, so a running
 	// coordinator today is a dead one after logout. The note names the
@@ -190,6 +191,15 @@ type daemonInstallResult struct {
 	RegistrationPath string `json:"registration_path"`
 	Label            string `json:"label"`
 	Loaded           bool   `json:"loaded"`
+	// Addr is the address pinned into the registration, and AddrChosen
+	// says it was picked here rather than given. A --json consumer needs
+	// both: with two users on one machine the second gets a port nobody
+	// asked for, and nothing else on the machine reveals which.
+	Addr       string `json:"addr"`
+	AddrChosen bool   `json:"addr_chosen"`
+	// ContainerClients reports whether a container token was configured,
+	// never the token itself.
+	ContainerClients bool   `json:"container_clients"`
 	Note             string `json:"note,omitempty"`
 }
 
@@ -209,8 +219,9 @@ func runDaemonInstall(args []string, stdout, stderr io.Writer) int {
 	jsonOut := fs.Bool("json", false, "print exactly one JSON object on stdout")
 	prefix := fs.String("prefix", "", "registration prefix instead of the real supervisor location (tests and temp prefixes)")
 	wtdFlag := fs.String("wtd", "", "path to the wtd binary (default: next to this wt binary)")
-	tcp := fs.String("tcp", "", "start the coordinator with the opt-in loopback TCP listener at this address (requires --tcp-token)")
-	tcpToken := fs.String("tcp-token", "", "the token every TCP connection must present (required with --tcp; at least 16 characters)")
+	addrFlag := fs.String("addr", "", "listen address to register (default: the coordinator's own default, or the next free port if it is taken)")
+	containerToken := fs.String("container-token", "", "the token that admits container clients; at least 16 characters. Absent, the coordinator accepts host clients only")
+	allowRemote := fs.Bool("allow-remote", false, "allow a non-loopback --addr (refused without this)")
 	if err := fs.Parse(args); err != nil {
 		return ExitUsage
 	}
@@ -221,14 +232,31 @@ func runDaemonInstall(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 
-	// The loopback TCP surface is one decision: address and token together,
-	// loopback-only, token long enough to resist brute force — validated
-	// here so a unit that could never authenticate is refused at
-	// configuration time rather than at the coordinator's first start
-	// (platform.ValidateTCPConfig is the same check wtd itself runs).
-	if err := platform.ValidateTCPConfig(*tcp, *tcpToken); err != nil {
-		WriteError(stderr, New(ExitUsage, err.Error(), "re-run with a loopback address and a token of at least 16 characters"))
+	// The address and the token are independent settings, each checked on
+	// its own terms — this is the same check wtd itself runs, so a
+	// registration that would be refused at the coordinator's first start
+	// is refused here instead (platform.ValidateCoordinatorConfig).
+	if err := platform.ValidateCoordinatorConfig(*addrFlag, *containerToken, *allowRemote); err != nil {
+		WriteError(stderr, New(ExitUsage, err.Error(),
+			"re-run with a loopback address (or --allow-remote) and, if you configure one, a container token of at least 16 characters"))
 		return ExitUsage
+	}
+
+	// With no --addr, pin a concrete free port into the registration rather
+	// than leaving the unit to discover a clash at start. Two users on one
+	// machine is the case that needs it: the second cannot bind the
+	// default, and a registration that names a port it can never take is a
+	// coordinator that never starts.
+	addr := *addrFlag
+	chosen := false
+	if addr == "" {
+		var perr error
+		addr, chosen, perr = platform.ChooseRegistrationAddr(api.DefaultAddr)
+		if perr != nil {
+			WriteError(stderr, New(ExitFailure, perr.Error(),
+				"pass --addr <host:port> with a port you know is free"))
+			return ExitFailure
+		}
 	}
 
 	wtd := *wtdFlag
@@ -248,7 +276,8 @@ func runDaemonInstall(args []string, stdout, stderr io.Writer) int {
 	}
 
 	res, err := platform.InstallSupervisor(platform.InstallSupervisorOpts{
-		Prefix: *prefix, WtdPath: wtd, TCPAddr: *tcp, TCPToken: *tcpToken,
+		Prefix: *prefix, WtdPath: wtd, Addr: addr,
+		ContainerToken: *containerToken, AllowRemote: *allowRemote,
 	})
 	if err != nil {
 		if errors.Is(err, platform.ErrNoSupervisor) {
@@ -260,7 +289,11 @@ func runDaemonInstall(args []string, stdout, stderr io.Writer) int {
 		return ExitFailure
 	}
 
-	out := daemonInstallResult{RegistrationPath: res.RegistrationPath, Label: res.Label, Loaded: res.Loaded, Note: res.Note}
+	out := daemonInstallResult{
+		RegistrationPath: res.RegistrationPath, Label: res.Label, Loaded: res.Loaded,
+		Addr: addr, AddrChosen: chosen, ContainerClients: *containerToken != "",
+		Note: res.Note,
+	}
 	if *jsonOut {
 		if err := WriteJSON(stdout, out); err != nil {
 			WriteError(stderr, New(ExitFailure, err.Error(), ""))
@@ -274,11 +307,20 @@ func runDaemonInstall(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "installed: %s\n", res.RegistrationPath)
 	fmt.Fprintf(stdout, "loaded: %s\n", loaded)
-	if *tcp != "" {
-		// The address is configuration the user chose; the token is a
-		// secret and is never echoed — the operator already holds it, and
-		// an install transcript that repeated it would be a leak.
-		fmt.Fprintf(stdout, "loopback TCP: %s (token configured; clients dial tcp://%s with WT_CLIENT_TOKEN set)\n", *tcp, *tcp)
+	// The address is configuration and is always reported: a port chosen
+	// for the operator rather than by them is the one they most need told,
+	// because nothing else on the machine would reveal it. The token is a
+	// secret and is never echoed — the operator already holds it, and an
+	// install transcript that repeated it would be a leak.
+	fmt.Fprintf(stdout, "listening on: %s\n", addr)
+	if chosen {
+		fmt.Fprintf(stdout, "note: %s was already in use, so this registration takes the next free port\n",
+			api.DefaultAddr)
+	}
+	if *containerToken != "" {
+		fmt.Fprintf(stdout, "container clients: admitted (set WT_ENDPOINT to http://%s and WT_CLIENT_TOKEN to the token)\n", addr)
+	} else {
+		fmt.Fprintf(stdout, "container clients: not admitted (re-run with --container-token to admit them)\n")
 	}
 	if res.Note != "" {
 		fmt.Fprintf(stdout, "%s\n", res.Note)

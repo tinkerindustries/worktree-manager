@@ -1,350 +1,355 @@
-# Worktree Manager — Implementation Plan
+# Worktree Manager — Rearchitecture Plan (HTTP + SQLite)
 
-**Status:** plan of record. Nothing is implemented yet.
-**Date:** 2026-08-12
-**Inputs:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) revision 2, [`docs/worktree-tooling-requirements.md`](docs/worktree-tooling-requirements.md), and the nine module designs in [`docs/design/`](docs/design/).
-**Scope:** [`PLAN-SCOPE.md`](PLAN-SCOPE.md) is frozen and wins on every question of what may be built. Where this plan appears to require something that document rules out, the work stops.
+Phases 0 to 9 shipped and are recorded in git history at `318cbd7`. This
+document replaces that plan and covers one change, in five phases:
+
+1. The store becomes a SQLite database in the user's profile folder. The four
+   JSON files go away, with no migration.
+2. `wtd` becomes a standard HTTP API on a loopback port. The
+   newline-delimited-JSON-over-socket protocol goes away, and with it unix
+   sockets, Windows named pipes and peer credentials.
 
 ## 1. How to read this plan
 
-Ten phases, each one a working state rather than a layer. A phase ends when its exit criteria hold, and every criterion is something that either passes or fails when someone runs it.
-
-The phase order comes from [`docs/ARCHITECTURE.md` §13.2](docs/ARCHITECTURE.md), which pins both ends of the sequence: nothing can be onboarded until the spec schema is settled, and the protocol has to exist before anything crosses the socket. This plan adds a phase in front of that sequence for the schema itself, and one behind it for packaging.
-
-Phases 0 to 5 are a straight line. Phase 5 is the first release worth using: one repo, one platform, two worktrees side by side.
-
-§9 records the decisions that were open when this plan was written and are now closed, with the reasoning behind each, because the reasoning is what a later reader needs in order to change one deliberately.
+Each phase is a self-contained unit of work with exit criteria that can be
+checked without reading the diff. A phase is finished when every criterion
+holds and the gates in §6 pass. Phases run in order: R0 does not depend on the
+wire, and R1 depends on R0 having landed.
 
 ## 2. Which document is authoritative
 
-`docs/ARCHITECTURE.md` revision 2 wins on every point of conflict. It replaced the coordination model, and the nine module documents predate that change.
-
-Superseded, listed here so an implementer knows which text to distrust:
-
-| Document | Section | What replaced it |
-|---|---|---|
-| `00-overview` | §6 | The coordinator, not `WT_HOME` mounted into a container |
-| `01-identity` | §5 | Client identity on the socket, not view identity |
-| `02-coordination` | §8, §9, §12 | One writer. No lock file, no generation counter, no view scoping |
-| `03-drivers` | §2.3 | Operations run in the coordinator's namespaces, so most report `unavailable` far less often |
-| `06-fleet` | §6 | Ephemeral clients and reclamation, not view adoption |
-| `08-platform` | §5 | Capability probes run in the coordinator |
-
-Three consequences worth stating directly, because they delete work the module documents describe in detail. There is no lock file and no generation counter — concurrent requests serialise in the coordinator. There is no view id — `owner` and `ephemeral` on the registry entry do that job, and `path_visible` records what the coordinator can stat. `WT_HOME` is not a container mount point; a container mounts the socket alone.
-
-[`03-drivers.md`](docs/design/03-drivers.md) remains authoritative for the spec schema. On every other mechanism the module documents are correct.
+`PLAN-SCOPE.md` is the frozen scope and outranks this plan wherever they
+disagree. This plan outranks the design notes. `docs/design/*.md` describe the
+system as it was built in phases 0 to 9 and are **historical** for the
+transport and store layers — R3 marks them so. `docs/design/03-drivers.md`
+remains authoritative for the spec schema, which this work does not touch.
 
 ## 3. Conventions that hold in every phase
 
-These are contract, not style. A phase that breaks one is not finished.
+These carry forward unchanged from the original plan and remain contract:
 
-- **Exit codes are 0, 1, 2, 3, 4, 5** per `ARCHITECTURE.md` §11.3. This supersedes M4 §8's set of 0 to 4; code 5 is coordinator unreachable, separated from code 4 because the remedies differ.
-- **`unavailable` is a third result**, distinct from success and failure. An unavailable probe does not block allocation. An unavailable teardown does block freeing the slot.
-- **Every error names the command that fixes it.** Every `doctor` finding too. A report that lists problems without remedies gets read once.
-- **Bounded coverage is stated.** A skipped hook, a fallback to a shared pool, a slot cap, a truncated name: each says so and names the remedy. A silent degrade reads as success.
-- **The system refuses rather than partially honouring.** A spec declaring unsupported features is refused whole. Client and coordinator whose protocol versions do not overlap refuse and name the upgrade.
-- **A teardown handle comes from the registry, never from the working tree.** The directory is routinely gone by the time teardown runs.
-- **Neither binary performs inference.** All judgment lives in the phase 7 skill.
-- **Hooks never run in the coordinator.** They need the worktree, and running arbitrary repo commands in the one privileged process would give every adopted repo the coordinator's authority.
-- **Every verb offers `--json`.** The skills consume all of them. `reconcile --dry-run` is required rather than optional.
+- **Exit codes are 0, 1, 2, 3, 4, 5.** Code 5 is "coordinator unreachable"
+  and stays client-side: a transport failure, never a status code.
+- **Every error names the command that fixes it.** Every `doctor` finding too.
+- **Bounded coverage is stated.** A silent degrade reads as success.
+- **The system refuses rather than partially honouring.**
+- **A teardown handle comes from the registry, never from the working tree.**
+- **Neither binary performs inference.**
+- **Hooks never run in the coordinator.**
+- **Every verb offers `--json`.**
+
+And three that are new to this work:
+
+- **The client never retries.** HTTP clients retry by reflex; a retried
+  `allocate` double-allocates. Any transport failure is exit 5.
+- **The response body is the authority on the exit code.** The HTTP status is
+  advisory and exists for anything reading the API that is not `wt`.
+- **The store database is never client-readable.** Only `endpoint.json` is.
 
 ## 4. Testing approach
 
-Four layers, established as the code that needs them lands. `TESTING.md` carries the detail.
+The four layers hold. The third — the in-process coordinator harness
+(`coord.Harness`) — is the reason this work is tractable: it exercises the
+`Handler` directly with no socket and no server, so the bulk of
+`internal/coord`'s tests are indifferent to the wire and survive R1 untouched.
 
 | Layer | Covers | Needs |
 |---|---|---|
-| Pure unit | Slug rules, template evaluation, band arithmetic, `.env` block editing | Nothing |
-| Real-repo fixtures | Classification, root resolution, containment | Real git repos in `t.TempDir()`, never mocked git output |
-| In-process coordinator | Allocation, authorisation, entry lifecycle, migration | A store path and protocol messages, no socket and no supervisor |
-| Live acceptance | The two gates in §6 | Docker and a coordinator process, from phase 5; in CI from phase 6 |
-
-Classification is tested against real repositories because the bug M1 exists to prevent was a misreading of what git reports. A test built on a mock of the same misreading passes while the bug survives. The fixtures: a plain repository, a repository with two linked worktrees, a clone, a worktree whose directory has been removed, and one of each reached through a symlink.
-
-Each driver runs the same contract conformance suite, so a new driver is a fixture rather than a new test file.
-
-### 4.1 The fixture repositories
-
-No repository outside this one is read or written during implementation. Everything a phase would have proved against a pilot is proved against a synthetic repository built for the purpose and committed under `testdata/fixtures/`. Three of them, each carrying the resource shapes a phase needs and nothing more:
-
-| Fixture | Carries | First needed |
-|---|---|---|
-| `compose-app` | A Go service, three compose files including a dependent test project, one of them pinning `name:`, published ports, a state path, and a second compose stack standing in for a co-resident production stack on fixed ports | Phase 0 spec, phase 5 gates |
-| `plain-app` | No compose. Ports, a shared-by-default resource, and all three `state-path` seed modes | Phase 0 spec, phase 7 |
-| `vm-app` | A `machine` instance per worktree and a `/22` per worktree out of a `/16` pool small enough to exhaust | Phase 0 spec, phase 8 |
-
-Phase 0 builds each far enough for its spec to be honest. Phase 5 gives `compose-app` runnable content, and phases 7 and 8 do the same for the other two as they need them.
-
-The cost of this is stated rather than hidden. A spec written from a repository this plan also invented proves the schema self-consistent, not adequate. `PLAN-SCOPE.md` accepts that, and the first real repository adopted after phase 9 is where the schema meets a case nobody designed for.
+| Pure unit | Slug rules, template evaluation, band arithmetic, `.env` blocks | Nothing |
+| Real-repo fixtures | Classification, root resolution, containment | Real git repos in `t.TempDir()` |
+| In-process coordinator | Allocation, authorisation, entry lifecycle | A store path, no server |
+| HTTP layer *(new)* | Auth, hardening, error mapping, discovery | `httptest.Server` |
+| Live acceptance | The gates in §6 | Docker and a running coordinator |
 
 ## 5. The phases
 
-### Phase 0 — Foundations, and the spec schema
+### Phase R0 — The SQLite store
 
-The schema is the contract between one conversational plane and two deterministic ones. Every generated artefact, every driver and every adoption decision resolves through it, and `ARCHITECTURE.md` §14.2 says it should carry the most review pressure before implementation starts. So it comes first, and it gets proved against real repositories rather than reviewed in the abstract.
+The store is self-contained and its tests prove it without any wire change.
+Doing the wire first would mean debugging both layers at once.
 
-**Build.** One Go module at `github.com/mrgeoffrich/worktree-manager`, two entry points under `cmd/wt` and `cmd/wtd`, internal packages per module. `CGO_ENABLED=0` cross-compilation to macOS, Linux and Windows in CI, with lint and `go test ./...`. The spec parser and validator as a library both binaries link: types, template evaluation by topological sort with cycle detection, per-type constraint checks, and refusal of a version it does not understand.
+**Build.** `internal/store` reimplemented over `modernc.org/sqlite` (pure Go,
+so `CGO_ENABLED=0` cross-compilation is preserved) at `<store>/wt.db`, opened
+WAL with `busy_timeout=5000`, `foreign_keys=on` and `synchronous=FULL`.
 
-The spec is `wt.yaml`, at the repository root, committed, found by walking up from cwd to the worktree root and stopping there. `resources`, `reserved` and `shared` come from [`03-drivers.md` §3](docs/design/03-drivers.md). `hooks` and `emit` are stubs in that document and are fixed here instead, because every later phase builds against them: `emit` declares the descriptor's filename and format, the optional `.env` block and the reader's language; `hooks` declares the five commands in M4 §5, each with an optional timeout, and the sticky parameters in M4 §5.2. Only the field set is frozen now. The semantics stay in phases 4 and 5.
+Schema: `meta`, `entries`, `bands`, `reservations`, `reservation_ports`,
+`reservation_names`, `clients`, `specs`. `entries` is keyed `(app, slug)` with
+a `UNIQUE (app, slot)` index; `resources` and `secrets` are JSON columns.
+`schema_version` moves from a per-file field into `meta`.
 
-**Exit criteria.**
+Queries are generated by **sqlc** from `internal/store/query.sql` and
+`internal/store/schema.sql`. sqlc is a build-time tool tracked as a `tool`
+directive in `go.mod`; its output uses plain `database/sql`, so the runtime
+dependency list stays at two — the YAML package and the SQLite driver. This
+follows the existing `internal/generate` precedent: generated Go that is
+stdlib-only and gofmt-clean by construction. The generated code is committed,
+and CI regenerates and diffs it, failing on drift, exactly as the artefact
+drift check works.
 
-- The three fixture repositories in §4.1 exist far enough for a spec to describe them honestly, and their specs are committed under `testdata/specs/` and validate. Anything the schema cannot express is a schema change, made now.
-- Every field in `hooks` and `emit` is exercised by at least one of the three fixtures, or deleted.
-- `spec explain --slot 1` and `--slot 2`, given bases with `--base <name>=<port>`, produce resource tables from a pure function, and the two tables are disjoint.
-- A template cycle, an unknown cross-resource reference, and a resolved name exceeding the length caps are each rejected at validation with the reason named.
-- A spec that emits a YAML descriptor round-trips a worktree slugged `no` without turning it into `false`.
-- CI produces binaries for all three platforms.
+The access layer keeps whole-collection **reads** — `list` and `doctor`
+genuinely want every row — and adds row-level **mutations**: `GetEntry`,
+`UpsertEntry`, `DeleteEntry`, `UpdateEntryState`, `TouchEntry`, `UpsertBand`,
+`UpsertClient`, `DeleteClient`, `UpsertSpec`, plus `WithTx` for sequences that
+must not half-apply. These are hand-written wrappers over the sqlc-generated
+queries, so `internal/coord` sees the same Go types it sees today. The ~12
+`WriteRegistry` call sites in `internal/coord` become row-level calls; the ~20
+read sites are unchanged.
 
-**Docs.** `CLAUDE.md`, root `ARCHITECTURE.md` skeleton, `TESTING.md`.
-
-### Phase 1 — Identity, containment, and `guard`
-
-M1 and the client half of M8. Nothing here touches a coordinator, which is why it goes first: `guard` and `show` are useful on their own.
-
-**Build.** Classification into not-a-repository, primary checkout, linked worktree and standalone clone. Root resolution from `--show-toplevel`, with the main checkout path reachable only through the classification result. Symlink-resolved, segment-wise containment. Slug validation. Descriptor location. `wt guard --json` and `wt show`, both local, both working with no coordinator installed.
-
-Path realisation and the mount's case sensitivity sit in the platform package. Case sensitivity is probed at the mount, not assumed from `GOOS`, because a case-sensitive volume on macOS is supported and this is the one platform detail carrying a security property.
-
-Drop M1 §5 entirely. View identity does not exist in revision 2.
-
-**Exit criteria.**
-
-- The six fixtures in §4 classify correctly, including through symlinks.
-- `guard` denies a write to the primary checkout from a linked worktree, and the denial names the correct root verbatim.
-- `guard` denies reading a `CLAUDE.md` outside the worktree.
-- `guard` fails open on pipes, `$(...)`, variables and globs, and emits one deny per call.
-- `contains("/a/b", "/a/bc")` is false. On a case-insensitive mount, a differently-cased path inside the tree is contained.
-
-**Docs.** `TESTING.md` gains the fixture layer.
-
-### Phase 2 — The coordinator skeleton and the protocol
-
-Nothing crosses the socket until this exists.
-
-**Build.** `wtd` as a resident per-user process, able to run in the foreground against a `WT_SOCKET` path as well as under a supervisor, because the tests and the CI gates need a coordinator without needing launchd. Unix socket on macOS, registered as a launchd LaunchAgent with socket activation. The request protocol — newline-delimited JSON, one object per request and one per response — with version negotiation on connect that refuses a non-overlapping pair and names the upgrade. Client identity: peer credentials for host clients, a configured token for named containers, an ephemeral declaration for disposable ones, recorded in `clients.json`. `wt daemon status` and `wt daemon install`. Exit code 5 wired through every verb except `show` and `guard`.
+The `Handler` mutex stays. It guards read-modify-write sequences that span
+store calls and driver decisions, which no single transaction covers.
+`claim.go` is untouched.
 
 **Exit criteria.**
 
-- `wt daemon status` distinguishes not-registered, registered-but-stopped, and running-but-unreachable, and names a different fix for each.
-- Every verb other than `show` and `guard` exits 5 with the coordinator stopped, naming the start command. `show` and `guard` still work.
-- A client one protocol version ahead of the coordinator refuses to proceed, from both directions.
-- The in-process harness runs a full request without a socket, a supervisor or a container.
+- `wt.db`, `wt.db-wal` and `wt.db-shm` are all 0600 on unix; entry secrets
+  live in the database and the sidecars are created at the process umask.
+  `wtd` verifies the modes after open and refuses if it cannot set them. On
+  Windows the current-user ACL applies, with the existing refusal to hold
+  credentials where it cannot be set.
+- A duplicate `(app, slot)` is refused by the database, not by the mutex.
+  `TestConcurrentAllocationsGetDistinctSlots` passes with the handler mutex
+  removed in a test-only build path, proving the constraint carries it.
+- A `meta.schema_version` newer than this build is refused, naming the
+  upgrade. A database that cannot be opened is refused with the same reasoning
+  today's unparseable-registry row carries: the registry is the only source of
+  repository locations, so rebuild-from-descriptors cannot be safe.
+- No migration runs. `wtd` logs exactly one startup warning when
+  `registry.json` is present, naming it and saying it is no longer read.
+- `go test -race ./...` passes. Store tests run against a temp database.
+- The wire is unchanged: a `wt` binary built before R0 works against an R0
+  coordinator.
 
-**Docs.** `RELEASE.md`, carrying the version compatibility policy for the three independent versions — protocol, registry schema, spec.
+### Phase R1 — The HTTP wire
 
-### Phase 3 — Coordination core
+The atomic cut. Server and client move together because a coordinator that
+served both would build a compatibility layer this plan then deletes.
 
-M2, minus everything the coordinator model deleted.
+**Build.** `internal/protocol` → `internal/api`: the `*Args`/`*Result` types
+are unchanged, the hello types and NDJSON framing are deleted, and a single
+route table maps verb to path so client and server cannot drift.
 
-**Build.** The store at `~/.wt`, directory `0700` and files `0600`, written by the coordinator as the user. `WT_HOME` survives as a coordinator-side override so a test can point at a temp directory; it is read by `wtd` alone, and never by a client, which is what stops it becoming the container mount point revision 2 deleted. Atomic writes: temp file in the same directory, fsync, rename, fsync the directory. Registry entries carrying `owner`, `ephemeral`, `path_visible`, `state`, denormalised `resources` and a named `secrets` field. Lowest-free slot allocation per app, skipping exclusions and anything probing held, with an existing entry's slot authoritative. The band ledger, with registration explicit and required. Exclusions from both the spec's `reserved` block and the ledger's host-global reservations, the latter written by `bands reserve --host`, which carries a required note naming what holds the range. That is R6's answer: nothing infers a production stack, a person declares it once per machine, and `ports scan` is what shows them the listeners they have not declared. The authorisation check on every mutating call. Entry states `reserving`, `active` and `tearing-down`, with `reserving` aged out on the coordinator's timer. Registry schema migration under the same atomic path.
+Every RPC is `POST /v1/<verb>` with a JSON body, except `GET /version` and
+`GET /v1/ping`. These are RPCs, not resources; consistency beats REST shape
+and leaves nothing to guess.
 
-Not built, and not to be added later: a lock file, a generation counter, view identity, view scoping.
+```
+GET  /version                GET  /v1/ping
+POST /v1/session
+POST /v1/allocate            POST /v1/materialise
+POST /v1/activate            POST /v1/release
+POST /v1/rm                  POST /v1/reconcile
+POST /v1/bands/reserve       POST /v1/bands/list
+POST /v1/bands/suggest       POST /v1/ports/scan
+POST /v1/list                POST /v1/doctor
+POST /v1/clients/list
+```
 
-**Exit criteria.**
+`wtd` serves `net/http` on `--addr`, default `127.0.0.1:7833`. A port already
+in use is refused, naming the port and `--addr`. A non-loopback bind requires
+`--allow-remote`. `--activate` is retained: systemd passes a TCP listener
+through `LISTEN_FDS` exactly as it passed a unix one, so on-demand start
+survives. Shutdown is `http.Server.Shutdown(ctx)`.
 
-- Two concurrent allocations against one app get different slots, tested in-process.
-- A mutating call against an entry owned by another client is refused, naming the owner and its last-seen time.
-- Allocation for an app with no registered band refuses and names the registration command.
-- The slot ceiling message names the range, the cleanup command, and how many occupied slots the caller cannot free.
-- A port in the ledger's reservations is never allocated, and neither is one in the spec's `reserved` block.
-- A registry written by a newer schema version lists but does not write.
+At startup `wtd` writes `<store>/endpoint.json` at 0600 (current-user ACL on
+Windows, reusing `platform.EnsurePrivateDir`'s existing refusal), carrying the
+base URL and a 64-hex generated token.
 
-**Docs.** Root `ARCHITECTURE.md` gains the store layout and the authority rules.
+Identity, replacing peer credentials:
 
-### Phase 4 — Drivers: `port`, `namespace` and `state-path`
+| Kind | Credential | Key |
+|---|---|---|
+| `host` | the token in the 0600 `endpoint.json` | `"host"` |
+| `named` | `WT_CLIENT_TOKEN` matching `wtd --container-token` | the token |
+| `ephemeral` | container token + `WT_CLIENT_EPHEMERAL=1` → issued session id | the session id |
 
-**Build.** The six-operation contract, with `derive`, `probe`, `verify` and `blastRadius` required and `apply` and `teardown` independently optional. `port` in both stride and group form, with the stride form capping slots at 99 and `spec validate` enforcing that. `namespace` for compose: derived project name, probe by label, teardown by label in container-network-volume order across the project and every dependent project the spec declares.
+`--container-token` (16+ characters) is what admits containers at all; absent
+it, `wtd` accepts host clients only, exactly as the TCP surface was opt-in.
+Ephemeral session ids are rows in `clients`, so they survive a restart
+mid-`init`, and reclamation deleting the row is what revokes them. The old
+"token and ephemeral together is ambiguous" refusal is dropped: the token is
+now the admission credential and the ephemeral flag a lifecycle declaration.
 
-`state-path` lands here rather than with `machine` and `cidr`, for a structural reason rather than a scheduling one. `port` and `namespace` both have no `apply`, so without a third driver the optional half of the contract, the dependency ordering in M3 §5 and the reverse-order rollback that phase 5's `init` leans on are all unexercised until phase 8. It brings the three seed modes and the purge refusal, which runs M1's containment test on the resolved, symlink-realised path rather than on the template.
-
-Two rails are structural rather than advisory. A resolved namespace matching a host-global reservation is refused, because label-based teardown is the one operation that could otherwise reach a co-resident production stack. A held port is never remediated: the allocator skips the slot and says which slot it skipped.
-
-`SO_REUSEADDR` inverts between platforms. Set on unix, unset on Windows. The platform package owns it and no caller sees the branch.
-
-**Exit criteria.**
-
-- Teardown succeeds with the worktree directory deleted first.
-- `verify` reports a compose file that pins `name:`, which is the finding that catches the silent-attach failure.
-- A teardown that leaves resources behind moves the entry to `tearing-down` and does not free the slot.
-- A namespace resolving to a reserved name is refused, naming the reservation.
-- The probe run from the coordinator sees a port published to the host by a container.
-- Teardown continues past a failure and reports everything that survived.
-- A purge whose resolved path is the shared source, or an ancestor of it, is refused and names the path — reached through a symlink as well as directly.
-- `apply` runs in the order the templates imply, and a failure part-way through tears down in reverse.
-
-**Docs.** Root `ARCHITECTURE.md` gains the driver table and the discover-rather-than-create rule.
-
-### Phase 5 — Lifecycle and delivery: a usable tool
-
-M4 and M5. This phase produces something worth installing.
-
-The pilot is the `compose-app` fixture from §4.1. Its three compose files exercise `namespace` including the dependent test project and the pinned-`name:` finding, its second stack on fixed ports exercises the host-global reservations from phase 3, and it is Go, so its reader is the one this phase owes. Its spec and its entry-point patches are hand-written, because the skill that would generate both does not exist until phase 7. This repository does not dogfood the tool, and no repository outside this one is adopted.
-
-**Build.** `init` as the seven-step sequence with rollback covering everything up to activation, and the four attach outcomes that make it the repair path as well as the setup path. `start`. `rm`, with three safety checks in the client — uncommitted changes, unpushed commits with an absent upstream itself a stop, an open PR — and reap plus teardown in the coordinator. The reaper's rails, all of them, enforced coordinator-side. Hooks: install, prepull, build, seed, health, with cwd at the worktree root, output to stderr, non-zero stopping the sequence, and `--dry-run` printing the resolved command.
-
-Delivery: the descriptor written atomically at the worktree root, undotted, in the repo's format, with YAML emission quoting every string scalar. The gitignore line via `$GIT_COMMON_DIR/info/exclude` when adoption did not commit it, never by appending to a tracked `.gitignore` in a linked worktree. The `.env` managed block, with any managed key defined outside the block stripped rather than ordered. First-`init` seeding of `.env` from the main checkout, unmanaged content only. The generated descriptor reader for Go, honouring the four-row resolution table and reading nothing but the descriptor and the spec.
-
-**Exit criteria.**
-
-- Two worktrees of `compose-app` run side by side, both healthy at once, with disjoint resource tables, and neither reaches the stack standing in for a production one.
-- Both tear down cleanly, leaving no containers, no volumes and no registry entries.
-- A failed `init` at materialisation leaves the tree exactly as it was found, and no entry.
-- A failed health check leaves the worktree allocated and usable, and says what failed.
-- `rm` works from outside the tree, by slug, with the directory already deleted.
-- `rm` stops with exit 4 when `gh` is missing. A safety check that cannot run fails closed.
-- The application's reader refuses to start in a linked worktree of an adopted repo with no descriptor, naming `wt init`.
-- `.env` with a managed key defined above the block comes back with one definition, and the output says which key was stripped.
-
-**Docs.** All five candidate documents reassessed. `TESTING.md` gains the acceptance layer.
-
-### Phase 6 — Fleet
-
-M6. Orphaned entries are routine rather than exceptional, because the tool that created a worktree removes it and will not call `wt rm` first.
-
-**Build.** `list` across every repo, with stale and unverifiable kept as distinct markers and secrets redacted by default. `doctor`, reading everything and writing nothing, every finding naming its fix. `reconcile`, applying `init`'s repair path to entries, acting on the caller's own entries plus ephemeral entries whose owner has aged out, with `--dry-run` required. Reclamation of ephemeral clients on a configured interval measured against real last-seen times. `wt clients`.
-
-Both gates start running in CI here, on a Linux runner with docker, against a `wtd` started in the foreground. That is the only arrangement available: a hosted macOS runner has no docker daemon, and the Linux supervisor unit is phase 8 work. Splitting the coordinator's process lifecycle from its supervisor registration is what makes it possible, which is why phase 2 builds the foreground mode. The gates also run on macOS under launchd, locally, because that is the platform anyone actually uses this on and CI is not covering it.
+Client side: `internal/cli/coord.go` becomes an HTTP client resolving
+`WT_ENDPOINT` → `endpoint.json` under `WT_HOME`/`$HOME/.wt` → the compiled
+default. Its `http.Transport` sets `Proxy: nil` — `http.DefaultTransport`
+honours `HTTP_PROXY`, and the bearer token must never reach a proxy.
 
 **Exit criteria.**
 
-- **Acceptance gate 1** in full: two worktrees side by side, both healthy, tables disjoint, both torn down, `doctor` clean.
-- **Acceptance gate 2**: a container client and a host client allocate against the same app concurrently, and the container's slot is unavailable to the host.
-- Deleting a worktree directory by hand and running `reconcile` tears the resources down and drops the entry.
-- An entry whose path is not visible to the coordinator reports as unverifiable, never as stale, and `cleanup` skips it.
-- Every `doctor` finding in M6 §4 is produced by a fixture and names a command.
+- A request with no bearer, a wrong bearer, or a bearer of the wrong kind is
+  refused with one identical message, compared in constant time.
+- `http.MaxBytesReader` caps a request body at 1 MiB, preserving the existing
+  wire cap.
+- A `Host` header that is neither loopback nor `--addr` is refused. A request
+  without `X-Wt-Client: 1` is refused. No CORS header is ever sent, and no
+  preflight is answered — a browser page cannot reach the API.
+- `ReadHeaderTimeout` is 10s, replacing the hello deadline.
+- Exit codes 3, 4 and 5 reach the process exit status unchanged: 3 and 4 from
+  the response body, 5 from a transport failure. A stopped coordinator exits 5
+  from every verb except `show` and `guard`, naming the start command.
+- `GET /version` reports the supported range, so a mismatched client gets an
+  upgrade message rather than a bare 404.
+- `wt` never retries a request.
+- A container client given only `WT_ENDPOINT` and `WT_CLIENT_TOKEN` completes
+  a full `init` without the store directory mounted.
+- Secrets are still served to the owning client alone under `--wide`, and
+  foreign named keys still render as a short hash.
 
-**Docs.** Root `ARCHITECTURE.md` gains the orphan lifecycle.
+**Deleted in this phase.** `platform.SocketPath`, `ListenSocket`,
+`DialSocket`, `PeerUID`, `WindowsPipeOwnerUID`, `pipe_windows.go`,
+`socket_unix.go`, `socket_windows.go`, `coord.Peer`, `coord/server.go`'s
+accept loop, `protocol.Agree` and the hello exchange, `--tcp`/`--tcp-token`,
+`WT_SOCKET`, `WT_TCP_TOKEN`.
 
-### Phase 7 — Adoption: the onboarding skill and the generated artefacts
+### Phase R2 — The described API: OpenAPI and the generated client
 
-M9 then M7. The first phase where a second repo can be adopted.
+The API is only worth calling standard if something other than `wt` can
+consume it. This phase makes the surface machine-readable and makes the
+client generated from the same source, so the two cannot drift.
 
-**Build.** The primitives the skill reads: `ports scan`, `bands list`, `bands suggest`, `bands reserve`, `spec validate`, `spec explain`. The onboarding skill's eight phases, ending with two worktrees running side by side, because everything before that step is a claim. The generated artefacts: `worktree-create` and `worktree-remove` skills, the `SessionStart` tripwire, the opt-in `PreToolUse` guard hook calling `wt guard`, the reference doc, and the `CLAUDE.md` tripwire.
+**Build.** An OpenAPI 3.1 document at `api/openapi.yaml`, generated from the
+`internal/api` route table and the existing `*Args`/`*Result` types — the Go
+types stay the single source of truth, and the document is derived, never
+hand-maintained beside them. It is committed, and CI regenerates and diffs it,
+failing on drift.
 
-Every generated file carries a managed block recording the spec fields it came from, so `doctor` reports drift when a band moves or a resource is renamed, and hand edits outside the block survive regeneration.
-
-**Exit criteria.**
-
-- `plain-app` is adopted through the skill, which is what proves `state-path`'s seed modes and a shared-by-default resource end to end rather than in a unit test.
-- The skill's eight phases run start to finish on a fixture that carries no spec yet, ending with two worktrees side by side.
-- Moving a band and re-running `doctor` reports the generated file and the field that moved.
-- Regenerating an edited skill preserves the edits outside the managed block.
-- `wt rm` exiting 3 makes the remove skill stop and ask rather than reach for `--force`.
-- The briefing block refuses to render with the descriptor missing.
-
-**Docs.** A nested `CLAUDE.md` in the template directory. A path-scoped rule making `internal/platform` the only package permitted to branch on `GOOS`.
-
-### Phase 8 — `machine`, `cidr`, `cleanup`, and the remaining platforms
-
-**Build.** The `machine` driver: Colima profiles on macOS, WSL2 distros on Windows, with the capacity guard refusing a new instance past the limit and naming what is running, background warm-up outside the request, `--keep-vm`, and the documented bypass supplied by the driver so the doc cannot drift. `cidr`, slicing a pool by slot, with `on_exhaustion` falling back loudly or failing. `cleanup`, the only verb that destroys a worktree unattended, gated on `gh` and applying the full `rm` checks even when the PR is merged. The scheduled sweep on the coordinator's own timer, more conservative than the interactive verb and logging every skip.
-
-`vm-app` is the proof, built to the shape both drivers came from: VM per worktree, a `/22` per worktree out of `172.30.0.0/16`, and the address-pool exhaustion that makes the capacity guard necessary.
-
-Platforms: the Linux systemd user unit with a paired socket unit, and the lingering caveat. CI has been running the gates on Linux since phase 6 without a supervisor, so what lands here is the registration and the lifecycle, not the platform. Windows named pipe, and the service-versus-logon-task decision. `taskkill` reporting which of the two paths it took, because graceful termination is unreliable there. The Windows ACL path refusing to write credentials where the ACL cannot be set.
-
-**Exit criteria.**
-
-- `vm-app` runs two worktrees concurrently on macOS, and the capacity guard refuses the fifth.
-- `cleanup --dry-run` previews exactly what the real run does, and `cleanup` with `gh` unavailable cleans nothing and exits 4.
-- Phases 1 to 6 pass on Linux.
-- On Windows, whatever a CI runner can prove is proved there: the build, the unit and in-process layers, the named pipe carrying a full request, and a state directory whose ACL cannot be set refusing to hold credentials rather than writing them world-readable.
-- Windows service registration, the logon-task alternative, and `taskkill` reporting which termination path it took need an interactive Windows desktop. They are written, left unverified, and reported unmet rather than simulated.
-
-### Phase 9 — Packaging and 1.0
-
-**Build.** One distribution per platform containing both binaries, built from the one module. Installation registers the coordinator with the platform's supervisor and starts it. The coordinator upgrade path while clients are mid-operation, which the protocol negotiation does not cover on its own. Loopback TCP with a token, opt-in, for hosts where a socket cannot be shared into a container. A security pass over the socket surface, which is the whole attack surface of the most privileged component on the machine.
+A generated Go client package at `internal/api/client`, produced from the same
+route table, which `internal/cli` then uses in place of the hand-written
+request helper R1 left behind. One generator, one table, so a verb added to
+the server without a client method is a build failure rather than a runtime
+surprise.
 
 **Exit criteria.**
 
-- A clean machine installs from a release artefact, adopts a fixture repo, and passes both acceptance gates. No clean machine is available to the implementation run, so this one is verified by hand and reported unmet until then. What the run does prove is that the artefact builds, contains both binaries, and installs into a temp prefix.
-- Upgrading the coordinator while an entry is `reserving` leaves that entry recoverable.
-- `wt list` from an agent container cannot read the host user's seed credentials.
-- The second-user gap is documented rather than silently present.
+- `api/openapi.yaml` validates against the OpenAPI 3.1 schema and describes
+  all fifteen endpoints, both auth schemes, and the error body.
+- Regenerating the document and the client on a clean tree produces no diff;
+  CI fails if it does.
+- `internal/cli` makes no HTTP call except through the generated client.
+- Adding a route to the table without regenerating fails the build.
+- The generated code is gofmt-clean and passes `staticcheck` with no
+  exclusions.
+
+### Phase R3 — The operational surface
+
+Everything that speaks in socket paths today and must speak in endpoint URLs.
+
+**Build.** `wt daemon status` reports the endpoint, reachability and the
+registration state, keeping the three distinguishable outcomes and their three
+different fixes, plus the systemd lingering caveat on Linux. `wt daemon
+install` writes the launchd plist, the systemd service and its paired socket
+unit (`ListenStream=127.0.0.1:7833`), or the Windows scheduled task, each
+carrying `--addr` and, when given, `--container-token` at 0600 and never
+echoed. `wt daemon install` probes for a free port and pins it into the
+registration, so a second user on one machine needs no manual step.
+
+`platform.CoordinatorStartCommand` and `DaemonFixesFor` are reworked around
+the endpoint. `dist/install.sh` and `dist/install.ps1` gain `--addr` and
+`--container-token`, replacing `--tcp`/`WT_TCP_TOKEN`.
+
+`wtd` registers its own listening port as a host-global band reservation at
+startup, noted `worktree-manager coordinator`, so `bands suggest` can never
+hand an app the port the coordinator is listening on and `ports scan` labels
+it.
+
+**Exit criteria.**
+
+- `wt daemon status` distinguishes not-registered, registered-but-stopped and
+  running-but-unreachable, and names a different fix for each.
+- A registration carrying a container token is 0600 on unix and the token is
+  never echoed to stdout, stderr or a log.
+- `wt daemon install` on a machine where 7833 is taken pins a free port and
+  says which.
+- `bands suggest` never proposes the coordinator's own port.
+- `dist/build.sh` produces the three archives and the installers drive
+  `wt daemon install` with the new flags.
+
+### Phase R4 — Documents and citations
+
+**Build.** Rewrite `docs/ARCHITECTURE.md` (the design of record) and the root
+`ARCHITECTURE.md` (the as-built codemap) for the new transport and store.
+Rewrite `CLAUDE.md`: the environment list, the package descriptions, the
+build/test commands and the reading order. Rewrite `TESTING.md`'s layer table
+to add the HTTP layer. Update `RELEASE.md`'s three independent versions — the
+protocol version becomes the API version.
+
+Mark `docs/design/02-coordination.md` and the transport half of
+`docs/design/08-platform.md` superseded, with a header pointing at the new
+documents. `docs/design/03-drivers.md` stays authoritative for the spec
+schema.
+
+Sweep stale citations: `grep` for `plan.md §`, `PLAN-SCOPE.md`,
+`02-coordination.md`, `WT_SOCKET`, `peer credential`, `named pipe` and
+`socket` across `internal/` and `cmd/`, and fix or drop each comment that no
+longer describes the code.
+
+Regenerate the committed artefacts under `testdata/fixtures/plain-app` so the
+adopted showcase matches the new environment contract.
+
+**Exit criteria.**
+
+- No document describes a unix socket, a named pipe, peer credentials or a
+  JSON store file as current behaviour.
+- The environment list in `CLAUDE.md` matches what the binaries actually read,
+  verified by grep.
+- Every `docs/design/*.md` that is superseded says so in its first paragraph.
+- The onboarding skill's primitives card matches the current verb list.
+- A fresh clone of `testdata/fixtures/plain-app` is still adopted.
 
 ## 6. Acceptance gates
 
-Two live tests matter more than the unit coverage, and both come from `ARCHITECTURE.md` §13.2. They are gates, not smoke tests: a phase that regresses one is not finished.
+Both gates carry forward from the original plan and must pass at R1, R2, R3
+and R4:
 
-**Gate 1.** Two worktrees run side by side at the same time, both healthy, resource tables disjoint. Both tear down. `doctor` is clean.
+1. **Two worktrees side by side.** Two worktrees of one fixture repository
+   start concurrently, allocate disjoint resources, and neither can reach the
+   other's.
+2. **Teardown is complete.** `wt rm` frees every resource it allocated, and a
+   second run of the gate reuses the freed slot.
 
-**Gate 2.** A container client and a host client allocate against the same app concurrently, and the container's slot is unavailable to the host.
+Plus the standard build gates on every phase:
 
-Gate 1 is partly reachable at phase 5 and complete at phase 6. Gate 2 needs ephemeral clients and reclamation, so it lands at phase 6.
+```sh
+go build ./...
+go test -race ./...
+go vet ./...
+gofmt -l cmd internal     # must print nothing
+staticcheck ./...         # must print nothing
+go test -tags acceptance ./...
+```
 
-Both run in CI from phase 6, on a Linux runner with docker, against a coordinator started in the foreground rather than by a supervisor. Neither gate tests supervisor registration, which is a separate concern with its own criteria in phases 2 and 8. On macOS the same two gates run locally, under launchd, because a hosted macOS runner has no docker daemon and the gate that cannot run in CI still has to run somewhere.
+## 7. Risks, and where each is answered
 
-## 7. Documentation maintained alongside
+| Risk | Answer |
+|---|---|
+| Host identity is weaker than `SO_PEERCRED` | Stated plainly in the docs at R3. Reading a 0600 file in one's own home is the proof; same-user processes could already impersonate each other by other means, but the loss is real and named rather than glossed |
+| A retried POST double-allocates | The client never retries; §3 makes it contract and R1 tests it |
+| The bearer token leaks to a proxy | `Proxy: nil` on the client transport, tested at R1 |
+| A browser page reaches the API | Bearer auth, `Host` validation, `X-Wt-Client`, no CORS, no preflight answered |
+| Two users collide on 7833 | `wt daemon install` probes and pins a free port; `wtd` refuses a taken port rather than guessing |
+| The coordinator squats a port an app wants | `wtd` reserves its own port in the band ledger at R2 |
+| Secrets leak through WAL/SHM sidecars | Mode-verified at R0 |
+| Orphaned resources after the clean break | One startup warning naming `registry.json`; a log line, not a refusal |
+| `modernc.org/sqlite` is a large dependency | Accepted: it is the only pure-Go option that keeps `CGO_ENABLED=0` cross-compilation, which CI gates on |
+| sqlc codegen cannot be made to work in CI | Fallback stated at R0: hand-written `database/sql` queries against the same schema. The wrapper API `internal/coord` sees is identical either way, so the fallback is confined to one package |
+| The OpenAPI document drifts from the code | It is generated from the route table, never hand-maintained, and CI diffs it |
+| `-race` gets slower with SQLite | Measured at R0; if CI time doubles, the store tests get their own package-level parallelism rather than dropping `-race` |
 
-Five documents carry the repository's working knowledge, per the `repo-docs` convention. Each phase updates them in the same change that lands the code.
+## 8. Decisions closed before R0
 
-| File | Warranted | Holds |
-|---|---|---|
-| `CLAUDE.md` | yes | What the repo is, build and test commands, the two-binary split, the no-inference rule, links to the rest. Kept short. |
-| `ARCHITECTURE.md` (root) | yes | The as-built codemap: internal packages, which of them may import which, the invariants in §3 of this plan, and the gotchas. Links to `docs/ARCHITECTURE.md` for the target design. |
-| `TESTING.md` | yes | The four layers in §4, where each lives, how to run one test, and which layers need docker or `gh`. |
-| `RELEASE.md` | yes | Versioning, the cross-compile matrix, the compatibility policy for the three independent versions, the installer, and rollback. |
-| `HOSTING.md` | no | Nothing is deployed. The coordinator installs onto a developer's machine, which is installation and belongs in `RELEASE.md`. Revisit only if something hosted appears. |
-
-Two documents will be named `ARCHITECTURE.md`. The root file is the as-built structure and changes every phase. `docs/ARCHITECTURE.md` is the architecture of record for the system being built, is referenced by name from all nine design documents, and does not move. The alternative — renaming the design document — costs a dozen cross-references and is available if the pair turns out to confuse people.
-
-Three rules for these files, applied from phase 0:
-
-- No phase narration. `CLAUDE.md` states what is true now. This plan and the git history record what happened.
-- No measurements. Test counts, coverage percentages and pinned versions go stale silently. Port numbers, schema versions and the slot ceiling are decisions, and they stay.
-- Every command and path traces to something in the repository. A gap is marked TODO rather than filled with what a repo like this usually does.
-
-Nested `CLAUDE.md` files come later and only where a project has its own rules: the M7 template directory in phase 7 is the first genuine case.
-
-## 8. Risks, and where each is answered
-
-`ARCHITECTURE.md` §14.1 carries twelve open risks. Each needs an answer by a specific phase.
-
-| | Risk | Answered in |
-|---|---|---|
-| R1 | Coordinator upgrade while clients are mid-operation | Phase 9 |
-| R2 | Windows service under the user account, or a logon task | Phase 8 |
-| R3 | Reclamation interval for an ephemeral client | Phase 6 |
-| R4 | Is refusing to run in an un-initialised worktree too blunt | Phase 5, from the first real use |
-| R5 | Band ledger shared across machines | Phase 3, decided by deferring |
-| R6 | Who reserves a production stack's ports when no repo has a spec | Phase 3, answered: a person, once per machine, with `bands reserve --host` |
-| R7 | Generated reader as a published per-language library | Closed: no. Go only, generated per repo, nothing published |
-| R8 | The agent surface without hooks and skills | Phase 7 |
-| R9 | Does `start` need a `stop` | Closed: no. See §9.1 |
-| R10 | Resources that must move together beyond the port-group case | Phase 4 |
-| R11 | Where the adoption decision record lives | Phase 7 |
-| R12 | Two users on one machine | Phase 9, documented rather than solved |
-
-## 9. Decisions
-
-### 9.1 Closed
-
-**The module path is `github.com/mrgeoffrich/worktree-manager`**, matching the remote, and the repository name is final. The binaries are `wt` and `wtd` whatever the repository ends up called.
-
-**The spec is `wt.yaml`, at the repository root, committed.** No input document fixed this, and unlike the descriptor it cannot be the repo's choice. `ARCHITECTURE.md` §9.4 makes the committed spec the adoption signal, and M5 §4.2 requires the generated reader to find it by walking up from cwd with nothing installed and no registry read. A name that varied per repo would have to be configured, and the only place to configure it is the file being looked for. So it is constant everywhere, and the resolution rule is fixed in phase 0: walk from cwd to the worktree root and stop.
-
-YAML, because M9 writes it and a person maintains it, which carries M2 §3's hazard with it. Every string scalar is quoted on emission, in the spec and in any YAML descriptor, so a worktree slugged `no` does not come back as `false`.
-
-**Phase 0 fixes `hooks` and `emit` in full.** `03-drivers.md` is authoritative for the schema and leaves both as `{}`, with the fields scattered through M4 §5 and M5 §2 and §3 as prose. Deferring them to phases 4 and 5 would amend the schema after the fixture specs, the driver contract and the onboarding primitives had all been built against it, which is the amendment `ARCHITECTURE.md` §14.2 says to make before implementation rather than during it. `emit` is also the only place the descriptor's filename and format can be declared, and nothing in the design currently places them. Field set now, semantics in phases 4 and 5.
-
-**No repository outside this one is touched, and synthetic fixtures replace the three pilots.** `bacio`, `deepseek-harness` and `mini-infra` are out of the implementation entirely: not cloned, not read, not written to, no spec committed into any of them. §4.1 defines the three fixtures that stand in and states what the substitution costs. Integration with real repositories is separate work, taken up once phase 9 is done.
-
-**`spec explain` takes its bases from the command line**, as a repeatable `--base <name>=<port>`, because the ledger that holds them is coordinator state and does not exist until phase 3. The derivation stays a pure function of slot, spec and bases. The flag survives after phase 3 as the onboarding skill's what-if, with the coordinator supplying the bases when it is not given.
-
-**`state-path` moves into phase 4**, for the reason stated there: without a third driver, the contract's optional half and the reverse-order rollback are unexercised until phase 8.
-
-**`compose-app` is the phase 5 pilot**, `plain-app` the first fixture through the skill at phase 7, `vm-app` the phase 8 proof. This repository does not dogfood the tool during implementation.
-
-**There is no `stop` verb.** R9 asked whether `start` needs one and the plan deferred it to phase 5, which under an unattended run means an agent decides it with nobody to ask. Decided here instead: `rm` tears down, and there is no way to release a worktree's resources while keeping its entry. A worktree that should stop holding resources is one that should be removed.
-
-**The generated reader is Go only.** R7 asked about publishing per-language readers. No second language, and nothing published: the reader is generated into the adopted repo and reads only the descriptor and the spec.
-
-**Windows and a clean machine are verified as far as CI reaches, and no further.** The implementation runs on macOS. Criteria in phases 8 and 9 that need an interactive Windows desktop or a fresh machine are written, left unverified, and reported unmet. Simulating them, or building infrastructure to reach them, is out.
-
-**The gates run in CI on Linux from phase 6**, against a foreground coordinator, and on macOS locally under launchd. §6 carries the reasoning.
-
-### 9.2 Still open, with a phase
-
-- The reclamation interval's default. Phase 6, and R3 says the coordinator now has a real signal to set it from.
-- Whether the guard hook caches its classification per session, and what happens when a worktree is removed mid-session. Phase 7.
-- Whether the tripwire hook belongs in a repo's committed settings or the user's own. Phase 7 — committing it makes an opt-in decision for everyone who clones.
+- HTTP on a loopback port, not HTTP over a unix socket. Peer credentials are
+  given up deliberately.
+- `modernc.org/sqlite`, pure Go.
+- Clean break on existing state: no migration, no refusal, one warning.
+- The frozen design documents are superseded rather than kept alongside.
+- The listener binds `127.0.0.1` by default; a non-loopback bind is an
+  explicit flag.
+- Every RPC is a `POST`. `GET` is reserved for `/version` and `/v1/ping`.
+- Queries are sqlc-generated, not hand-written and not an ORM: sqlc is a
+  build-time tool whose output uses `database/sql`, so the runtime dependency
+  list stays at two.
+- The API is described by a generated OpenAPI 3.1 document and consumed
+  through a generated client, so server and client cannot drift.
+- The coordinator stays **per-user**. A system-wide daemon would need real
+  authorisation between users rather than admission, and is not being built.
+</content>

@@ -1,10 +1,10 @@
 package cli
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
-	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,8 +12,8 @@ import (
 	"testing"
 	"unicode/utf16"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/platform"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 )
 
 // shortSock is a socket path short enough to bind. sun_path holds 104 bytes
@@ -40,38 +40,20 @@ func shortSock(t *testing.T, name string) string {
 	return filepath.Join(resolved, name)
 }
 
-// fakeHelloServer listens on a temp socket and answers each hello with the
-// canned reply — a stand-in for the coordinator the reachability probe and
-// the dial helper talk to, without importing coordinator code into the
-// client's tests.
-func fakeHelloServer(t *testing.T, sock string, reply func(*protocol.Hello) *protocol.HelloReply) {
+// fakeVersionServer answers GET /version with the canned range — a
+// stand-in for the coordinator the reachability probe and the dial helper
+// talk to, without importing coordinator code into the client's tests.
+// The dial's version check is the whole of the hello's replacement, so
+// the fake needs nothing else.
+func fakeVersionServer(t *testing.T, info api.VersionInfo) string {
 	t.Helper()
-	ln, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatalf("fake server listen: %v", err)
-	}
-	t.Cleanup(func() { ln.Close() })
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer conn.Close()
-				br := bufio.NewReader(conn)
-				bw := bufio.NewWriter(conn)
-				var h protocol.Hello
-				if err := protocol.ReadMessage(br, &h); err != nil {
-					return
-				}
-				if err := protocol.WriteMessage(bw, reply(&h)); err != nil {
-					return
-				}
-				bw.Flush()
-			}()
-		}
-	}()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET "+api.VersionPath, func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(info)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv.URL
 }
 
 var errDial = errors.New("dial failed")
@@ -174,7 +156,7 @@ func TestDaemonStatusViaRun(t *testing.T) {
 // and an empty prefix — the state a machine with no coordinator and no
 // registration reports, on every platform.
 func TestDaemonStatusEndToEndNotRegistered(t *testing.T) {
-	t.Setenv("WT_SOCKET", shortSock(t, "dead"))
+	t.Setenv("WT_ENDPOINT", "http://127.0.0.1:1")
 	prefix := shortSock(t, "p")
 	code, stdout, stderr := runCLI(t, "daemon", "status", "--json", "--prefix", prefix)
 	if code != ExitOK {
@@ -197,7 +179,7 @@ func TestDaemonStatusEndToEndNotRegistered(t *testing.T) {
 // the prefix makes the registration inert data a test can plant on any
 // platform (no test may install a LaunchAgent on the machine running it).
 func TestDaemonStatusEndToEndRegisteredStopped(t *testing.T) {
-	t.Setenv("WT_SOCKET", shortSock(t, "dead"))
+	t.Setenv("WT_ENDPOINT", "http://127.0.0.1:1")
 	prefix := shortSock(t, "p")
 	if err := os.MkdirAll(prefix, 0o755); err != nil {
 		t.Fatal(err)
@@ -222,15 +204,11 @@ func TestDaemonStatusEndToEndRegisteredStopped(t *testing.T) {
 	}
 }
 
-// TestDaemonStatusEndToEndRunning: a live socket answering the hello is a
+// TestDaemonStatusEndToEndRunning: a live endpoint answering /version is a
 // running coordinator — the foreground mode the tests and CI gates use,
 // with no supervisor involved.
 func TestDaemonStatusEndToEndRunning(t *testing.T) {
-	sock := shortSock(t, "s")
-	fakeHelloServer(t, sock, func(h *protocol.Hello) *protocol.HelloReply {
-		return &protocol.HelloReply{Agreed: h.MaxVer}
-	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", fakeVersionServer(t, api.VersionInfo{Min: api.VersionMin, Max: api.VersionMax}))
 	code, stdout, stderr := runCLI(t, "daemon", "status", "--json", "--prefix", shortSock(t, "p"))
 	if code != ExitOK {
 		t.Fatalf("exit = %d; stderr: %s", code, stderr)
@@ -329,7 +307,7 @@ func TestDaemonInstallRefusesWithoutSupervisor(t *testing.T) {
 // a verb that reaches the coordinator and cannot exits 5 with the start
 // command as its remedy, wired in the client's one dial-and-request helper.
 func TestDialCoordinatorDeadSocketExits5(t *testing.T) {
-	t.Setenv("WT_SOCKET", shortSock(t, "dead"))
+	t.Setenv("WT_ENDPOINT", "http://127.0.0.1:1")
 	sess, err := dialCoordinator()
 	if sess != nil {
 		sess.Close()
@@ -356,7 +334,7 @@ func TestDialCoordinatorDeadSocketExits5(t *testing.T) {
 // pure functions of the spec and their arguments — all four keep working
 // with the coordinator stopped (ARCHITECTURE.md §4.4, §10.1).
 func TestCoordinatorDownLocalVerbsStillWork(t *testing.T) {
-	t.Setenv("WT_SOCKET", shortSock(t, "dead"))
+	t.Setenv("WT_ENDPOINT", "http://127.0.0.1:1")
 
 	// guard in a directory that is not a repository fails locally —
 	// never exit 5, which would mean it dialed.
@@ -382,21 +360,13 @@ func TestCoordinatorDownLocalVerbsStillWork(t *testing.T) {
 	}
 }
 
-// TestHelloRefusalReachesTheExitCode: a refusal the coordinator returns in
-// the hello — a version mismatch, say — carries its own exit code and
-// remedy naming the upgrade, and the client's helper hands both through
-// unchanged. This is how a coordinator-side 3, 4 or 5 reaches the process
-// exit status.
-func TestHelloRefusalReachesTheExitCode(t *testing.T) {
-	sock := shortSock(t, "s")
-	fakeHelloServer(t, sock, func(h *protocol.Hello) *protocol.HelloReply {
-		return &protocol.HelloReply{Error: &protocol.Error{
-			Code:   3,
-			Msg:    "protocol versions do not overlap: this client speaks 1..1 and this coordinator speaks 2..2; upgrade the client to speak protocol 2",
-			Remedy: "upgrade wt to speak protocol 2, then re-run",
-		}}
-	})
-	t.Setenv("WT_SOCKET", sock)
+// TestVersionRefusalReachesTheExitCode: a coordinator one API version
+// ahead refuses at dial time — the version check replaced the hello — with
+// its own exit code and remedy naming the upgrade, and the client's helper
+// hands both through unchanged. This is how a coordinator-side 3 reaches
+// the process exit status.
+func TestVersionRefusalReachesTheExitCode(t *testing.T) {
+	t.Setenv("WT_ENDPOINT", fakeVersionServer(t, api.VersionInfo{Min: 2, Max: 2}))
 	_, err := dialCoordinator()
 	if err == nil {
 		t.Fatal("a refused hello succeeded")

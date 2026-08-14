@@ -14,9 +14,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
 	"github.com/mrgeoffrich/worktree-manager/internal/platform"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 )
 
@@ -79,9 +79,9 @@ func setupMachineHarness(t *testing.T, m *coordFakeMachine) (*Harness, *Session)
 	}
 	h.H.InstallDrivers(driver.NewRegistry(&driver.Port{}, &driver.Namespace{}, &driver.StatePath{},
 		&driver.CIDR{}, &driver.Machine{}))
-	sess, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	sess, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
 	return h, sess
 }
@@ -89,14 +89,14 @@ func setupMachineHarness(t *testing.T, m *coordFakeMachine) (*Harness, *Session)
 // allocateMachine allocates one entry and returns its slot.
 func allocateMachine(t *testing.T, h *Harness, sess *Session, sp *spec.Spec, slug string) int {
 	t.Helper()
-	resp := h.Request(context.Background(), sess, verbAllocate, &protocol.AllocateArgs{
+	resp := h.Request(context.Background(), sess, verbAllocate, &api.AllocateArgs{
 		Spec: *sp, Slug: slug, Path: filepath.Join(t.TempDir(), slug),
 		Description: "a vm worktree",
 	})
 	if resp.Error != nil {
 		t.Fatalf("allocating %s: %v", slug, resp.Error)
 	}
-	var res protocol.AllocateResult
+	var res api.AllocateResult
 	mustUnmarshal(t, resp.Result, &res)
 	return res.Slot
 }
@@ -118,7 +118,7 @@ func TestCoordMaterialiseCapacityRefusalExits3(t *testing.T) {
 	slug := "wt-5"
 	allocateMachine(t, h, sess, sp, slug)
 
-	resp := h.Request(context.Background(), sess, verbMaterialise, &protocol.MaterialiseArgs{
+	resp := h.Request(context.Background(), sess, verbMaterialise, &api.MaterialiseArgs{
 		App: sp.App, Slug: slug, Spec: *sp,
 	})
 	if resp.Error == nil {
@@ -155,7 +155,7 @@ func TestCoordMaterialiseCapacityReRunAllowed(t *testing.T) {
 	slug := "wt-5"
 	allocateMachine(t, h, sess, sp, slug)
 
-	resp := h.Request(context.Background(), sess, verbMaterialise, &protocol.MaterialiseArgs{
+	resp := h.Request(context.Background(), sess, verbMaterialise, &api.MaterialiseArgs{
 		App: sp.App, Slug: slug, Spec: *sp,
 	})
 	if resp.Error != nil {
@@ -179,7 +179,7 @@ func TestCoordRmKeepVMLeavesTheInstanceUp(t *testing.T) {
 
 	// Materialise first, so the instance is started, then tear down with
 	// the keep flag.
-	if resp := h.Request(context.Background(), sess, verbMaterialise, &protocol.MaterialiseArgs{
+	if resp := h.Request(context.Background(), sess, verbMaterialise, &api.MaterialiseArgs{
 		App: sp.App, Slug: slug, Spec: *sp,
 	}); resp.Error != nil {
 		t.Fatalf("materialise: %v", resp.Error)
@@ -188,13 +188,13 @@ func TestCoordRmKeepVMLeavesTheInstanceUp(t *testing.T) {
 		t.Fatalf("started = %v, want the instance", m.started)
 	}
 
-	resp := h.Request(context.Background(), sess, "rm", &protocol.RmArgs{
+	resp := h.Request(context.Background(), sess, "rm", &api.RmArgs{
 		App: sp.App, Slug: slug, Spec: *sp, KeepFlags: []string{"--keep-vm"},
 	})
 	if resp.Error != nil {
 		t.Fatalf("rm: %v", resp.Error)
 	}
-	var res protocol.RmResult
+	var res api.RmResult
 	mustUnmarshal(t, resp.Result, &res)
 	if !res.Removed {
 		t.Fatal("the entry must drop even though the VM is kept")
@@ -210,13 +210,13 @@ func TestCoordRmKeepVMLeavesTheInstanceUp(t *testing.T) {
 	}
 
 	// Without the keep flag the instance is destroyed.
-	resp = h.Request(context.Background(), sess, "rm", &protocol.RmArgs{
+	resp = h.Request(context.Background(), sess, "rm", &api.RmArgs{
 		App: sp.App, Slug: "wt-1", Spec: *sp,
 	})
 	if resp.Error != nil {
 		t.Fatalf("rm of a missing entry is a data outcome, got %v", resp.Error)
 	}
-	var second protocol.RmResult
+	var second api.RmResult
 	mustUnmarshal(t, resp.Result, &second)
 	if second.EntryFound {
 		t.Fatal("the first rm dropped the entry; the second must find nothing")
@@ -245,7 +245,7 @@ func TestDoctorMachineCapacityFinding(t *testing.T) {
 		if resp.Error != nil {
 			t.Fatalf("doctor: %v", resp.Error)
 		}
-		var res protocol.DoctorResult
+		var res api.DoctorResult
 		mustUnmarshal(t, resp.Result, &res)
 		matched := false
 		for _, f := range res.Findings {
@@ -277,7 +277,7 @@ func TestDoctorMachineCapacityFinding(t *testing.T) {
 		allocateWithPath(t, h, sess, sp, "wt-1", filepath.Join(dir, "wt-1"))
 
 		resp := h.Request(context.Background(), sess, verbDoctor, nil)
-		var res protocol.DoctorResult
+		var res api.DoctorResult
 		mustUnmarshal(t, resp.Result, &res)
 		for _, f := range res.Findings {
 			if strings.Contains(f.Message, "machine capacity") {
@@ -295,7 +295,7 @@ func TestDoctorMachineCapacityFinding(t *testing.T) {
 		allocateWithPath(t, h, sess, sp, "wt-1", wt)
 
 		resp := h.Request(context.Background(), sess, verbDoctor, nil)
-		var res protocol.DoctorResult
+		var res api.DoctorResult
 		mustUnmarshal(t, resp.Result, &res)
 		noted := false
 		for _, n := range res.Notes {
@@ -315,7 +315,7 @@ func allocateWithPath(t *testing.T, h *Harness, sess *Session, sp *spec.Spec, sl
 	if err := osMkdirAll(path); err != nil {
 		t.Fatal(err)
 	}
-	resp := h.Request(context.Background(), sess, verbAllocate, &protocol.AllocateArgs{
+	resp := h.Request(context.Background(), sess, verbAllocate, &api.AllocateArgs{
 		Spec: *sp, Slug: slug, Path: path,
 		DescriptorPath: filepath.Join(path, "wt-env.yaml"), Description: "a doctor worktree",
 	})
@@ -325,7 +325,7 @@ func allocateWithPath(t *testing.T, h *Harness, sess *Session, sp *spec.Spec, sl
 }
 
 // docFindingsT renders findings for an assertion message.
-func docFindingsT(findings []protocol.DoctorFinding) string {
+func docFindingsT(findings []api.DoctorFinding) string {
 	var b strings.Builder
 	for _, f := range findings {
 		fmt.Fprintf(&b, "%s: %s\n", f.Level, f.Message)

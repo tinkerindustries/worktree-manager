@@ -10,11 +10,13 @@ package cli
 // declared with `wt bands reserve --host` (plan.md §8, R6).
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"text/tabwriter"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
+	apiclient "github.com/mrgeoffrich/worktree-manager/internal/api/client"
 )
 
 // runPorts implements `wt ports scan [--json]`.
@@ -45,12 +47,17 @@ func runPorts(args []string, stdout, stderr io.Writer) int {
 // `wt bands reserve --host`. The scan's bounded-coverage notes (what it
 // could not see and why) go to stderr; the listeners are the result.
 func runPortsScan(args []string, stdout, stderr io.Writer) int {
-	return coordVerb("ports scan", args, stdout, stderr, "ports.scan", nil, writePortsTable)
+	return coordVerb("ports scan", args, stdout, stderr, api.VerbPortsScan,
+		func(*flag.FlagSet) func(*coordClient) (*api.PortsScanResult, *apiclient.Error) {
+			return func(sess *coordClient) (*api.PortsScanResult, *apiclient.Error) {
+				return sess.client.PortsScan()
+			}
+		}, writePortsTable)
 }
 
 // writePortsTable prints one line per LISTEN socket, with the scan's
 // bounded-coverage notes on stderr.
-func writePortsTable(stdout, stderr io.Writer, res *protocol.PortsScanResult) int {
+func writePortsTable(stdout, stderr io.Writer, res *api.PortsScanResult) int {
 	for _, n := range res.Notes {
 		fmt.Fprintf(stderr, "note: %s\n", n)
 	}

@@ -62,14 +62,22 @@ func windowsTaskDir(prefix string) (string, error) {
 // action runs wtd in the foreground, and RestartOnFailure restarts the
 // task (and with it wtd) when it crashes — the partial replacement for
 // the service control manager's recovery that the logon-task choice
-// accepts. With the opt-in loopback TCP surface configured, the action's
-// Arguments carry --tcp and --tcp-token; the token is validated to
-// contain no whitespace, which is what keeps it one argument in the
+// accepts. The action's Arguments carry --addr and --container-token when
+// each is configured — independently, because an empty --container-token
+// admits no container while looking like it does. The token is validated
+// to contain no whitespace, which is what keeps it one argument in the
 // task's command line.
-func windowsTaskXML(wtdPath, tcpAddr, tcpToken string) []byte {
+func windowsTaskXML(wtdPath, addr, containerToken string) []byte {
+	var flags []string
+	if addr != "" {
+		flags = append(flags, "--addr", xmlEscape(addr))
+	}
+	if containerToken != "" {
+		flags = append(flags, "--container-token", xmlEscape(containerToken))
+	}
 	args := ""
-	if tcpAddr != "" {
-		args = fmt.Sprintf("<Arguments>--tcp %s --tcp-token %s</Arguments>", xmlEscape(tcpAddr), xmlEscape(tcpToken))
+	if len(flags) > 0 {
+		args = fmt.Sprintf("<Arguments>%s</Arguments>", strings.Join(flags, " "))
 	}
 	xml := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -147,7 +155,7 @@ func schtasks(args ...string) error {
 // the task from the XML, /Run starts it now (the mirror of launchctl
 // kickstart). No elevation: a task in the user's own context registers
 // without one — one of the two reasons the logon task is the default.
-func installWindowsTask(prefix, wtdPath, tcpAddr, tcpToken string) (InstallSupervisorResult, error) {
+func installWindowsTask(prefix, wtdPath, addr, containerToken string) (InstallSupervisorResult, error) {
 	dir, err := windowsTaskDir(prefix)
 	if err != nil {
 		return InstallSupervisorResult{}, err
@@ -156,12 +164,12 @@ func installWindowsTask(prefix, wtdPath, tcpAddr, tcpToken string) (InstallSuper
 		return InstallSupervisorResult{}, fmt.Errorf("creating the task registration directory %s: %w", dir, err)
 	}
 	xmlPath := filepath.Join(dir, WindowsTaskFilename)
-	if err := os.WriteFile(xmlPath, windowsTaskXML(wtdPath, tcpAddr, tcpToken), 0o600); err != nil {
+	if err := os.WriteFile(xmlPath, windowsTaskXML(wtdPath, addr, containerToken), 0o600); err != nil {
 		return InstallSupervisorResult{}, fmt.Errorf("writing %s: %w", xmlPath, err)
 	}
 	if prefix != "" {
 		note := "registration written under a test prefix (" + xmlPath + "); no scheduled task was registered"
-		if tcpToken != "" {
+		if containerToken != "" {
 			note += "; the task XML carries the loopback TCP token"
 		}
 		return InstallSupervisorResult{

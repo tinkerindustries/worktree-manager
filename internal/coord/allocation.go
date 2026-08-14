@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
@@ -64,8 +64,8 @@ const ReservingTimeout = 10 * time.Minute
 // reallocates, so the stored slot and resources are returned as they are —
 // unless the entry belongs to another client, which is a refused mutating
 // call.
-func (h *Handler) allocate(s *Session, req *protocol.Request) *protocol.Response {
-	var args protocol.AllocateArgs
+func (h *Handler) allocate(s *Session, req *api.Request) *api.Response {
+	var args api.AllocateArgs
 	if err := json.Unmarshal(req.Args, &args); err != nil {
 		return respErr(1, fmt.Sprintf("malformed allocate request: %v", err), "upgrade wt: this coordinator expects a spec, slug and path")
 	}
@@ -111,7 +111,7 @@ func (h *Handler) allocate(s *Session, req *protocol.Request) *protocol.Response
 
 	if e := registryEntry(reg, app, args.Slug); e != nil {
 		if err := h.checkOwner(s, e); err != nil {
-			return &protocol.Response{Error: err}
+			return &api.Response{Error: err}
 		}
 		// Rule 5: the entry's slot is authoritative once written. Re-running
 		// init reconciles and rebuilds; it never reallocates. The stored
@@ -119,12 +119,12 @@ func (h *Handler) allocate(s *Session, req *protocol.Request) *protocol.Response
 		// them.
 		shared, serr := h.sharedRows(&args.Spec, ctxFor(&args.Spec, e), e.Resources)
 		if serr != nil {
-			return &protocol.Response{Error: serr}
+			return &api.Response{Error: serr}
 		}
 		// The cidr fallback warning persists for the life of the worktree
 		// (nothing reallocates a fallen-back cidr), so a re-run reports it
 		// again, loudly.
-		return &protocol.Response{Result: mustJSON(protocol.AllocateResult{
+		return &api.Response{Result: mustJSON(api.AllocateResult{
 			App: app, Slug: e.Slug, Slot: e.Slot, State: e.State,
 			Resources: e.Resources, PathVisible: e.PathVisible, Secrets: e.Secrets,
 			Path: e.Path, Existed: true, Shared: shared,
@@ -141,7 +141,7 @@ func (h *Handler) allocate(s *Session, req *protocol.Request) *protocol.Response
 	if hasPortResources(&args.Spec) {
 		band := findBand(bands, app)
 		if band == nil {
-			return &protocol.Response{Error: &protocol.Error{
+			return &api.Response{Error: &api.Error{
 				Code: 3,
 				Msg:  fmt.Sprintf("app %q has no registered port band; allocation is refused", app),
 				Remedy: "register the band from inside the repository: wt bands reserve --base <name>=<port>... " +
@@ -204,7 +204,7 @@ func (h *Handler) allocate(s *Session, req *protocol.Request) *protocol.Response
 		picked, perr := h.pickSlot(&args.Spec, reg, bands, app, args.Slug, args.Path, home, bases,
 			s.Identity.Key, s.Identity.Kind)
 		if perr != nil {
-			return &protocol.Response{Error: perr}
+			return &api.Response{Error: perr}
 		}
 		slot, resources = picked.slot, picked.resources
 		skipped, probeNote = picked.skipped, picked.probeNote
@@ -227,15 +227,15 @@ func (h *Handler) allocate(s *Session, req *protocol.Request) *protocol.Response
 		Home: home, Worktree: entry.Path, Bases: bases,
 	}, entry.Resources)
 	if serr != nil {
-		return &protocol.Response{Error: serr}
+		return &api.Response{Error: serr}
 	}
 
 	reg.Entries = append(reg.Entries, entry)
-	if err := h.st.WriteRegistry(reg); err != nil {
+	if err := h.st.UpsertEntry(entry); err != nil {
 		return h.storeErr("writing the registry", err)
 	}
 
-	return &protocol.Response{Result: mustJSON(protocol.AllocateResult{
+	return &api.Response{Result: mustJSON(api.AllocateResult{
 		App: app, Slug: entry.Slug, Slot: entry.Slot, State: entry.State,
 		Resources: entry.Resources, PathVisible: entry.PathVisible, Secrets: entry.Secrets,
 		ProbeNote: probeNote, Skipped: skipped, Shared: shared,
@@ -297,8 +297,8 @@ func homeDirOrEmpty() string {
 // and the hand-authored half from the spec. The coordinator is the only
 // side that imports the drivers, so the rows are computed here and carried
 // to the client's emitter, which copies them into the descriptor.
-func (h *Handler) sharedRows(sp *spec.Spec, ctx spec.Context, resolved map[string]spec.Resolved) ([]protocol.SharedRow, *protocol.Error) {
-	var rows []protocol.SharedRow
+func (h *Handler) sharedRows(sp *spec.Spec, ctx spec.Context, resolved map[string]spec.Resolved) ([]api.SharedRow, *api.Error) {
+	var rows []api.SharedRow
 	for i := range sp.Resources {
 		r := &sp.Resources[i]
 		if r.Default == nil || *r.Default != "shared" {
@@ -306,7 +306,7 @@ func (h *Handler) sharedRows(sp *spec.Spec, ctx spec.Context, resolved map[strin
 		}
 		v, ok := resolved[r.Name]
 		if !ok {
-			return nil, &protocol.Error{Code: 3,
+			return nil, &api.Error{Code: 3,
 				Msg:    fmt.Sprintf("shared block: resource %q has default: shared but no resolved value", r.Name),
 				Remedy: "fix the spec, then re-run"}
 		}
@@ -315,20 +315,20 @@ func (h *Handler) sharedRows(sp *spec.Spec, ctx spec.Context, resolved map[strin
 			text = d.BlastRadius(r, sp)
 		}
 		if strings.TrimSpace(text) == "" {
-			return nil, &protocol.Error{Code: 3,
+			return nil, &api.Error{Code: 3,
 				Msg:    fmt.Sprintf("shared block: resource %q has default: shared but no impact text is available", r.Name),
 				Remedy: "check the driver registry, then re-run"}
 		}
-		rows = append(rows, protocol.SharedRow{Name: fmt.Sprint(v.Value), Impact: text})
+		rows = append(rows, api.SharedRow{Name: fmt.Sprint(v.Value), Impact: text})
 	}
 	for i := range sp.Shared {
 		name, err := spec.Substitute(sp.Shared[i].Name, ctx, resolved)
 		if err != nil {
-			return nil, &protocol.Error{Code: 3,
+			return nil, &api.Error{Code: 3,
 				Msg:    fmt.Sprintf("shared block: resolving shared[%d].name: %v", i, err),
 				Remedy: "fix the spec, then re-run"}
 		}
-		rows = append(rows, protocol.SharedRow{Name: name, Impact: sp.Shared[i].Impact})
+		rows = append(rows, api.SharedRow{Name: name, Impact: sp.Shared[i].Impact})
 	}
 	return rows, nil
 }
@@ -352,7 +352,7 @@ type pickedSlot struct {
 // never allocated, never managed (ARCHITECTURE.md §8.4). ownerKey and
 // ownerKind are the calling client's identity, which the exhaustion message
 // needs to count the slots the caller cannot free.
-func (h *Handler) pickSlot(s *spec.Spec, reg store.RegistryFile, bands store.BandsFile, app, slug, path, home string, bases map[string]int, ownerKey, ownerKind string) (*pickedSlot, *protocol.Error) {
+func (h *Handler) pickSlot(s *spec.Spec, reg store.RegistryFile, bands store.BandsFile, app, slug, path, home string, bases map[string]int, ownerKey, ownerKind string) (*pickedSlot, *api.Error) {
 	max := spec.DefaultSlotMax
 	if s.Slots.Max != nil && *s.Slots.Max >= 1 {
 		max = *s.Slots.Max
@@ -375,7 +375,7 @@ func (h *Handler) pickSlot(s *spec.Spec, reg store.RegistryFile, bands store.Ban
 			Home: home, Worktree: path, Bases: bases,
 		})
 		if err != nil {
-			return nil, &protocol.Error{
+			return nil, &api.Error{
 				Code:   3,
 				Msg:    fmt.Sprintf("resolving slot %d: %v", slot, err),
 				Remedy: "check the spec and the band registration, then re-run",
@@ -421,14 +421,14 @@ func (h *Handler) pickSlot(s *spec.Spec, reg store.RegistryFile, bands store.Ban
 		}
 	}
 	if occupied == 0 {
-		return nil, &protocol.Error{
+		return nil, &api.Error{
 			Code: 3,
 			Msg: fmt.Sprintf("app %q has no free slot in 1..%d: every slot's derived ports fall in the spec's "+
 				"reserved block or the host-global reservations, so no slot is allocatable", app, max),
 			Remedy: "move the band bases or narrow the exclusions (the spec's reserved block, or 'wt bands reserve --host'), then re-run",
 		}
 	}
-	return nil, &protocol.Error{
+	return nil, &api.Error{
 		Code: 3,
 		Msg: fmt.Sprintf("app %q has no free slot in 1..%d: all %d slots are occupied, "+
 			"and %d of them are owned by other clients and cannot be freed from here",
@@ -474,7 +474,7 @@ func pathVisible(path string) bool {
 // ownership is the boundary that replaces filesystem permissions
 // (ARCHITECTURE.md §4.3, §8.6 rule 6). Last-seen is the coordinator's own
 // measurement from clients.json, never a timestamp a client wrote.
-func (h *Handler) checkOwner(s *Session, e *store.Entry) *protocol.Error {
+func (h *Handler) checkOwner(s *Session, e *store.Entry) *api.Error {
 	if e.Owner == s.Identity.Key && e.OwnerKind == s.Identity.Kind {
 		return nil
 	}
@@ -486,7 +486,7 @@ func (h *Handler) checkOwner(s *Session, e *store.Entry) *protocol.Error {
 	// named client's key is its token, and the refusal must not hand it to
 	// whoever triggered it (the security pass, phase 9).
 	owner := redactKey(e.OwnerKind, e.Owner)
-	return &protocol.Error{
+	return &api.Error{
 		Code: 3,
 		Msg: fmt.Sprintf("entry %q is owned by %s client %s, last seen %s; "+
 			"only the owning client may mutate it (ARCHITECTURE.md §4.3)",
@@ -498,31 +498,34 @@ func (h *Handler) checkOwner(s *Session, e *store.Entry) *protocol.Error {
 
 // activate implements the activate verb: flip a reserving entry to active.
 // A mutating call against an entry owned by another client is refused.
-func (h *Handler) activate(s *Session, req *protocol.Request) *protocol.Response {
-	var ref protocol.EntryRef
+func (h *Handler) activate(s *Session, req *api.Request) *api.Response {
+	var ref api.EntryRef
 	if err := json.Unmarshal(req.Args, &ref); err != nil {
 		return respErr(1, fmt.Sprintf("malformed activate request: %v", err), "upgrade wt: this coordinator expects an app and slug")
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	reg, err := h.st.ReadRegistry()
+	e, ok, err := h.st.GetEntry(ref.App, ref.Slug)
 	if err != nil {
 		return h.storeErr("reading the registry", err)
 	}
-	e := registryEntry(reg, ref.App, ref.Slug)
-	if e == nil {
+	if !ok {
 		return respErr(1, fmt.Sprintf("no registry entry for app %q slug %q", ref.App, ref.Slug),
 			"allocate the worktree first, then re-run")
 	}
 	if perr := h.checkOwner(s, e); perr != nil {
-		return &protocol.Response{Error: perr}
+		return &api.Response{Error: perr}
 	}
-	e.State = store.StateActive
-	e.LastSeen = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := h.st.WriteRegistry(reg); err != nil {
+	now := time.Now()
+	if err := h.st.WithTx(func(tx *store.Tx) error {
+		if err := tx.UpdateEntryState(e.App, e.Slug, store.StateActive, ""); err != nil {
+			return err
+		}
+		return tx.TouchEntry(e.App, e.Slug, now)
+	}); err != nil {
 		return h.storeErr("writing the registry", err)
 	}
-	return &protocol.Response{Result: mustJSON(protocol.ActivateResult{App: e.App, Slug: e.Slug, State: e.State})}
+	return &api.Response{Result: mustJSON(api.ActivateResult{App: e.App, Slug: e.Slug, State: store.StateActive})}
 }
 
 // release implements the release verb: drop the entry entirely — the
@@ -536,42 +539,34 @@ func (h *Handler) activate(s *Session, req *protocol.Request) *protocol.Response
 // rollback with release, and the restart recovery may already have moved
 // the entry to tearing-down — a blind release would drop the survivors
 // with it.
-func (h *Handler) release(s *Session, req *protocol.Request) *protocol.Response {
-	var ref protocol.EntryRef
+func (h *Handler) release(s *Session, req *api.Request) *api.Response {
+	var ref api.EntryRef
 	if err := json.Unmarshal(req.Args, &ref); err != nil {
 		return respErr(1, fmt.Sprintf("malformed release request: %v", err), "upgrade wt: this coordinator expects an app and slug")
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	reg, err := h.st.ReadRegistry()
+	e, ok, err := h.st.GetEntry(ref.App, ref.Slug)
 	if err != nil {
 		return h.storeErr("reading the registry", err)
 	}
-	idx := -1
-	for i := range reg.Entries {
-		if reg.Entries[i].App == ref.App && reg.Entries[i].Slug == ref.Slug {
-			idx = i
-			break
-		}
-	}
-	if idx == -1 {
+	if !ok {
 		return respErr(1, fmt.Sprintf("no registry entry for app %q slug %q", ref.App, ref.Slug),
 			"allocate the worktree first, then re-run")
 	}
-	if perr := h.checkOwner(s, &reg.Entries[idx]); perr != nil {
-		return &protocol.Response{Error: perr}
+	if perr := h.checkOwner(s, e); perr != nil {
+		return &api.Response{Error: perr}
 	}
-	if reg.Entries[idx].State == store.StateTearingDown {
+	if e.State == store.StateTearingDown {
 		return respErr(3,
 			fmt.Sprintf("entry %q is tearing-down with resources outstanding (%s); releasing it would orphan what survived",
-				ref.Slug, teardownNoteText(&reg.Entries[idx])),
+				ref.Slug, teardownNoteText(e)),
 			fmt.Sprintf("re-run the teardown: wt rm --slug %s (or wt reconcile), which retries the teardown and drops the entry when nothing survives", ref.Slug))
 	}
-	dropEntry(&reg, ref.App, ref.Slug)
-	if err := h.st.WriteRegistry(reg); err != nil {
+	if err := h.st.DeleteEntry(ref.App, ref.Slug); err != nil {
 		return h.storeErr("writing the registry", err)
 	}
-	return &protocol.Response{Result: mustJSON(protocol.ReleaseResult{App: ref.App, Slug: ref.Slug, Removed: true})}
+	return &api.Response{Result: mustJSON(api.ReleaseResult{App: ref.App, Slug: ref.Slug, Removed: true})}
 }
 
 // AgeReserving is the coordinator's own timer's work: a reserving entry
@@ -599,37 +594,24 @@ func (h *Handler) AgeReserving(now time.Time, timeout time.Duration) (int, error
 }
 
 // storeErr turns a store failure into the wire error with the exit code and
-// remedy. An unparseable registry is reported, never truncated and
-// recreated (02-coordination.md §14).
-//
-// The 06-fleet.md §5 row "registry unparseable | rebuild from every
-// descriptor this view can see" is answered here, in phase 8, and the
-// answer is that the rebuild still cannot happen: the registry is the only
-// source of repository locations on the machine (doctorRepos states the
-// same bound), so a rebuild could only discover the descriptors of the one
-// repository the caller happens to stand in. Rebuilding from that one
-// repo's worktrees would silently drop every other repo's entries — and
-// the rebuild cannot know which entries were this view's, so every
-// descriptor-visible worktree would be re-registered under the caller's
-// ownership, stealing other clients' slots and resources. A7's "rebuilding
-// the registry from descriptors must always be safe" is exactly what that
-// would violate, so the refusal stands, naming the restore.
-func (h *Handler) storeErr(action string, err error) *protocol.Response {
+// remedy. A store database written by a newer schema is refused naming the
+// upgrade. A database that cannot be opened at all never reaches a handler
+// — wtd refuses to start over it, because the registry is the only source
+// of repository locations on the machine and rebuild-from-descriptors
+// cannot be safe (the same bound doctorRepos states).
+func (h *Handler) storeErr(action string, err error) *api.Response {
 	var ve *store.VersionError
 	if errors.As(err, &ve) {
-		return &protocol.Response{Error: &protocol.Error{Code: 3, Msg: fmt.Sprintf("%s: %v", action, err), Remedy: "upgrade wtd, then re-run"}}
+		return &api.Response{Error: &api.Error{Code: 3, Msg: fmt.Sprintf("%s: %v", action, err), Remedy: "upgrade wtd, then re-run"}}
 	}
 	msg := fmt.Sprintf("%s: %v", action, err)
 	remedy := "check the coordinator's store (WT_HOME) is readable and writable, then re-run"
-	if strings.Contains(err.Error(), "not a readable store file") {
-		remedy = "restore the store file from a backup; an unparseable registry is never truncated and recreated — rebuilding it from descriptors is not possible, because the registry is the only source of repository locations and a rebuild from one repo's worktrees would silently drop every other repo's (and every other client's) entries"
-	}
 	return respErr(1, msg, remedy)
 }
 
 // respErr builds the wire error.
-func respErr(code int, msg, remedy string) *protocol.Response {
-	return &protocol.Response{Error: &protocol.Error{Code: code, Msg: msg, Remedy: remedy}}
+func respErr(code int, msg, remedy string) *api.Response {
+	return &api.Response{Error: &api.Error{Code: code, Msg: msg, Remedy: remedy}}
 }
 
 // mustJSON encodes a result; the payloads here are plain data, so a marshal
@@ -640,20 +622,6 @@ func mustJSON(v any) json.RawMessage {
 		panic(fmt.Sprintf("coord: marshaling a response: %v", err))
 	}
 	return data
-}
-
-// dropEntry removes one entry from the registry and reports whether it was
-// there. Every caller has already looked the entry up, so the report is
-// what keeps a lookup that went stale from splicing at index -1 and taking
-// the coordinator down.
-func dropEntry(reg *store.RegistryFile, app, slug string) bool {
-	for i := range reg.Entries {
-		if reg.Entries[i].App == app && reg.Entries[i].Slug == slug {
-			reg.Entries = append(reg.Entries[:i], reg.Entries[i+1:]...)
-			return true
-		}
-	}
-	return false
 }
 
 // registryEntry finds one entry by app and slug.

@@ -37,11 +37,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/artefact"
 	"github.com/mrgeoffrich/worktree-manager/internal/coord"
 	"github.com/mrgeoffrich/worktree-manager/internal/descriptor"
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
@@ -63,7 +63,7 @@ type adoptionEnv struct {
 	main    string // the main checkout
 	home    string // the temp HOME holding the shared sources
 	fixture string // the absolute fixture path (reads after chdir)
-	sock    string
+	store   string // the store root, whose endpoint.json the client reads
 	st      *store.Store
 	ctx     context.Context
 }
@@ -106,11 +106,12 @@ func newAdoptionEnv(t *testing.T, withSpec bool) *adoptionEnv {
 		t.Fatalf("writing the main checkout .env: %v", err)
 	}
 
-	// The coordinator: a real server on a temp socket with the drivers
-	// plain-app needs — no docker anywhere in this layer.
+	// The coordinator: a real HTTP server on a loopback port with the
+	// drivers plain-app needs — no docker anywhere in this layer. It
+	// writes endpoint.json into the store root, which is what the client
+	// resolves.
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	sock := shortSock(t, "adopt")
 	storeRoot := filepath.Join(t.TempDir(), "wt")
 	if err := os.MkdirAll(storeRoot, 0o700); err != nil {
 		t.Fatalf("store root: %v", err)
@@ -127,7 +128,7 @@ func newAdoptionEnv(t *testing.T, withSpec bool) *adoptionEnv {
 	h.InstallDrivers(driver.NewRegistry(&driver.Port{}, &driver.StatePath{}))
 	srv := coord.NewServer(h, log)
 	serveDone := make(chan error, 1)
-	go func() { serveDone <- srv.Serve(ctx, sock) }()
+	go func() { serveDone <- srv.Serve(ctx, "127.0.0.1:0") }()
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -135,7 +136,7 @@ func newAdoptionEnv(t *testing.T, withSpec bool) *adoptionEnv {
 		case <-time.After(5 * time.Second):
 		}
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_HOME", storeRoot)
 	installFakeGh(t)
 	// In a container the reaper is unavailable by design and the servers
 	// must be killed manually; in a host run the reaper has already
@@ -148,19 +149,21 @@ func newAdoptionEnv(t *testing.T, withSpec bool) *adoptionEnv {
 	// seconds per retry when a server is a second away.
 	healthPollInterval = 250 * time.Millisecond
 
-	// Wait for the socket: the server goroutine may not have bound it yet.
+	// Wait for the endpoint file: the server goroutine may not have
+	// written it yet.
+	epPath := api.EndpointPath(storeRoot)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := os.Stat(sock); err == nil {
+		if _, err := os.Stat(epPath); err == nil {
 			break
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	if _, err := os.Stat(sock); err != nil {
-		t.Fatalf("the coordinator never bound %s: %v", sock, err)
+	if _, err := os.Stat(epPath); err != nil {
+		t.Fatalf("the coordinator never wrote the endpoint file: %v", err)
 	}
 
-	return &adoptionEnv{t: t, main: main, home: home, fixture: fixtureAbs(t), sock: sock, st: st, ctx: ctx}
+	return &adoptionEnv{t: t, main: main, home: home, fixture: fixtureAbs(t), store: storeRoot, st: st, ctx: ctx}
 }
 
 // fixtureAbs is the absolute path of the plain-app fixture.
@@ -278,14 +281,14 @@ func (e *adoptionEnv) startWorktree(wt string) {
 // report, asserting the bounded-coverage contract: either the reaper
 // signalled the worktree's own server (a host coordinator), or it says it
 // could not and names the remedy.
-func (e *adoptionEnv) rmWorktree(slug string) protocol.ReapReport {
+func (e *adoptionEnv) rmWorktree(slug string) api.ReapReport {
 	e.t.Helper()
 	code, stdout, stderr := runCLI(e.t, "rm", "--cwd", e.main, "--slug", slug, "--json")
 	if code != ExitOK {
 		e.t.Fatalf("rm of %s exit = %d; stderr:\n%s", slug, code, stderr)
 	}
 	var res struct {
-		Reap protocol.ReapReport `json:"reap"`
+		Reap api.ReapReport `json:"reap"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &res); err != nil {
 		e.t.Fatalf("rm stdout is not one JSON object: %v\n%s", err, stdout)
@@ -385,7 +388,7 @@ func TestAcceptancePlainAppAdoptedThroughTheSkill(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("ports scan exit = %d; stderr: %s", code, stderr)
 	}
-	var scan protocol.PortsScanResult
+	var scan api.PortsScanResult
 	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &scan); err != nil {
 		t.Fatalf("ports scan stdout is not one JSON object: %v\n%s", err, stdout)
 	}
@@ -398,7 +401,7 @@ func TestAcceptancePlainAppAdoptedThroughTheSkill(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("bands suggest exit = %d; stderr: %s", code, stderr)
 	}
-	var suggest protocol.SuggestBandResult
+	var suggest api.SuggestBandResult
 	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &suggest); err != nil {
 		t.Fatalf("bands suggest stdout: %v\n%s", err, stdout)
 	}
@@ -578,7 +581,7 @@ func TestAcceptancePlainAppAdoptedThroughTheSkill(t *testing.T) {
 	// Tear both down; the reap's bounded coverage is asserted (the
 	// reaper's container rule makes manual killing the remedy here), and
 	// doctor is clean afterwards.
-	var reaps []protocol.ReapReport
+	var reaps []api.ReapReport
 	for _, slug := range []string{"wt-1", "wt-2"} {
 		reaps = append(reaps, env.rmWorktree(slug))
 	}
@@ -598,7 +601,7 @@ func TestAcceptancePlainAppAdoptedThroughTheSkill(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("doctor exit = %d; stderr: %s", code, stderr)
 	}
-	var doc protocol.DoctorResult
+	var doc api.DoctorResult
 	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &doc); err != nil {
 		t.Fatalf("doctor stdout is not one JSON object: %v\n%s", err, stdout)
 	}
@@ -672,7 +675,7 @@ func TestAcceptanceSkillEightPhasesOnSpeclessFixture(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("bands suggest exit = %d; stderr: %s", code, stderr)
 	}
-	var suggest protocol.SuggestBandResult
+	var suggest api.SuggestBandResult
 	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &suggest); err != nil {
 		t.Fatalf("bands suggest stdout: %v\n%s", err, stdout)
 	}
@@ -776,7 +779,7 @@ func TestAcceptanceSkillEightPhasesOnSpeclessFixture(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("doctor exit = %d; stderr: %s", code, stderr)
 	}
-	var doc protocol.DoctorResult
+	var doc api.DoctorResult
 	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &doc); err != nil {
 		t.Fatalf("doctor stdout: %v", err)
 	}
@@ -849,7 +852,7 @@ func fixtureDecisionRecord(t *testing.T, fixtureRoot string) string {
 }
 
 // docFindingsJSON renders a doctor result for a failure message.
-func docFindingsJSON(doc protocol.DoctorResult) string {
+func docFindingsJSON(doc api.DoctorResult) string {
 	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return fmt.Sprint(doc)

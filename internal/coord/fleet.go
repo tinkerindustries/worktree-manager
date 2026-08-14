@@ -27,11 +27,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/descriptor"
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
 	"github.com/mrgeoffrich/worktree-manager/internal/envfile"
 	"github.com/mrgeoffrich/worktree-manager/internal/platform"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
@@ -70,8 +70,8 @@ const ReclaimIntervalDefault = 24 * time.Hour
 // entry belongs to another client). Secrets are served to the owning client
 // alone and only under --wide; every other combination is redacted
 // structurally (ARCHITECTURE.md §12.2).
-func (h *Handler) list(s *Session, req *protocol.Request) *protocol.Response {
-	var args protocol.ListArgs
+func (h *Handler) list(s *Session, req *api.Request) *api.Response {
+	var args api.ListArgs
 	if err := json.Unmarshal(req.Args, &args); err != nil {
 		return respErr(1, fmt.Sprintf("malformed list request: %v", err), "upgrade wt: this coordinator expects a list argument object")
 	}
@@ -90,9 +90,9 @@ func (h *Handler) list(s *Session, req *protocol.Request) *protocol.Response {
 	}
 	now := time.Now()
 	interval := h.reclaimInterval()
-	out := make([]protocol.ListEntry, 0, len(reg.Entries))
+	out := make([]api.ListEntry, 0, len(reg.Entries))
 	for _, e := range reg.Entries {
-		le := protocol.ListEntry{
+		le := api.ListEntry{
 			App: e.App, Slug: e.Slug, Slot: e.Slot, Description: e.Description,
 			State: e.State, Path: e.Path, PathVisible: e.PathVisible,
 			Owner: e.Owner, OwnerKind: e.OwnerKind, Ephemeral: e.Ephemeral,
@@ -129,7 +129,7 @@ func (h *Handler) list(s *Session, req *protocol.Request) *protocol.Response {
 		}
 		out = append(out, le)
 	}
-	return &protocol.Response{Result: mustJSON(protocol.ListResult{Entries: out})}
+	return &api.Response{Result: mustJSON(api.ListResult{Entries: out})}
 }
 
 // doctor implements the doctor verb: read everything, write nothing, and
@@ -137,26 +137,27 @@ func (h *Handler) list(s *Session, req *protocol.Request) *protocol.Response {
 // ARCHITECTURE.md §9.3 — a hard rule: a report listing problems without
 // remedies gets read once). Info-level rows are observations and carry no
 // remedy because there is nothing to fix.
-func (h *Handler) doctor(s *Session, req *protocol.Request) *protocol.Response {
+func (h *Handler) doctor(s *Session, req *api.Request) *api.Response {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	findings := []protocol.DoctorFinding{}
+	findings := []api.DoctorFinding{}
 	notes := []string{}
 
 	reg, err := h.st.ReadRegistryList()
 	if err != nil {
 		// M6 §9: an unreadable registry still lets doctor run — the
-		// unreadability is its first finding.
-		findings = append(findings, protocol.DoctorFinding{
+		// unreadability is its first finding. (A database that cannot be
+		// opened at all is refused at wtd startup, not here.)
+		findings = append(findings, api.DoctorFinding{
 			Level:   "error",
 			Message: fmt.Sprintf("the registry is not readable: %v", err),
-			Remedy:  "restore the store file from a backup; an unparseable registry is never truncated and recreated — rebuilding it from descriptors is not possible, because the registry is the only source of repository locations and a rebuild from one repo's worktrees would silently drop every other repo's (and every other client's) entries",
+			Remedy:  "restore the store database (wt.db) from a backup; an unreadable registry is never truncated and recreated — rebuilding it from descriptors is not possible, because the registry is the only source of repository locations and a rebuild from one repo's worktrees would silently drop every other repo's (and every other client's) entries",
 		})
-		return &protocol.Response{Result: mustJSON(protocol.DoctorResult{Findings: findings})}
+		return &api.Response{Result: mustJSON(api.DoctorResult{Findings: findings})}
 	}
 	if reg.SchemaVersion > store.SchemaVersion {
-		findings = append(findings, protocol.DoctorFinding{
+		findings = append(findings, api.DoctorFinding{
 			Level:   "warning",
 			Message: fmt.Sprintf("the registry carries schema version %d but this coordinator understands %d; entries are listed, not checked", reg.SchemaVersion, store.SchemaVersion),
 			Remedy:  "upgrade wtd, then re-run 'wt doctor'",
@@ -204,7 +205,7 @@ func (h *Handler) doctor(s *Session, req *protocol.Request) *protocol.Response {
 	if len(notes) > 0 {
 		sort.Strings(notes)
 	}
-	return &protocol.Response{Result: mustJSON(protocol.DoctorResult{Findings: findings, Notes: notes})}
+	return &api.Response{Result: mustJSON(api.DoctorResult{Findings: findings, Notes: notes})}
 }
 
 // doctorEntry runs every check one entry can be checked for. An
@@ -212,10 +213,10 @@ func (h *Handler) doctor(s *Session, req *protocol.Request) *protocol.Response {
 // path-dependent checks are skipped; the reclamation finding still applies,
 // because a dead ephemeral owner's entry is reclaimed by handle whether or
 // not its path is visible (ARCHITECTURE.md §10.2).
-func (h *Handler) doctorEntry(e *store.Entry, clients store.ClientsFile, specs store.SpecsFile, bands store.BandsFile, now time.Time, interval time.Duration, findings *[]protocol.DoctorFinding, notes *[]string, repos map[string]bool, appSpecs map[string]*spec.Spec) {
+func (h *Handler) doctorEntry(e *store.Entry, clients store.ClientsFile, specs store.SpecsFile, bands store.BandsFile, now time.Time, interval time.Duration, findings *[]api.DoctorFinding, notes *[]string, repos map[string]bool, appSpecs map[string]*spec.Spec) {
 	app, slug := e.App, e.Slug
 	if e.Ephemeral && clientAgedOut(clients, e.Owner, e.OwnerKind, now, interval) {
-		*findings = append(*findings, protocol.DoctorFinding{
+		*findings = append(*findings, api.DoctorFinding{
 			App: app, Slug: slug, Level: "warning",
 			Message: fmt.Sprintf("the ephemeral owner %s client %s, last seen %s, has aged out past the reclamation interval; the entry will be reclaimed by handle",
 				e.OwnerKind, redactKey(e.OwnerKind, e.Owner), e.LastSeen),
@@ -227,14 +228,14 @@ func (h *Handler) doctorEntry(e *store.Entry, clients store.ClientsFile, specs s
 		// The path exists only inside a container the coordinator cannot
 		// stat: unverifiable, never stale, and nothing path-dependent can be
 		// checked (ARCHITECTURE.md §10.3). An observation, so no remedy.
-		*findings = append(*findings, protocol.DoctorFinding{
+		*findings = append(*findings, api.DoctorFinding{
 			App: app, Slug: slug, Level: "info",
 			Message: fmt.Sprintf("the entry's path %s is not visible to the coordinator (it exists only inside a container); unverifiable — the entry is never called stale, and its checks are skipped", e.Path),
 		})
 		return
 	}
 	if _, serr := os.Stat(e.Path); serr != nil {
-		*findings = append(*findings, protocol.DoctorFinding{
+		*findings = append(*findings, api.DoctorFinding{
 			App: app, Slug: slug, Level: "error",
 			Message: fmt.Sprintf("the worktree directory %s is gone", e.Path),
 			Remedy:  fmt.Sprintf("run 'wt rm --slug %s' (or 'wt reconcile') to tear the resources down and drop the entry", slug),
@@ -245,7 +246,7 @@ func (h *Handler) doctorEntry(e *store.Entry, clients store.ClientsFile, specs s
 	// State checks that do not depend on the spec.
 	if e.State == store.StateReserving {
 		if created, perr := time.Parse(time.RFC3339Nano, e.CreatedAt); perr == nil && now.Sub(created) >= ReservingTimeout {
-			*findings = append(*findings, protocol.DoctorFinding{
+			*findings = append(*findings, api.DoctorFinding{
 				App: app, Slug: slug, Level: "warning",
 				Message: fmt.Sprintf("the entry has been reserving since %s, past its %s timeout — a client died mid-sequence, or materialisation is stuck", e.CreatedAt, ReservingTimeout),
 				Remedy:  "run 'wt reconcile' to roll the allocation back",
@@ -253,7 +254,7 @@ func (h *Handler) doctorEntry(e *store.Entry, clients store.ClientsFile, specs s
 		}
 	}
 	if e.State == store.StateTearingDown {
-		*findings = append(*findings, protocol.DoctorFinding{
+		*findings = append(*findings, api.DoctorFinding{
 			App: app, Slug: slug, Level: "warning",
 			Message: fmt.Sprintf("the entry is tearing-down with resources outstanding: %s", teardownNoteText(e)),
 			Remedy:  fmt.Sprintf("fix the cause named above, then re-run 'wt rm --slug %s'", slug),
@@ -266,7 +267,7 @@ func (h *Handler) doctorEntry(e *store.Entry, clients store.ClientsFile, specs s
 	// stated, never silent.
 	sp := h.specForEntry(e, specs)
 	if sp == nil {
-		*findings = append(*findings, protocol.DoctorFinding{
+		*findings = append(*findings, api.DoctorFinding{
 			App: app, Slug: slug, Level: "warning",
 			Message: fmt.Sprintf("no spec can be found for the entry (walking up from %s found nothing, and no spec is cached for app %q); the descriptor, .env and drift checks are skipped", e.Path, app),
 			Remedy:  "commit wt.yaml at the repository root (or run 'wt init' in the worktree), then re-run 'wt doctor'",
@@ -274,7 +275,7 @@ func (h *Handler) doctorEntry(e *store.Entry, clients store.ClientsFile, specs s
 		return
 	}
 	if sp.App != app {
-		*findings = append(*findings, protocol.DoctorFinding{
+		*findings = append(*findings, api.DoctorFinding{
 			App: app, Slug: slug, Level: "error",
 			Message: fmt.Sprintf("the spec found from %s declares app %q but the entry belongs to app %q", e.Path, sp.App, app),
 			Remedy:  "fix the spec's app field, then re-run 'wt init' in the worktree",
@@ -293,13 +294,13 @@ func (h *Handler) doctorEntry(e *store.Entry, clients store.ClientsFile, specs s
 		dpath = filepath.Join(e.Path, sp.Emit.Descriptor.Filename)
 	}
 	if _, derr := os.Stat(dpath); derr != nil {
-		*findings = append(*findings, protocol.DoctorFinding{
+		*findings = append(*findings, api.DoctorFinding{
 			App: app, Slug: slug, Level: "error",
 			Message: fmt.Sprintf("the descriptor at %s is missing", dpath),
 			Remedy:  fmt.Sprintf("run 'wt init' in %s (it re-emits the descriptor from the entry)", e.Path),
 		})
 	} else if _, derr := descriptor.Read(dpath, sp.Emit.Descriptor.Format); derr != nil {
-		*findings = append(*findings, protocol.DoctorFinding{
+		*findings = append(*findings, api.DoctorFinding{
 			App: app, Slug: slug, Level: "error",
 			Message: fmt.Sprintf("the descriptor at %s is unreadable: %v", dpath, derr),
 			Remedy:  fmt.Sprintf("run 'wt init' in %s (it re-emits the descriptor from the entry)", e.Path),
@@ -312,7 +313,7 @@ func (h *Handler) doctorEntry(e *store.Entry, clients store.ClientsFile, specs s
 	if sp.Emit.Env != nil {
 		envPath := spec.WorktreePath(e.Path, sp.Emit.Env.Path)
 		if outside, oerr := envfile.OutsideBlockKeys(envPath, sp.Emit.Env.Keys); oerr == nil && len(outside) > 0 {
-			*findings = append(*findings, protocol.DoctorFinding{
+			*findings = append(*findings, api.DoctorFinding{
 				App: app, Slug: slug, Level: "warning",
 				Message: fmt.Sprintf("managed key(s) defined outside the .env block at %s: %s", envPath, strings.Join(outside, ", ")),
 				Remedy:  fmt.Sprintf("run 'wt init' in %s (it re-emits the block and strips the duplicates)", e.Path),
@@ -360,7 +361,7 @@ func (h *Handler) doctorEntry(e *store.Entry, clients store.ClientsFile, specs s
 				*notes = append(*notes, fmt.Sprintf("%s/%s: %s", app, slug, f.Message))
 				continue
 			}
-			*findings = append(*findings, protocol.DoctorFinding{
+			*findings = append(*findings, api.DoctorFinding{
 				App: app, Slug: slug, Level: f.Level,
 				Message: f.Message,
 				Remedy:  driftRemedy(f, res, e.Path),
@@ -373,7 +374,7 @@ func (h *Handler) doctorEntry(e *store.Entry, clients store.ClientsFile, specs s
 			if project, ok := value.Value.(string); ok && project != "" && env.Docker != nil {
 				if verr := env.Docker.Version(); verr == nil {
 					if objs, oerr := projectObjectsCount(env.Docker, project); oerr == nil && objs == 0 {
-						*findings = append(*findings, protocol.DoctorFinding{
+						*findings = append(*findings, api.DoctorFinding{
 							App: app, Slug: slug, Level: "error",
 							Message: fmt.Sprintf("the compose project %s has no objects — the stack is gone while the entry is active", project),
 							Remedy:  fmt.Sprintf("run 'wt init' in %s to rebuild", e.Path),
@@ -428,7 +429,7 @@ func driftRemedy(f driver.Finding, res *spec.Resource, worktree string) string {
 // the "directory present, no entry" row, fixed by init in that directory
 // — and runs the phase-7 generated-artefact drift check against the
 // repo's main checkout (drift.go).
-func (h *Handler) doctorRepos(reg store.RegistryFile, repos map[string]bool, findings *[]protocol.DoctorFinding, notes *[]string) {
+func (h *Handler) doctorRepos(reg store.RegistryFile, repos map[string]bool, findings *[]api.DoctorFinding, notes *[]string) {
 	for common := range repos {
 		out, err := exec.Command("git", "-C", common, "worktree", "list", "--porcelain").Output()
 		if err != nil {
@@ -458,7 +459,7 @@ func (h *Handler) doctorRepos(reg store.RegistryFile, repos map[string]bool, fin
 			if registryHasPath(reg, path) {
 				continue
 			}
-			*findings = append(*findings, protocol.DoctorFinding{
+			*findings = append(*findings, api.DoctorFinding{
 				Level:   "warning",
 				Message: fmt.Sprintf("the worktree %s is present but has no registry entry — it was never initialised, or its entry was dropped", path),
 				Remedy:  fmt.Sprintf("run 'wt init' in %s", path),
@@ -498,7 +499,7 @@ func registryHasPath(reg store.RegistryFile, path string) bool {
 
 // doctorBands reports two apps whose registered port bands overlap — the
 // machine-wide collision only one ledger can see (06-fleet.md §8).
-func (h *Handler) doctorBands(bands store.BandsFile, findings *[]protocol.DoctorFinding, notes *[]string) {
+func (h *Handler) doctorBands(bands store.BandsFile, findings *[]api.DoctorFinding, notes *[]string) {
 	type span struct {
 		app  string
 		name string
@@ -528,7 +529,7 @@ func (h *Handler) doctorBands(bands store.BandsFile, findings *[]protocol.Doctor
 				// the same base. The finding is the cross-app collision.
 				continue
 			}
-			*findings = append(*findings, protocol.DoctorFinding{
+			*findings = append(*findings, api.DoctorFinding{
 				Level: "error",
 				Message: fmt.Sprintf("the port bands of app %q (%s: %d..%d) and app %q (%s: %d..%d) overlap",
 					a.app, a.name, a.lo, a.hi, b.app, b.name, b.lo, b.hi),
@@ -541,7 +542,7 @@ func (h *Handler) doctorBands(bands store.BandsFile, findings *[]protocol.Doctor
 // doctorCeilings reports an app approaching its slot ceiling — the
 // capacity finding whose remedy every allocation-exhaustion message points
 // at (B16.6).
-func (h *Handler) doctorCeilings(appSpecs map[string]*spec.Spec, occupiedByApp map[string]int, findings *[]protocol.DoctorFinding) {
+func (h *Handler) doctorCeilings(appSpecs map[string]*spec.Spec, occupiedByApp map[string]int, findings *[]api.DoctorFinding) {
 	for app, occupied := range occupiedByApp {
 		max := spec.DefaultSlotMax
 		if sp, ok := appSpecs[app]; ok && sp.Slots.Max != nil && *sp.Slots.Max >= 1 {
@@ -549,7 +550,7 @@ func (h *Handler) doctorCeilings(appSpecs map[string]*spec.Spec, occupiedByApp m
 		}
 		free := max - occupied
 		if free*4 < max {
-			*findings = append(*findings, protocol.DoctorFinding{
+			*findings = append(*findings, api.DoctorFinding{
 				App: app, Level: "warning",
 				Message: fmt.Sprintf("app %q is approaching its slot ceiling: %d of %d slots are occupied (%d free)", app, occupied, max, free),
 				Remedy:  "run 'wt cleanup' to reclaim your slots, or 'wt rm --slug <slug>' to free one entry's slot",
@@ -562,13 +563,13 @@ func (h *Handler) doctorCeilings(appSpecs map[string]*spec.Spec, occupiedByApp m
 // port resources and an empty reaper.binaries allowlist. The rail stays
 // closed for such a spec — naming nothing signals nothing, which is the
 // safe default — and doctor makes the gap visible rather than silent.
-func (h *Handler) doctorReapers(appSpecs map[string]*spec.Spec, findings *[]protocol.DoctorFinding) {
+func (h *Handler) doctorReapers(appSpecs map[string]*spec.Spec, findings *[]api.DoctorFinding) {
 	for app, sp := range appSpecs {
 		if !hasPortResources(sp) {
 			continue
 		}
 		if len(sp.Reaper.Binaries) == 0 {
-			*findings = append(*findings, protocol.DoctorFinding{
+			*findings = append(*findings, api.DoctorFinding{
 				App: app, Level: "warning",
 				Message: fmt.Sprintf("the spec of app %q names no reaper binaries, so the reaper can signal nothing: every process bound to this app's ports would be reported and never signalled", app),
 				Remedy:  "set reaper.binaries in the app's wt.yaml (the binaries the reaper may signal), then re-run 'wt doctor'",
@@ -582,8 +583,8 @@ func (h *Handler) doctorReapers(appSpecs map[string]*spec.Spec, findings *[]prot
 // paths — the reap-teardown-drop sequence rm runs for a gone directory, and
 // the rollback for a reserving entry past its timeout. The eligibility is
 // re-checked here; the caller's claim is never trusted.
-func (h *Handler) reconcile(s *Session, req *protocol.Request) *protocol.Response {
-	var args protocol.ReconcileArgs
+func (h *Handler) reconcile(s *Session, req *api.Request) *api.Response {
+	var args api.ReconcileArgs
 	if err := json.Unmarshal(req.Args, &args); err != nil {
 		return respErr(1, fmt.Sprintf("malformed reconcile request: %v", err), "upgrade wt: this coordinator expects an app, spec and entry refs")
 	}
@@ -605,24 +606,23 @@ func (h *Handler) reconcile(s *Session, req *protocol.Request) *protocol.Respons
 	now := time.Now()
 	interval := h.reclaimInterval()
 
-	out := make([]protocol.ReconcileOutcome, 0, len(args.Refs))
+	out := make([]api.ReconcileOutcome, 0, len(args.Refs))
 	for _, ref := range args.Refs {
 		if ref.App == "" {
 			ref.App = args.App
 		}
-		reg, err := h.st.ReadRegistry()
+		e, ok, err := h.st.GetEntry(ref.App, ref.Slug)
 		if err != nil {
 			return h.storeErr("reading the registry", err)
 		}
-		e := registryEntry(reg, ref.App, ref.Slug)
-		if e == nil {
-			out = append(out, protocol.ReconcileOutcome{App: ref.App, Slug: ref.Slug, Action: "not-found"})
+		if !ok {
+			out = append(out, api.ReconcileOutcome{App: ref.App, Slug: ref.Slug, Action: "not-found"})
 			continue
 		}
 		own := e.Owner == s.Identity.Key && e.OwnerKind == s.Identity.Kind
 		reclaimable := e.Ephemeral && clientAgedOut(clients, e.Owner, e.OwnerKind, now, interval)
 		if !own && !reclaimable {
-			out = append(out, protocol.ReconcileOutcome{
+			out = append(out, api.ReconcileOutcome{
 				App: ref.App, Slug: ref.Slug, Action: "skipped",
 				Note: fmt.Sprintf("owned by %s client %s, last seen %s; only the owning client may repair it, or an ephemeral owner that has aged out",
 					e.OwnerKind, redactKey(e.OwnerKind, e.Owner), lastSeenOf(clients, e.Owner, e.OwnerKind)),
@@ -638,16 +638,16 @@ func (h *Handler) reconcile(s *Session, req *protocol.Request) *protocol.Respons
 				// entry, so the teardown runs before the entry goes.
 				tresp := h.teardownEntry(s, e, &args.Spec, nil, nil)
 				if tresp.Error != nil {
-					out = append(out, protocol.ReconcileOutcome{
+					out = append(out, api.ReconcileOutcome{
 						App: ref.App, Slug: ref.Slug, Action: "rolled-back",
 						Note: fmt.Sprintf("teardown did not free the slot: %s", tresp.Error.Msg),
 					})
 					continue
 				}
-				out = append(out, protocol.ReconcileOutcome{App: ref.App, Slug: ref.Slug, Action: "rolled-back"})
+				out = append(out, api.ReconcileOutcome{App: ref.App, Slug: ref.Slug, Action: "rolled-back"})
 				continue
 			}
-			out = append(out, protocol.ReconcileOutcome{
+			out = append(out, api.ReconcileOutcome{
 				App: ref.App, Slug: ref.Slug, Action: "skipped",
 				Note: "the entry is reserving and within its timeout: it is either still being set up, or the coordinator's timer will age it out",
 			})
@@ -658,18 +658,18 @@ func (h *Handler) reconcile(s *Session, req *protocol.Request) *protocol.Respons
 		// Allowed for an aged-out ephemeral owner by the reclamation rule:
 		// teardown works from a handle held in the registry
 		// (ARCHITECTURE.md §10.2).
-		var reap protocol.ReapReport
+		var reap api.ReapReport
 		if cerr := h.runUnlocked(ref.App, ref.Slug, func() {
 			reap = h.reap(e, &args.Spec, false, false)
 		}); cerr != nil {
-			out = append(out, protocol.ReconcileOutcome{
+			out = append(out, api.ReconcileOutcome{
 				App: ref.App, Slug: ref.Slug, Action: "skipped", Note: cerr.Msg,
 			})
 			continue
 		}
 		tresp := h.teardownEntry(s, e, &args.Spec, nil, nil)
 		if tresp.Error != nil {
-			out = append(out, protocol.ReconcileOutcome{
+			out = append(out, api.ReconcileOutcome{
 				App: ref.App, Slug: ref.Slug, Action: "torn-down",
 				Note: fmt.Sprintf("teardown did not free the slot: %s", tresp.Error.Msg),
 			})
@@ -679,16 +679,16 @@ func (h *Handler) reconcile(s *Session, req *protocol.Request) *protocol.Respons
 		if reap.Note != "" {
 			note = "reap: " + reap.Note
 		}
-		out = append(out, protocol.ReconcileOutcome{App: ref.App, Slug: ref.Slug, Action: "torn-down", Note: note})
+		out = append(out, api.ReconcileOutcome{App: ref.App, Slug: ref.Slug, Action: "torn-down", Note: note})
 	}
-	return &protocol.Response{Result: mustJSON(protocol.ReconcileResult{Outcomes: out})}
+	return &api.Response{Result: mustJSON(api.ReconcileResult{Outcomes: out})}
 }
 
 // clientsList implements the clients.list verb: the known clients, their
 // kind, the coordinator's measured last-seen time, how many entries each
 // owns, and whether an ephemeral client has aged out past the reclamation
 // interval.
-func (h *Handler) clientsList(s *Session, req *protocol.Request) *protocol.Response {
+func (h *Handler) clientsList(s *Session, req *api.Request) *api.Response {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	clients, err := h.st.ReadClients()
@@ -701,7 +701,7 @@ func (h *Handler) clientsList(s *Session, req *protocol.Request) *protocol.Respo
 	}
 	now := time.Now()
 	interval := h.reclaimInterval()
-	out := make([]protocol.ClientInfo, 0, len(clients.Clients))
+	out := make([]api.ClientInfo, 0, len(clients.Clients))
 	for _, c := range clients.Clients {
 		// A client's own row shows its full identity (the caller needs to
 		// recognise itself); every other row is redacted — a named row's
@@ -713,7 +713,7 @@ func (h *Handler) clientsList(s *Session, req *protocol.Request) *protocol.Respo
 		if !mine {
 			identity = redactKey(c.Kind, c.Identity)
 		}
-		info := protocol.ClientInfo{
+		info := api.ClientInfo{
 			Identity: identity, Kind: c.Kind, Ephemeral: c.Ephemeral, LastSeen: c.LastSeen,
 		}
 		for _, e := range reg.Entries {
@@ -732,7 +732,7 @@ func (h *Handler) clientsList(s *Session, req *protocol.Request) *protocol.Respo
 		}
 		return out[i].Identity < out[j].Identity
 	})
-	return &protocol.Response{Result: mustJSON(protocol.ClientsListResult{Clients: out})}
+	return &api.Response{Result: mustJSON(api.ClientsListResult{Clients: out})}
 }
 
 // ReclaimEphemeral reclaims the entries of ephemeral clients whose last
@@ -773,8 +773,11 @@ func (h *Handler) ReclaimEphemeral(now time.Time) (int, error) {
 		candidates = append(candidates, candidate{reg.Entries[i].App, reg.Entries[i].Slug})
 	}
 	for _, c := range candidates {
-		e := registryEntry(reg, c.app, c.slug)
-		if e == nil {
+		e, ok, err := h.st.GetEntry(c.app, c.slug)
+		if err != nil {
+			return reclaimed, err
+		}
+		if !ok {
 			continue // gone since the snapshot
 		}
 		if !e.Ephemeral || !clientAgedOut(clients, e.Owner, e.OwnerKind, now, interval) {
@@ -800,12 +803,12 @@ func (h *Handler) ReclaimEphemeral(now time.Time) (int, error) {
 		reclaimed++
 		h.log.Info("reclaimed an aged-out ephemeral client's entry",
 			"app", e.App, "slug", e.Slug, "owner", e.Owner)
-		// teardownEntry wrote the registry with this entry gone; reload so
-		// the next entry's handle is fresh.
-		reg, err = h.st.ReadRegistry()
-		if err != nil {
-			return reclaimed, err
-		}
+	}
+	// The registry is read fresh for the prune: the teardowns above wrote
+	// it, and the owners the prune checks must be current.
+	reg, err = h.st.ReadRegistry()
+	if err != nil {
+		return reclaimed, err
 	}
 	if err := h.pruneClients(clients, reg, now, interval); err != nil {
 		return reclaimed, err
@@ -827,23 +830,31 @@ func (h *Handler) pruneClients(clients store.ClientsFile, reg store.RegistryFile
 		owners[[2]string{e.OwnerKind, e.Owner}] = true
 	}
 	kept := clients.Clients[:0]
-	dropped := 0
+	var dropped []store.ClientEntry
 	for _, c := range clients.Clients {
 		if c.Ephemeral && !owners[[2]string{c.Kind, c.Identity}] &&
 			clientAgedOut(clients, c.Identity, c.Kind, now, interval) {
-			dropped++
+			dropped = append(dropped, c)
 			continue
 		}
 		kept = append(kept, c)
 	}
-	if dropped == 0 {
+	if len(dropped) == 0 {
 		return nil
 	}
-	clients.Clients = kept
-	if err := h.st.WriteClients(clients); err != nil {
+	// One transaction: the prune is a sequence of row deletions that must
+	// land together, exactly like the reclamation it follows.
+	if err := h.st.WithTx(func(tx *store.Tx) error {
+		for _, c := range dropped {
+			if err := tx.DeleteClient(c.Identity, c.Kind); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
 		return err
 	}
-	h.log.Info("pruned aged-out ephemeral client rows that own no entries", "dropped", dropped)
+	h.log.Info("pruned aged-out ephemeral client rows that own no entries", "dropped", len(dropped))
 	return nil
 }
 
@@ -873,16 +884,7 @@ func (h *Handler) specForEntry(e *store.Entry, cache store.SpecsFile) *spec.Spec
 // send the spec). Best-effort: a cache write failure is logged, never a
 // refusal.
 func (h *Handler) cacheSpec(app string, sp *spec.Spec) {
-	specs, err := h.st.ReadSpecs()
-	if err != nil {
-		h.log.Warn("reading the spec cache", "err", err)
-		return
-	}
-	if specs.Specs == nil {
-		specs.Specs = map[string]spec.Spec{}
-	}
-	specs.Specs[app] = *sp
-	if err := h.st.WriteSpecs(specs); err != nil {
+	if err := h.st.UpsertSpec(app, *sp); err != nil {
 		h.log.Warn("writing the spec cache", "err", err)
 	}
 }
@@ -976,7 +978,7 @@ func projectObjectsCount(d driver.Docker, project string) (int, error) {
 // before the refusal is the first anyone hears of it. Doctor reads
 // everything and writes nothing, so the runner is only asked, never
 // started or stopped.
-func (h *Handler) doctorMachines(appSpecs map[string]*spec.Spec, findings *[]protocol.DoctorFinding, notes *[]string) {
+func (h *Handler) doctorMachines(appSpecs map[string]*spec.Spec, findings *[]api.DoctorFinding, notes *[]string) {
 	hasMachine := false
 	for _, sp := range appSpecs {
 		for i := range sp.Resources {
@@ -1026,7 +1028,7 @@ func (h *Handler) doctorMachines(appSpecs map[string]*spec.Spec, findings *[]pro
 			for _, n := range running {
 				parts = append(parts, fmt.Sprintf("%s (tear down with %q)", n, runner.DeleteCommand(n)))
 			}
-			*findings = append(*findings, protocol.DoctorFinding{
+			*findings = append(*findings, api.DoctorFinding{
 				App: app, Level: "warning",
 				Message: fmt.Sprintf("app %q is approaching the machine capacity: %d of %d instances are running (%s); the next new instance is refused by the capacity guard",
 					app, len(running), max, strings.Join(parts, ", ")),

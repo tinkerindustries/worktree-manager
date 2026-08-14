@@ -1,11 +1,11 @@
-package protocol
+package api
 
 import (
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 )
 
 // Phase-3 verbs, carried by the generic Request/Response envelope of
-// protocol.go. Their payloads are the wire contract both binaries share, so
+// api.go. Their payloads are the wire contract both binaries share, so
 // they live here rather than in the coordinator or the client.
 //
 // allocate, activate and release are the entry lifecycle behind phase 5's
@@ -488,4 +488,28 @@ type ClientInfo struct {
 // ClientsListResult is the whole client table.
 type ClientsListResult struct {
 	Clients []ClientInfo `json:"clients"`
+}
+
+// --- Phase R1: the session verb -----------------------------------------
+//
+// POST /v1/session is the one verb the old wire did not carry: an
+// ephemeral client presents the container token once and receives a
+// session id — a clients row with a 32-byte random identity — which it
+// presents as its bearer for every later request. Session ids are rows,
+// not memory: they survive a wtd restart mid-init, and reclamation
+// deleting the row is what revokes them (plan.md §5, phase R1).
+
+// SessionResult is the POST /v1/session response: the issued ephemeral
+// session id.
+type SessionResult struct {
+	SessionID string `json:"session_id"`
+}
+
+// PingResult is the GET /v1/ping response: the wire's one plumbing verb
+// answers with a fixed success object — a full request round trip with
+// nothing behind it. Phase R2 gives it a real type so the described API
+// can derive its schema like every other result, instead of the raw
+// literal the transport used to emit.
+type PingResult struct {
+	OK bool `json:"ok"`
 }

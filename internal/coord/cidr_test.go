@@ -13,8 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 )
 
@@ -40,16 +40,16 @@ func cidrAllocSpec(t *testing.T) *spec.Spec {
 
 // allocateEntry allocates one entry for the app and returns its slot and
 // the response.
-func allocateCIDR(t *testing.T, h *Harness, sess *Session, sp *spec.Spec, slug string) (int, protocol.AllocateResult) {
+func allocateCIDR(t *testing.T, h *Harness, sess *Session, sp *spec.Spec, slug string) (int, api.AllocateResult) {
 	t.Helper()
-	resp := h.Request(context.Background(), sess, verbAllocate, &protocol.AllocateArgs{
+	resp := h.Request(context.Background(), sess, verbAllocate, &api.AllocateArgs{
 		Spec: *sp, Slug: slug, Path: filepath.Join(t.TempDir(), slug),
 		Description: "a cidr worktree",
 	})
 	if resp.Error != nil {
 		t.Fatalf("allocating %s: %v", slug, resp.Error)
 	}
-	var res protocol.AllocateResult
+	var res api.AllocateResult
 	mustUnmarshal(t, resp.Result, &res)
 	return res.Slot, res
 }
@@ -61,9 +61,9 @@ func allocateCIDR(t *testing.T, h *Harness, sess *Session, sp *spec.Spec, slug s
 func TestAllocateCIDRFallbackIsLoud(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
 	h.H.InstallDrivers(driver.NewRegistry(&driver.CIDR{}))
-	sess, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello: %v", reply.Error)
+	sess, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello: %v", err)
 	}
 	sp := cidrAllocSpec(t)
 
@@ -113,9 +113,9 @@ func TestAllocateCIDRProbeHoldsOverlappingSlot(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
 	h.H.Docker = &overlapDocker{subnet: "192.168.0.0/30"} // slot 1's slice is taken
 	h.H.InstallDrivers(driver.NewRegistry(&driver.CIDR{}))
-	sess, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello: %v", reply.Error)
+	sess, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello: %v", err)
 	}
 	sp := cidrAllocSpec(t)
 

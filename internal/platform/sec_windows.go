@@ -4,17 +4,19 @@ package platform
 
 // sec_windows.go is the Windows permission model (08-platform.md §4.6):
 // mode bits are meaningless on NTFS, so private state — the store
-// directory and the coordinator's named pipe — is protected with an ACL
+// directory, holding wt.db and endpoint.json — is protected with an ACL
 // granting the current user and denying everyone else, built from an
 // SDDL string and applied with the raw Win32 API through the standard
 // library's syscall package (no x/sys, no cgo: CGO_ENABLED=0 throughout).
 //
-// The ACL is the whole of the Windows security story, and it is stated as
-// such: peer credentials do not exist on a named pipe, so the pipe's ACL
-// restricting it to the owning user is what identifies a host client
-// (peercred_windows.go). Where the ACL cannot be set, the caller refuses
-// rather than degrading (EnsurePrivateDir refuses to hold credentials;
-// the pipe refuses to listen).
+// The ACL used to carry more than this. While the transport was a named
+// pipe, the pipe's own ACL was what identified a host client, because
+// peer credentials do not exist on one. The transport is HTTP on loopback
+// now and identity is the bearer token in endpoint.json, so the ACL's job
+// is narrower but no less load-bearing: it is what keeps that token
+// unreadable by the machine's other users, and it is the only thing that
+// does. Where the ACL cannot be set, EnsurePrivateDir refuses to hold
+// credentials rather than degrading.
 
 import (
 	"fmt"

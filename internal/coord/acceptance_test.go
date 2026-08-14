@@ -19,8 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
@@ -39,8 +39,8 @@ func TestAcceptanceCoordinatorProbeSeesPublishedPort(t *testing.T) {
 		t.Fatalf("acceptance test needs a docker daemon: %v", err)
 	}
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	if _, reply := h.Connect(protocol.KindHost, ""); reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	if _, err := h.Connect(api.KindHost, ""); err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
 	h.H.InstallDrivers(driver.NewRegistry(&driver.Port{}, &driver.Namespace{}, &driver.StatePath{}))
 
@@ -100,9 +100,9 @@ func TestAcceptanceTeardownUnavailableMovesEntryToTearingDown(t *testing.T) {
 		t.Error("the error must carry a remedy")
 	}
 
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	e := registryEntry(reg, ref.App, ref.Slug)
 	if e == nil || e.State != store.StateTearingDown {

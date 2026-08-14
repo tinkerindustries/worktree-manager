@@ -15,8 +15,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
@@ -84,12 +84,12 @@ func materialiseSpec(t *testing.T) *spec.Spec {
 
 // allocMaterialise allocates one entry against the spec with the given
 // driver registry installed.
-func allocMaterialise(t *testing.T, reg driver.Registry) (*Harness, *Session, *spec.Spec, protocol.AllocateResult) {
+func allocMaterialise(t *testing.T, reg driver.Registry) (*Harness, *Session, *spec.Spec, api.AllocateResult) {
 	t.Helper()
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	sess, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	sess, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
 	h.H.InstallDrivers(reg)
 	sp := materialiseSpec(t)
@@ -108,13 +108,13 @@ func TestCoordMaterialiseAppliesInDependencyOrder(t *testing.T) {
 	h, sess, sp, res := allocMaterialise(t, driver.NewRegistry(stub))
 	ctx := context.Background()
 
-	resp := h.Request(ctx, sess, verbMaterialise, &protocol.MaterialiseArgs{
+	resp := h.Request(ctx, sess, verbMaterialise, &api.MaterialiseArgs{
 		App: res.App, Slug: res.Slug, Spec: *sp,
 	})
 	if resp.Error != nil {
 		t.Fatalf("materialise refused: %+v", resp.Error)
 	}
-	var mres protocol.MaterialiseResult
+	var mres api.MaterialiseResult
 	decodeResult(t, resp, &mres)
 	if mres.Failed != "" {
 		t.Fatalf("materialise failed: %s: %s", mres.Failed, mres.Err)
@@ -137,13 +137,13 @@ func TestCoordMaterialiseFailureCleanRollbackLeavesEntryReleasable(t *testing.T)
 	h, sess, sp, res := allocMaterialise(t, driver.NewRegistry(stub))
 	ctx := context.Background()
 
-	resp := h.Request(ctx, sess, verbMaterialise, &protocol.MaterialiseArgs{
+	resp := h.Request(ctx, sess, verbMaterialise, &api.MaterialiseArgs{
 		App: res.App, Slug: res.Slug, Spec: *sp,
 	})
 	if resp.Error != nil {
 		t.Fatalf("materialise refused: %+v", resp.Error)
 	}
-	var mres protocol.MaterialiseResult
+	var mres api.MaterialiseResult
 	decodeResult(t, resp, &mres)
 	if mres.Failed != "db" {
 		t.Fatalf("failed = %q, want db", mres.Failed)
@@ -157,13 +157,13 @@ func TestCoordMaterialiseFailureCleanRollbackLeavesEntryReleasable(t *testing.T)
 
 	// The client's rollback: release the entry — the slot frees and nothing
 	// survives.
-	resp = h.Request(ctx, sess, verbRelease, &protocol.EntryRef{App: res.App, Slug: res.Slug})
+	resp = h.Request(ctx, sess, verbRelease, &api.EntryRef{App: res.App, Slug: res.Slug})
 	if resp.Error != nil {
 		t.Fatalf("release refused: %+v", resp.Error)
 	}
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	if registryEntry(reg, res.App, res.Slug) != nil {
 		t.Error("the entry survived the release; the slot is not freed")
@@ -179,13 +179,13 @@ func TestCoordMaterialiseFailureWithFailedRollbackMovesToTearingDown(t *testing.
 	h, sess, sp, res := allocMaterialise(t, driver.NewRegistry(stub))
 	ctx := context.Background()
 
-	resp := h.Request(ctx, sess, verbMaterialise, &protocol.MaterialiseArgs{
+	resp := h.Request(ctx, sess, verbMaterialise, &api.MaterialiseArgs{
 		App: res.App, Slug: res.Slug, Spec: *sp,
 	})
 	if resp.Error != nil {
 		t.Fatalf("materialise refused: %+v", resp.Error)
 	}
-	var mres protocol.MaterialiseResult
+	var mres api.MaterialiseResult
 	decodeResult(t, resp, &mres)
 	if mres.State != store.StateTearingDown {
 		t.Fatalf("state = %q, want tearing-down (the rollback left resources behind)", mres.State)
@@ -193,9 +193,9 @@ func TestCoordMaterialiseFailureWithFailedRollbackMovesToTearingDown(t *testing.
 	if mres.RollbackErr == "" {
 		t.Error("rollback_err must name the failed teardown")
 	}
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	e := registryEntry(reg, res.App, res.Slug)
 	if e == nil {
@@ -211,11 +211,11 @@ func TestCoordMaterialiseFailureWithFailedRollbackMovesToTearingDown(t *testing.
 func TestCoordMaterialiseRequiresOwnership(t *testing.T) {
 	stub := &applyStub{}
 	h, _, sp, res := allocMaterialise(t, driver.NewRegistry(stub))
-	other, reply := h.ConnectPeer(Peer{UID: 5000, Known: true}, protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("second hello refused: %+v", reply.Error)
+	other, err := h.ConnectPeer(5000, api.KindHost, "")
+	if err != nil {
+		t.Fatalf("second hello refused: %+v", err)
 	}
-	resp := h.Request(context.Background(), other, verbMaterialise, &protocol.MaterialiseArgs{
+	resp := h.Request(context.Background(), other, verbMaterialise, &api.MaterialiseArgs{
 		App: res.App, Slug: res.Slug, Spec: *sp,
 	})
 	if resp.Error == nil || resp.Error.Code != 3 {
@@ -231,17 +231,17 @@ func TestCoordMaterialiseRequiresOwnership(t *testing.T) {
 // slot — the descriptor beats the registry (ARCHITECTURE.md §8.6 rule 1).
 func TestAllocateRebuildsFromSlotHint(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	sess, _ := h.Connect(protocol.KindHost, "")
+	sess, _ := h.Connect(api.KindHost, "")
 	sp := materialiseSpec(t)
 	// No band is needed: the spec has no port resources.
 
-	resp := h.Request(context.Background(), sess, verbAllocate, &protocol.AllocateArgs{
+	resp := h.Request(context.Background(), sess, verbAllocate, &api.AllocateArgs{
 		Spec: *sp, Slug: "wt-1", Path: "/tmp/wt/wt-1", SlotHint: 3,
 	})
 	if resp.Error != nil {
 		t.Fatalf("rebuild allocation refused: %+v", resp.Error)
 	}
-	var res protocol.AllocateResult
+	var res api.AllocateResult
 	decodeResult(t, resp, &res)
 	if res.Slot != 3 {
 		t.Errorf("slot = %d, want the descriptor's 3", res.Slot)
@@ -255,12 +255,12 @@ func TestAllocateRebuildsFromSlotHint(t *testing.T) {
 // another entry holds.
 func TestAllocateSlotHintHeldSlotRefused(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	sess, _ := h.Connect(protocol.KindHost, "")
+	sess, _ := h.Connect(api.KindHost, "")
 	sp := materialiseSpec(t)
 	if _, perr := allocate(t, h, sess, sp, "wt-1"); perr != nil {
 		t.Fatalf("first allocation refused: %+v", perr)
 	}
-	resp := h.Request(context.Background(), sess, verbAllocate, &protocol.AllocateArgs{
+	resp := h.Request(context.Background(), sess, verbAllocate, &api.AllocateArgs{
 		Spec: *sp, Slug: "wt-2", Path: "/tmp/wt/wt-2", SlotHint: 1,
 	})
 	if resp.Error == nil || resp.Error.Code != 3 {
@@ -276,7 +276,7 @@ func TestAllocateSlotHintHeldSlotRefused(t *testing.T) {
 // never a reallocation — rule 5.
 func TestAllocateResultCarriesExistedPathAndShared(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	sess, _ := h.Connect(protocol.KindHost, "")
+	sess, _ := h.Connect(api.KindHost, "")
 	sp := materialiseSpec(t)
 	sp.Shared = []spec.Shared{{Name: "{home}/.wt-test/db.sqlite", Impact: "shared writes"}}
 	first, perr := allocate(t, h, sess, sp, "wt-1")
@@ -307,15 +307,15 @@ func TestAllocateResultCarriesExistedPathAndShared(t *testing.T) {
 // an error — the client's no-entry paths decide (04-lifecycle.md §7.3).
 func TestRmVerbEntryNotFoundIsDataOutcome(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	sess, _ := h.Connect(protocol.KindHost, "")
+	sess, _ := h.Connect(api.KindHost, "")
 	sp := materialiseSpec(t)
-	resp := h.Request(context.Background(), sess, verbRm, &protocol.RmArgs{
+	resp := h.Request(context.Background(), sess, verbRm, &api.RmArgs{
 		App: sp.App, Slug: "never-allocated", Spec: *sp,
 	})
 	if resp.Error != nil {
 		t.Fatalf("rm of a missing entry = %+v, want a data outcome", resp.Error)
 	}
-	var res protocol.RmResult
+	var res api.RmResult
 	decodeResult(t, resp, &res)
 	if res.EntryFound {
 		t.Error("EntryFound = true for a slug with no entry")
@@ -327,13 +327,13 @@ func TestRmVerbEntryNotFoundIsDataOutcome(t *testing.T) {
 func TestRmVerbDryRunPreviewsWithoutTeardown(t *testing.T) {
 	stub := &stubDriver{}
 	h, sess, sp, ref := setupTeardown(t, driver.NewRegistry(stub))
-	resp := h.Request(context.Background(), sess, verbRm, &protocol.RmArgs{
+	resp := h.Request(context.Background(), sess, verbRm, &api.RmArgs{
 		App: ref.App, Slug: ref.Slug, Spec: *sp, DryRun: true,
 	})
 	if resp.Error != nil {
 		t.Fatalf("rm --dry-run refused: %+v", resp.Error)
 	}
-	var res protocol.RmResult
+	var res api.RmResult
 	decodeResult(t, resp, &res)
 	if !res.EntryFound || res.Removed {
 		t.Errorf("result = %+v, want entry found and nothing removed", res)
@@ -351,13 +351,13 @@ func TestRmVerbDryRunPreviewsWithoutTeardown(t *testing.T) {
 func TestRmVerbSequencesReapThenTeardownAndDropsEntry(t *testing.T) {
 	stub := &stubDriver{}
 	h, sess, sp, ref := setupTeardown(t, driver.NewRegistry(stub))
-	resp := h.Request(context.Background(), sess, verbRm, &protocol.RmArgs{
+	resp := h.Request(context.Background(), sess, verbRm, &api.RmArgs{
 		App: ref.App, Slug: ref.Slug, Spec: *sp,
 	})
 	if resp.Error != nil {
 		t.Fatalf("rm refused: %+v", resp.Error)
 	}
-	var res protocol.RmResult
+	var res api.RmResult
 	decodeResult(t, resp, &res)
 	if !res.EntryFound || !res.Removed {
 		t.Fatalf("result = %+v, want entry found and removed", res)
@@ -365,9 +365,9 @@ func TestRmVerbSequencesReapThenTeardownAndDropsEntry(t *testing.T) {
 	if len(stub.tornDown) != 1 {
 		t.Errorf("teardowns = %v, want the entry's namespace torn down", stub.tornDown)
 	}
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	if registryEntry(reg, ref.App, ref.Slug) != nil {
 		t.Error("the entry survived the rm; the slot is not freed")
@@ -379,11 +379,11 @@ func TestRmVerbSequencesReapThenTeardownAndDropsEntry(t *testing.T) {
 func TestRmVerbForeignEntryRefused(t *testing.T) {
 	stub := &stubDriver{}
 	h, _, sp, ref := setupTeardown(t, driver.NewRegistry(stub))
-	other, reply := h.ConnectPeer(Peer{UID: 5000, Known: true}, protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("second hello refused: %+v", reply.Error)
+	other, err := h.ConnectPeer(5000, api.KindHost, "")
+	if err != nil {
+		t.Fatalf("second hello refused: %+v", err)
 	}
-	resp := h.Request(context.Background(), other, verbRm, &protocol.RmArgs{
+	resp := h.Request(context.Background(), other, verbRm, &api.RmArgs{
 		App: ref.App, Slug: ref.Slug, Spec: *sp,
 	})
 	if resp.Error == nil || resp.Error.Code != 3 {
@@ -398,7 +398,7 @@ func TestRmVerbSurvivorsHoldTheSlot(t *testing.T) {
 		{Kind: "container", Name: "c1", Resource: "compose", Reason: "still there"},
 	}}}
 	h, sess, sp, ref := setupTeardown(t, driver.NewRegistry(stub))
-	resp := h.Request(context.Background(), sess, verbRm, &protocol.RmArgs{
+	resp := h.Request(context.Background(), sess, verbRm, &api.RmArgs{
 		App: ref.App, Slug: ref.Slug, Spec: *sp,
 	})
 	if resp.Error == nil || resp.Error.Code != 1 {
@@ -407,9 +407,9 @@ func TestRmVerbSurvivorsHoldTheSlot(t *testing.T) {
 	if !strings.Contains(resp.Error.Msg, "survived") {
 		t.Errorf("the error must name what survived: %q", resp.Error.Msg)
 	}
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	e := registryEntry(reg, ref.App, ref.Slug)
 	if e == nil || e.State != store.StateTearingDown {
@@ -418,7 +418,7 @@ func TestRmVerbSurvivorsHoldTheSlot(t *testing.T) {
 }
 
 // decodeResult decodes a response's result into v.
-func decodeResult(t *testing.T, resp *protocol.Response, v any) {
+func decodeResult(t *testing.T, resp *api.Response, v any) {
 	t.Helper()
 	if resp.Error != nil {
 		t.Fatalf("unexpected error: %+v", resp.Error)

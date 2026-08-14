@@ -3,6 +3,7 @@ package platform
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -125,14 +126,25 @@ type InstallSupervisorOpts struct {
 	// coordinator binary, normally a sibling of the wt binary that is
 	// running `wt daemon install`.
 	WtdPath string
-	// TCPAddr and TCPToken enable the opt-in loopback TCP surface in the
-	// registration: the unit starts wtd with --tcp/--tcp-token so the
-	// supervisor-managed coordinator listens on TCP exactly like a
-	// foreground one. Both or neither (validated by ValidateTCPConfig); a
-	// registration file that carries the token is written 0600 on unix so
-	// a machine's other users cannot read it out of the unit file.
-	TCPAddr  string
-	TCPToken string
+	// Addr is the listen address the registration starts wtd with, so a
+	// supervisor-managed coordinator listens exactly like a foreground
+	// one. Empty means the unit omits --addr and wtd uses its default.
+	Addr string
+	// ContainerToken is the token that admits container clients. Empty
+	// means the unit omits --container-token and the coordinator accepts
+	// host clients only. A registration file that carries the token is
+	// written 0600 on unix so a machine's other users cannot read it out
+	// of the unit file.
+	//
+	// Addr and ContainerToken are independent: before R1 a TCP listener
+	// and its token were opt-in as a pair, but the listener is now the
+	// only surface and has a default, so a custom address needs no token
+	// (ValidateCoordinatorConfig checks each on its own terms).
+	ContainerToken string
+	// AllowRemote permits a non-loopback Addr, and is written into the
+	// registration so the started coordinator agrees with the check made
+	// here.
+	AllowRemote bool
 }
 
 // InstallSupervisorResult reports what registration wrote and whether the
@@ -164,16 +176,16 @@ func InstallSupervisor(opts InstallSupervisorOpts) (InstallSupervisorResult, err
 	if opts.WtdPath == "" {
 		return InstallSupervisorResult{}, errors.New("the registration file needs the coordinator binary path (wtd)")
 	}
-	if err := ValidateTCPConfig(opts.TCPAddr, opts.TCPToken); err != nil {
+	if err := ValidateCoordinatorConfig(opts.Addr, opts.ContainerToken, opts.AllowRemote); err != nil {
 		return InstallSupervisorResult{}, err
 	}
 	switch runtime.GOOS {
 	case "darwin":
 		return installLaunchAgent(opts)
 	case "linux":
-		return installSystemdUnits(opts.Prefix, opts.WtdPath, opts.TCPAddr, opts.TCPToken)
+		return installSystemdUnits(opts.Prefix, opts.WtdPath, opts.Addr, opts.ContainerToken)
 	case "windows":
-		return installWindowsTask(opts.Prefix, opts.WtdPath, opts.TCPAddr, opts.TCPToken)
+		return installWindowsTask(opts.Prefix, opts.WtdPath, opts.Addr, opts.ContainerToken)
 	}
 	return InstallSupervisorResult{}, ErrNoSupervisor
 }
@@ -188,19 +200,19 @@ func installLaunchAgent(opts InstallSupervisorOpts) (InstallSupervisorResult, er
 		return InstallSupervisorResult{}, fmt.Errorf("creating the registration directory %s: %w", filepath.Dir(path), err)
 	}
 	mode := os.FileMode(0o644)
-	if opts.TCPToken != "" {
+	if opts.ContainerToken != "" {
 		// The plist carries the TCP token: readable by the owner alone, so
 		// a machine's other users cannot lift the token out of the unit
 		// file and connect over the loopback surface (the security pass,
 		// phase 9).
 		mode = 0o600
 	}
-	if err := os.WriteFile(path, launchdPlist(opts.WtdPath, opts.TCPAddr, opts.TCPToken), mode); err != nil {
+	if err := os.WriteFile(path, launchdPlist(opts.WtdPath, opts.Addr, opts.ContainerToken), mode); err != nil {
 		return InstallSupervisorResult{}, fmt.Errorf("writing %s: %w", path, err)
 	}
 	if opts.Prefix != "" {
 		note := "registration written under a test prefix; no launchd state was touched"
-		if opts.TCPToken != "" {
+		if opts.ContainerToken != "" {
 			note += "; the registration carries the loopback TCP token"
 		}
 		return InstallSupervisorResult{
@@ -220,13 +232,20 @@ func installLaunchAgent(opts InstallSupervisorOpts) (InstallSupervisorResult, er
 // launchdPlist is the LaunchAgent property list. RunAtLoad starts the
 // coordinator when the user logs in, KeepAlive restarts it if it exits —
 // the lifecycle launchd socket activation would have provided, without the
-// C API. With the loopback TCP surface configured, ProgramArguments
-// carries --tcp and --tcp-token; each argument is its own element, so the
+// C API. With the container token configured, ProgramArguments carries
+// --addr and --container-token; each argument is its own element, so the
 // token needs no escaping beyond the XML text rules.
-func launchdPlist(wtdPath, tcpAddr, tcpToken string) []byte {
+func launchdPlist(wtdPath, addr, containerToken string) []byte {
 	args := []string{wtdPath}
-	if tcpAddr != "" {
-		args = append(args, "--tcp", tcpAddr, "--tcp-token", tcpToken)
+	// Each flag is emitted on its own terms. They were coupled while the
+	// TCP listener was opt-in as a pair; emitting them together now would
+	// write an empty --container-token whenever only an address was given,
+	// and an empty token admits no container while looking like it does.
+	if addr != "" {
+		args = append(args, "--addr", addr)
+	}
+	if containerToken != "" {
+		args = append(args, "--container-token", containerToken)
 	}
 	var elems strings.Builder
 	for _, a := range args {
@@ -273,8 +292,10 @@ func CoordinatorBinaryPath() (string, error) {
 
 // CoordinatorStartCommand is the command that starts the coordinator, for
 // the exit-5 remedy and daemon status (plan.md §3: every error names the
-// command that fixes it).
-func CoordinatorStartCommand(socketPath string) string {
+// command that fixes it). endpoint is the resolved base URL (""
+// when unresolved); the foreground form names the listen address so the
+// user starts wtd where the client expects it.
+func CoordinatorStartCommand(endpoint string) string {
 	switch runtime.GOOS {
 	case "darwin":
 		return "wt daemon install"
@@ -283,11 +304,22 @@ func CoordinatorStartCommand(socketPath string) string {
 	case "windows":
 		return "register and start the coordinator: wt daemon install (installs the logon task)"
 	default:
-		if socketPath == "" {
-			return "run wtd in the foreground with WT_SOCKET set"
+		addr := endpointAddr(endpoint)
+		if addr == "" {
+			return "run wtd in the foreground: wtd (listening on 127.0.0.1:7833 by default)"
 		}
-		return fmt.Sprintf("run wtd in the foreground: WT_SOCKET=%s wtd", socketPath)
+		return fmt.Sprintf("run wtd in the foreground: wtd --addr %s", addr)
 	}
+}
+
+// endpointAddr extracts the host:port from a base URL, for the
+// foreground start command's --addr.
+func endpointAddr(endpoint string) string {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return u.Host
 }
 
 // DaemonFixes carries the three broken-state remedies daemon status names.
@@ -301,33 +333,37 @@ type DaemonFixes struct {
 }
 
 // DaemonFixesFor returns the platform's remedies in the platform's terms.
-func DaemonFixesFor(socketPath string) DaemonFixes {
-	start := CoordinatorStartCommand(socketPath)
+// endpoint is the resolved base URL, feeding the running-but-unreachable
+// check text.
+func DaemonFixesFor(endpoint string) DaemonFixes {
+	start := CoordinatorStartCommand(endpoint)
+	addr := endpointAddr(endpoint)
+	check := "— and check that WT_ENDPOINT (or endpoint.json) names the address the coordinator listens on"
 	switch runtime.GOOS {
 	case "darwin":
 		domain := fmt.Sprintf("gui/%d/%s", os.Getuid(), LaunchAgentLabel)
 		return DaemonFixes{
 			NotRegistered:      "register and start the coordinator: wt daemon install",
 			RegisteredStopped:  fmt.Sprintf("start the coordinator: launchctl kickstart %s (or re-run: wt daemon install)", domain),
-			RunningUnreachable: fmt.Sprintf("restart the coordinator: launchctl kickstart -k %s — and check that WT_SOCKET names the socket the coordinator listens on", domain),
+			RunningUnreachable: fmt.Sprintf("restart the coordinator: launchctl kickstart -k %s %s", domain, check),
 		}
 	case "linux":
 		return DaemonFixes{
 			NotRegistered:      "register and start the coordinator: wt daemon install",
 			RegisteredStopped:  fmt.Sprintf("start the coordinator: systemctl --user start %s (or re-run: wt daemon install)", SystemdSocketFilename),
-			RunningUnreachable: fmt.Sprintf("restart the coordinator: systemctl --user restart %s — and check that WT_SOCKET matches the socket unit's ListenStream (systemctl --user cat %s)", SystemdSocketFilename, SystemdSocketFilename),
+			RunningUnreachable: fmt.Sprintf("restart the coordinator: systemctl --user restart %s — and check that the socket unit's ListenStream matches %s (systemctl --user cat %s)", SystemdSocketFilename, addr, SystemdSocketFilename),
 		}
 	case "windows":
 		return DaemonFixes{
 			NotRegistered:      "register and start the coordinator: wt daemon install",
 			RegisteredStopped:  fmt.Sprintf("start the coordinator: schtasks /Run /TN %s (or re-run: wt daemon install)", WindowsTaskName),
-			RunningUnreachable: fmt.Sprintf("restart the coordinator: schtasks /End /TN %s, then schtasks /Run /TN %s — and check that WT_SOCKET names the pipe the coordinator listens on", WindowsTaskName, WindowsTaskName),
+			RunningUnreachable: fmt.Sprintf("restart the coordinator: schtasks /End /TN %s, then schtasks /Run /TN %s %s", WindowsTaskName, WindowsTaskName, check),
 		}
 	default:
 		return DaemonFixes{
 			NotRegistered:      start,
 			RegisteredStopped:  start,
-			RunningUnreachable: start + " — and check that WT_SOCKET names the socket the coordinator listens on",
+			RunningUnreachable: start + " " + check,
 		}
 	}
 }

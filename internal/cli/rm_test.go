@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 )
 
@@ -50,18 +50,18 @@ func rmFixture(t *testing.T) (main, worktree, remote string) {
 
 // rmCoord is the canned coordinator for rm: entry found at the given
 // path, clean teardown.
-func rmCoord(t *testing.T, worktree string, handlers map[string]func(*protocol.Request) *protocol.Response) string {
+func rmCoord(t *testing.T, worktree string, handlers map[string]func(*api.Request) *api.Response) string {
 	t.Helper()
-	sock := shortSock(t, "rm")
-	all := map[string]func(*protocol.Request) *protocol.Response{}
+	all := map[string]func(*api.Request) *api.Response{}
 	for _, verb := range []string{"rm"} {
-		all[verb] = func(req *protocol.Request) *protocol.Response {
-			if h, ok := handlers[req.Verb]; ok {
+		verb := verb
+		all[verb] = func(req *api.Request) *api.Response {
+			if h, ok := handlers[verb]; ok {
 				return h(req)
 			}
-			var args protocol.RmArgs
+			var args api.RmArgs
 			json.Unmarshal(req.Args, &args)
-			return &protocol.Response{Result: mustJSONT(protocol.RmResult{
+			return &api.Response{Result: mustJSONT(api.RmResult{
 				EntryFound: true,
 				Path:       worktree,
 				Resources:  []string{"api", "db"},
@@ -69,8 +69,7 @@ func rmCoord(t *testing.T, worktree string, handlers map[string]func(*protocol.R
 			})}
 		}
 	}
-	fakeCoordServer(t, sock, all)
-	return sock
+	return fakeCoordServer(t, all)
 }
 
 // fakeGh writes a gh executable on PATH. The script's exit code and stderr
@@ -92,8 +91,7 @@ func fakeGh(t *testing.T, script string) {
 // TestRmStopsOnUncommittedChanges: a dirty tree stops rm with exit 3.
 func TestRmStopsOnUncommittedChanges(t *testing.T) {
 	main, worktree, _ := rmFixture(t)
-	sock := rmCoord(t, worktree, nil)
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
 	fakeGh(t, `echo '{"number":0}'`)
 	writeT(t, filepath.Join(worktree, "dirty.txt"), "uncommitted\n")
 
@@ -110,8 +108,7 @@ func TestRmStopsOnUncommittedChanges(t *testing.T) {
 // exit 3, naming them.
 func TestRmStopsOnUnpushedCommits(t *testing.T) {
 	main, worktree, _ := rmFixture(t)
-	sock := rmCoord(t, worktree, nil)
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
 	fakeGh(t, `echo '{"number":0}'`)
 	writeT(t, filepath.Join(worktree, "extra.txt"), "extra\n")
 	gitT(t, worktree, "add", ".")
@@ -130,8 +127,7 @@ func TestRmStopsOnUnpushedCommits(t *testing.T) {
 // not a pass (B11.10).
 func TestRmStopsOnAbsentUpstream(t *testing.T) {
 	main, worktree, _ := rmFixture(t)
-	sock := rmCoord(t, worktree, nil)
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
 	fakeGh(t, `echo '{"number":0}'`)
 	// Detach the upstream: the branch forgets origin/wt-1.
 	gitT(t, worktree, "branch", "--unset-upstream")
@@ -149,8 +145,7 @@ func TestRmStopsOnAbsentUpstream(t *testing.T) {
 // the branch, and the remote branch is never deleted.
 func TestRmStopsOnOpenPR(t *testing.T) {
 	main, worktree, _ := rmFixture(t)
-	sock := rmCoord(t, worktree, nil)
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
 	fakeGh(t, `echo '{"number":42,"state":"OPEN"}'`)
 
 	code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1")
@@ -170,8 +165,7 @@ func TestRmProceedsPastAFinishedPR(t *testing.T) {
 	for _, state := range []string{"MERGED", "CLOSED"} {
 		t.Run(state, func(t *testing.T) {
 			main, worktree, _ := rmFixture(t)
-			sock := rmCoord(t, worktree, nil)
-			t.Setenv("WT_SOCKET", sock)
+			t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
 			fakeGh(t, `echo '{"number":42,"state":"`+state+`"}'`)
 
 			code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1")
@@ -189,8 +183,7 @@ func TestRmProceedsPastAFinishedPR(t *testing.T) {
 // open PR for rm's purposes.
 func TestRmStopsOnADraftPR(t *testing.T) {
 	main, worktree, _ := rmFixture(t)
-	sock := rmCoord(t, worktree, nil)
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
 	fakeGh(t, `echo '{"number":43,"state":"DRAFT"}'`)
 
 	code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1")
@@ -207,8 +200,7 @@ func TestRmStopsOnADraftPR(t *testing.T) {
 // the check.
 func TestRmGhMissingExitsFour(t *testing.T) {
 	main, worktree, _ := rmFixture(t)
-	sock := rmCoord(t, worktree, nil)
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
 	setPathWithoutGh(t)
 
 	code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1")
@@ -224,8 +216,7 @@ func TestRmGhMissingExitsFour(t *testing.T) {
 // fail-closed exit 4, naming the remedy.
 func TestRmGhUnauthenticatedExitsFour(t *testing.T) {
 	main, worktree, _ := rmFixture(t)
-	sock := rmCoord(t, worktree, nil)
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
 	fakeGh(t, `echo "gh: To get started with GitHub CLI, please run: gh auth login" >&2; exit 4`)
 
 	code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1")
@@ -241,8 +232,7 @@ func TestRmGhUnauthenticatedExitsFour(t *testing.T) {
 // rm completes.
 func TestRmNoPRPasses(t *testing.T) {
 	main, worktree, _ := rmFixture(t)
-	sock := rmCoord(t, worktree, nil)
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
 	fakeGh(t, `echo "no pull requests found for branch \"wt-1\"" >&2; exit 1`)
 
 	code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1")
@@ -259,8 +249,7 @@ func TestRmNoPRPasses(t *testing.T) {
 // deleted (B11.11) — exit 3.
 func TestRmRefusesStandingInTheTarget(t *testing.T) {
 	_, worktree, _ := rmFixture(t)
-	sock := rmCoord(t, worktree, nil)
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
 	fakeGh(t, `echo "no pull requests found" >&2; exit 1`)
 
 	code, _, stderr := runCLI(t, "rm", "--cwd", worktree)
@@ -281,8 +270,7 @@ func TestRmRefusesStandingInTheTarget(t *testing.T) {
 // bound stated, and rm exits 0.
 func TestRmBySlugWithDirectoryDeleted(t *testing.T) {
 	main, worktree, _ := rmFixture(t)
-	sock := rmCoord(t, worktree, nil)
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
 	fakeGh(t, `echo "no pull requests found" >&2; exit 1`)
 	// Delete the directory by hand, the way a tool that never calls wt rm
 	// leaves it.
@@ -303,8 +291,7 @@ func TestRmBySlugWithDirectoryDeleted(t *testing.T) {
 // reaped and torn down, and removes neither the entry nor the tree.
 func TestRmDryRunPreviewsAndChangesNothing(t *testing.T) {
 	main, worktree, _ := rmFixture(t)
-	sock := rmCoord(t, worktree, nil)
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
 	fakeGh(t, `echo "no pull requests found" >&2; exit 1`)
 
 	code, stdout, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1", "--dry-run")
@@ -323,11 +310,10 @@ func TestRmDryRunPreviewsAndChangesNothing(t *testing.T) {
 // worktree remove` and nothing to deallocate (04-lifecycle.md §7.3).
 func TestRmDirectoryPresentNoEntry(t *testing.T) {
 	main, worktree, _ := rmFixture(t)
-	sock := shortSock(t, "rm-noentry")
-	fakeCoordServer(t, sock, map[string]func(*protocol.Request) *protocol.Response{
-		"rm": canned(&protocol.Response{Result: mustJSONT(protocol.RmResult{EntryFound: false})}),
+	ep := fakeCoordServer(t, map[string]func(*api.Request) *api.Response{
+		"rm": canned(&api.Response{Result: mustJSONT(api.RmResult{EntryFound: false})}),
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", ep)
 	fakeGh(t, `echo "no pull requests found" >&2; exit 1`)
 
 	code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1")
@@ -346,11 +332,10 @@ func TestRmDirectoryPresentNoEntry(t *testing.T) {
 // is a message and a stop (exit 1).
 func TestRmNeitherIsAMessageAndAStop(t *testing.T) {
 	main, _, _ := rmFixture(t)
-	sock := shortSock(t, "rm-neither")
-	fakeCoordServer(t, sock, map[string]func(*protocol.Request) *protocol.Response{
-		"rm": canned(&protocol.Response{Result: mustJSONT(protocol.RmResult{EntryFound: false})}),
+	ep := fakeCoordServer(t, map[string]func(*api.Request) *api.Response{
+		"rm": canned(&api.Response{Result: mustJSONT(api.RmResult{EntryFound: false})}),
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", ep)
 	fakeGh(t, `echo "no pull requests found" >&2; exit 1`)
 
 	code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "no-such-worktree")
@@ -379,7 +364,7 @@ func TestRmRequiresATarget(t *testing.T) {
 // exits 5 naming the start command.
 func TestRmCoordinatorUnreachableExitsFive(t *testing.T) {
 	main, _, _ := rmFixture(t)
-	t.Setenv("WT_SOCKET", shortSock(t, "nothing-listens"))
+	t.Setenv("WT_ENDPOINT", "http://127.0.0.1:1")
 	code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1")
 	if code != ExitUnreachable {
 		t.Fatalf("exit = %d, want %d; stderr: %s", code, ExitUnreachable, stderr)

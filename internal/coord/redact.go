@@ -14,7 +14,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 )
 
 // redactKey renders an identity key for a reader that is not the identity:
@@ -23,7 +23,7 @@ import (
 // nothing). A host key is the uid, which is not secret, and is passed
 // through unchanged.
 func redactKey(kind, key string) string {
-	if kind != protocol.KindNamed && kind != protocol.KindEphemeral {
+	if kind != api.KindNamed && kind != api.KindEphemeral {
 		return key
 	}
 	sum := sha256.Sum256([]byte(key))

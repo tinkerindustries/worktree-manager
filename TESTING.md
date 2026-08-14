@@ -10,7 +10,7 @@ not a flake to re-run.
 
 ## Layer 1 — pure unit
 
-The rules that need no repository, no socket and no daemon: slug rules,
+The rules that need no repository, no server and no daemon: slug rules,
 template evaluation, band arithmetic, `.env` block editing (phase 5).
 
 Lives in `_test.go` files beside the code: `internal/spec/*_test.go` and
@@ -155,7 +155,7 @@ The onboarding skill's exit criteria, in the layer each belongs to:
 - **The adoption layer proper** — `internal/cli/adoption_test.go`,
   deliberately **untagged**: plain-app uses no compose, so the whole
   skill flow runs under plain `go test ./...` with no docker, against a
-  real coordinator on a temp socket and real git worktrees (the fake gh
+  real coordinator on a temp address and real git worktrees (the fake gh
   answers the no-PR contract):
   - `TestAcceptancePlainAppAdoptedThroughTheSkill` — exit criterion 1:
     the adopted fixture goes through the skill, proving state-path's
@@ -260,8 +260,8 @@ This layer needs nothing installed but git.
 
 ## Layer 3 — in-process coordinator
 
-The coordinator's inputs are protocol messages and a store path, so a test
-runs a full request with no socket, no supervisor and no container
+The coordinator's inputs are a decoded request and a store path, so a test
+runs a full request with no HTTP, no supervisor and no container
 (ARCHITECTURE.md §13.3). The harness is a deliverable rather than a test
 detail — phases 3 to 6 run allocation, authorisation, entry lifecycle and
 migration against it. It lives in `internal/coord`:
@@ -275,11 +275,11 @@ migration against it. It lives in `internal/coord`:
   ownership check needs two distinct identities.
 - The coordinator's phase-2 tests in `internal/coord/coord_test.go`:
   `TestHarnessFullRequest` (exit criterion 4), the version-refusal
-  direction tests, identity assignment (host from peer credentials, named
-  token, ephemeral session id), clients.json observation, and
-  `TestServerGracefulShutdown`, which runs the real socket server over a
-  temp socket to pin the lifecycle (cancellation, in-flight requests,
-  socket-file cleanup).
+  direction tests, identity assignment (host from the endpoint-file token, named
+  token, ephemeral session id), the `clients` table's observation, and
+  `TestServerGracefulShutdown`, which runs the real HTTP server on a temp
+  address to pin the lifecycle (cancellation, in-flight requests,
+  `http.Server.Shutdown`).
 - The coordinator's phase-3 tests in `internal/coord/p3_test.go`, one
   named per exit criterion:
   - `TestConcurrentAllocationsGetDistinctSlots` — criterion 1: two
@@ -446,14 +446,14 @@ migration against it. It lives in `internal/coord`:
   `internal/store/registry_test.go` (registry and bands round trips, the
   lenient list read of a newer registry, the write-path refusal, the
   never-truncate rule for an unparseable registry).
-- The protocol's tests in `internal/protocol/protocol_test.go`: framing
+- The API's tests in `internal/api`: the route table's freeze, endpoint-file round-tripping
   (one JSON object per newline-terminated message) and `Agree` naming the
   upgrade in both directions.
 - `daemon status`'s state machine is driven in
   `internal/cli/daemon_test.go`: all four states with the platform
   observations injected, plus end-to-end states with the real
   observations — a planted registration under `--prefix` and a fake hello
-  server on a temp socket (a stand-in for the coordinator that never
+  server on a temp address (a stand-in for the coordinator that never
   imports coordinator code into the client's tests).
 - The bands verbs' client side is driven in `internal/cli/bands_test.go`
   against the same stand-in pattern, extended to serve requests from a
@@ -463,7 +463,7 @@ migration against it. It lives in `internal/coord`:
   through with its own exit code, and both verbs exiting 5 with the
   coordinator stopped.
 - The live client-to-coordinator path — `bands reserve` and `bands list`
-  against a real foreground `wtd` on a temp socket with a temp `WT_HOME`
+  against a real foreground `wtd` on a temp address with a temp `WT_HOME`
   — is exercised by hand in verification, not by a test (the phase-3
   verification run records it).
 
@@ -499,7 +499,7 @@ its untagged twin:
 | `TestAcceptanceGate2ContainerAndHostAllocate` (`internal/cli`) | phase-6 gate 2: a real docker container running the real wt binary (built `CGO_ENABLED=0`) allocates against the same app as a host client, and the container's slot is unavailable to the host; the container's entry is owned by its `WT_CLIENT_TOKEN` identity, the container removes its own entry, and the host then reuses the freed slot | `TestListForeignAndReclaimableMarkers`, `TestReconcileEligibility` (`internal/coord/fleet_test.go`) |
 
 The gates run the real client (`cli.Run`) against a real coordinator
-(`coord.Server` on a temp socket, the phase-6 CI arrangement) over real
+(`coord.Server` on a temp address, the phase-6 CI arrangement) over real
 git worktrees and real docker. The one test double is `gh`: the gates'
 branches live on a local bare remote, and the real gh cannot answer "is
 there a PR" for a repository that is not on GitHub — a fake gh on PATH
@@ -511,17 +511,14 @@ create carries the worktrees' project labels and is removed before the
 test returns; nothing with another label is ever touched.
 
 Gate 2's container client runs the real wt binary inside a docker
-container with the coordinator's socket shared into it and
-`WT_CLIENT_TOKEN` set. The file sharing is chosen by a runtime probe
-(`containerTransport` in `acceptance_test.go`): bind mounts of the
-workspace paths on a CI runner, where the daemon and the workspace share
-one filesystem; or the docker volume mounted at `/data` on a dev machine
-whose daemon cannot bind-mount the workspace and whose virtiofs mounts
-cannot carry live unix sockets. A listener-socket dial from inside the
-container proves the chosen transport before the gate runs; without a
-working transport the gate skips with the reason stated. On macOS the
-gate runs locally under Docker Desktop, whose `/tmp` file-sharing root is
-where the transport's bind-mode base lives.
+container with `--network host`, `WT_ENDPOINT` pointing at the
+coordinator's loopback address and `WT_CLIENT_TOKEN` set. Moving off unix
+sockets simplified this considerably: reaching a loopback port needs no
+filesystem sharing at all, so the old dance of bind mounts versus a shared
+`/data` volume — and the virtiofs limitation that no live socket can cross
+it — is gone. What remains is getting the `wt` binary itself into the
+container, which still needs file sharing; where the daemon cannot provide
+it the gate skips with the reason stated.
 
 The tagged probe tests publish a port into the coordinator's own network
 namespace (`--network container:<id>`): the test process runs inside a
@@ -575,35 +572,38 @@ Phase 9's tests, in the layer each belongs to:
   `TestRecoverInterruptedWithoutSpecMovesToTearingDown`,
   `TestRecoverInterruptedLeavesActiveAndTearingDownAlone` and
   `TestReleaseRefusesTearingDownEntry`.
-- `internal/coord/tcp_test.go` — `TestTCPIdentityRules`: the configured
-  token authenticates over TCP, a wrong token and a missing one are the
-  same refusal (never an oracle), host and ephemeral claims over TCP are
-  refused, the socket path still self-asserts named tokens, and a handler
-  with no token configured refuses every TCP hello.
+- `internal/coord/http_test.go` — the HTTP rails: a wrong token and a
+  missing one are the same refusal (never an oracle), a handler with no
+  container token configured admits host clients only, the 1 MiB body cap
+  holds, the `Host` and `X-Wt-Client` checks refuse, and the
+  400/403/424/500 status-to-exit-code mapping is pinned.
 - `internal/coord/security_test.go` — the security pass's fixes:
   `TestListRedactsForeignOwnerKeys` and `TestClientsListRedactsForeignIdentities`
   (a named client's key is its token; only the client itself sees it),
   `TestOwnershipRefusalNeverLeaksTheToken`, and
   `TestBandsReserveIsHostClientOnly` (the ledger verb is host-only).
-- `internal/protocol/protocol_test.go` — `TestReadMessageCapHoldsWhileReading`:
-  the 1 MiB wire cap holds while reading, so a peer streaming bytes
-  without a newline cannot grow the coordinator's memory.
-- `internal/cli/tcp_test.go` — the loopback TCP surface end to end
-  (**untagged**; it needs a Go toolchain and git, no docker):
-  `TestLoopbackTCPEndToEndAgainstRealWtd` builds the real `wtd` binary
-  and runs the real client through a full bands-reserve/init/list/rm
-  lifecycle over `tcp://` with `WT_CLIENT_TOKEN` (the band registration
-  itself runs over the socket, because bands.reserve is host-only),
-  `TestLoopbackTCPRejectsWrongAndMissingToken` (exit 3, no token leaked),
-  `TestWtdRefusesMisconfiguredTCP` (listener without token, token without
-  listener, short token, non-loopback address) and
-  `TestDaemonInstallTCPWritesTokenIntoRegistration` (the registration
-  carries `--tcp`/`--tcp-token`, is 0600 on unix, and the transcript
-  never echoes the token).
-- `internal/platform/tcp_test.go` — `TestValidateLoopbackTCP`,
-  `TestValidateTCPToken` and `TestValidateTCPConfig` pin the
-  configuration rails, and the Windows task XML's TCP variant is pinned
-  in `task_windows_test.go` (the `--tcp`/`--tcp-token` Arguments).
+- `internal/api` — `TestRoutesIsTheFrozenSurface` pins the route count, so
+  a route added without regenerating the OpenAPI document and the client
+  fails the suite; `internal/apigen`'s tests refuse a route with no
+  verb-type entry and assert the committed artefacts are current.
+- `internal/cli/listener_test.go` — the container surface end to end
+  (**untagged**; it needs a Go toolchain and git, no docker): a full
+  bands-reserve/init/list/rm lifecycle against a real `wtd` with
+  `WT_CLIENT_TOKEN`, the wrong-and-missing-token refusal (exit 3, no token
+  leaked), `TestWtdRefusesMisconfiguredListener`, and the registration
+  tests — `TestDaemonInstallWritesContainerTokenIntoRegistration` (0600 on
+  unix, never echoed), `TestDaemonInstallCustomAddrNeedsNoContainerToken`
+  (the R3 regression: a custom address must not require inventing a token)
+  and `TestDaemonInstallPinsAFreePortWhenTheDefaultIsHeld`.
+- `internal/platform/listen_test.go` — `TestValidateListenAddr`,
+  `TestValidateContainerToken`,
+  `TestValidateCoordinatorConfigTreatsSettingsIndependently` (the same
+  regression at the unit level) and `TestChooseRegistrationAddr`. The
+  Windows task XML's arguments are pinned in `task_windows_test.go`.
+- `internal/coord/ownport_test.go` — the coordinator's own port is
+  reserved in the band ledger, `bands suggest` never proposes it,
+  re-asserting it across restarts is idempotent, and moving to a new
+  `--addr` releases the old port.
 - `internal/driver/machine_test.go` — the discover-before-destroy rail
   behind the recovery: `TestMachineTeardownDeletesUnlessKeepFlag`'s
   never-created-instance case is a clean no-op, never a survivor.

@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,10 +34,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/coord"
 	"github.com/mrgeoffrich/worktree-manager/internal/descriptor"
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
@@ -65,11 +66,12 @@ func TestAcceptanceTwoWorktreesSideBySide(t *testing.T) {
 	// The repository: a copy of the fixture, a bare remote, two worktrees.
 	main, worktrees := gateRepo(t)
 
-	// The coordinator: a real server on a temp socket, with the driver
-	// registry and the app's band — the phase-6 CI arrangement.
+	// The coordinator: a real HTTP server on a loopback port, with the
+	// driver registry and the app's band — the phase-6 CI arrangement.
+	// The client resolves it through the endpoint.json the server writes
+	// into the store root.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	sock := shortSock(t, "gate")
 	storeRoot := filepath.Join(t.TempDir(), "wt")
 	if err := os.MkdirAll(storeRoot, 0o700); err != nil {
 		t.Fatalf("store root: %v", err)
@@ -86,7 +88,7 @@ func TestAcceptanceTwoWorktreesSideBySide(t *testing.T) {
 	h.InstallDrivers(driver.NewRegistry(&driver.Port{}, &driver.Namespace{}, &driver.StatePath{}))
 	srv := coord.NewServer(h, log)
 	serveDone := make(chan error, 1)
-	go func() { serveDone <- srv.Serve(ctx, sock) }()
+	go func() { serveDone <- srv.Serve(ctx, "127.0.0.1:0") }()
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -101,7 +103,7 @@ func TestAcceptanceTwoWorktreesSideBySide(t *testing.T) {
 	spBases := map[string]int{"api": gateBase, "proxy": gateBase}
 	registerBand(t, h, sp, spBases)
 
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_HOME", storeRoot)
 	fakeGhNoPR(t)
 
 	// Init and start both worktrees, and read their allocations back.
@@ -197,7 +199,7 @@ func TestAcceptanceTwoWorktreesSideBySide(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("doctor exit = %d; stderr:\n%s", code, stderr)
 	}
-	var doc protocol.DoctorResult
+	var doc api.DoctorResult
 	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &doc); err != nil {
 		t.Fatalf("doctor stdout is not one JSON object: %v\n%s", err, stdout)
 	}
@@ -285,17 +287,12 @@ func readFixtureSpec(t *testing.T, repoRoot string) *spec.Spec {
 // `wt bands reserve` would.
 func registerBand(t *testing.T, h *coord.Handler, sp *spec.Spec, bases map[string]int) {
 	t.Helper()
-	sess, reply := h.Begin(coord.Peer{UID: 4242, Known: true}, &protocol.Hello{
-		Kind: protocol.KindHost, MinVer: protocol.VersionMin, MaxVer: protocol.VersionMax,
-	})
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
-	}
-	raw, err := json.Marshal(&protocol.ReserveBandArgs{Spec: *sp, Bases: bases})
+	sess := &coord.Session{Version: api.VersionMax, Identity: coord.Identity{Kind: api.KindHost, Key: "4242"}}
+	raw, err := json.Marshal(&api.ReserveBandArgs{Spec: *sp, Bases: bases})
 	if err != nil {
 		t.Fatalf("encoding the reservation: %v", err)
 	}
-	resp := h.Handle(context.Background(), sess, &protocol.Request{Verb: "bands.reserve", Args: raw})
+	resp := h.Handle(context.Background(), sess, &api.Request{Verb: "bands.reserve", Args: raw})
 	if resp.Error != nil {
 		t.Fatalf("bands.reserve refused: %+v", resp.Error)
 	}
@@ -487,11 +484,15 @@ func (tr *containerTransport) containerBin() string {
 // gh, the scripts, the repository source, the persistent clone, the
 // socket, the probe and the bare remote.
 func (tr *containerTransport) runArgs() []string {
-	args := []string{"run", "--rm"}
+	// --network host puts the container in the host's network namespace,
+	// so its 127.0.0.1 is the host's loopback — the container reaches
+	// the coordinator over WT_ENDPOINT exactly like a host client, and
+	// the store is never shared into it.
+	args := []string{"run", "--rm", "--network", "host"}
 	if tr.volume != "" {
 		args = append(args, "-v", tr.volume+":/vol")
 	} else {
-		for _, name := range []string{"wt", "gh", "init.sh", "rm.sh", "src", "repo", "sock", "probe", "remote.git"} {
+		for _, name := range []string{"wt", "gh", "init.sh", "rm.sh", "src", "repo", "probe", "remote.git"} {
 			args = append(args, "-v", filepath.Join(tr.base, name)+":/s/"+name)
 		}
 	}
@@ -507,9 +508,6 @@ func (tr *containerTransport) runArgs() []string {
 // "permission denied" as the unprivileged test user. It reproduced on every
 // CI runner and never on macOS, where this gate skips for want of a socket
 // the daemon can share.
-//
-// sock is deliberately absent: it is a unix socket the listener creates, and
-// pre-creating it as a regular file would stop the bind from working.
 func (tr *containerTransport) ensureMountSources(t *testing.T) {
 	t.Helper()
 	if tr.volume != "" {
@@ -531,14 +529,11 @@ func (tr *containerTransport) ensureMountSources(t *testing.T) {
 	}
 }
 
-// containerSock returns the socket path the container dials.
-func (tr *containerTransport) containerSock() string {
-	return tr.containerPath(filepath.Join(tr.base, "sock"))
-}
-
 // probeTransport builds the probe binary, lays out the shared files, and
-// proves that a container can reach a listener socket through the
-// candidate transport. It returns the working transport or skips the test.
+// proves that a container can reach a listener on the host's loopback
+// through the candidate transport (the files the container needs are
+// shared through it, and --network host puts the container in the host's
+// network namespace). It returns the working transport or skips the test.
 func probeTransport(t *testing.T) *containerTransport {
 	t.Helper()
 
@@ -546,17 +541,7 @@ func probeTransport(t *testing.T) *containerTransport {
 		src := "package main\n" +
 			"import (\"fmt\"; \"net\"; \"os\"; \"time\")\n" +
 			"func main() {\n" +
-			" if os.Args[1] == \"listen\" {\n" +
-			"  os.Remove(os.Args[2])\n" +
-			"  l, err := net.Listen(\"unix\", os.Args[2])\n" +
-			"  if err != nil { fmt.Println(\"LISTEN-FAIL\", err); os.Exit(1) }\n" +
-			"  c, err := l.Accept()\n" +
-			"  if err != nil { os.Exit(1) }\n" +
-			"  c.Close()\n" +
-			"  fmt.Println(\"ACCEPTED\")\n" +
-			"  return\n" +
-			" }\n" +
-			" c, err := net.DialTimeout(\"unix\", os.Args[1], 5*time.Second)\n" +
+			" c, err := net.DialTimeout(\"tcp\", os.Args[1], 5*time.Second)\n" +
 			" if err != nil { fmt.Println(\"DIAL-FAIL\", err); os.Exit(1) }\n" +
 			" c.Close()\n" +
 			" fmt.Println(\"DIAL-OK\")\n" +
@@ -567,34 +552,25 @@ func probeTransport(t *testing.T) *containerTransport {
 		build := exec.Command("go", "build", "-o", bin, srcPath)
 		build.Env = append(os.Environ(), "CGO_ENABLED=0")
 		if out, err := build.CombinedOutput(); err != nil {
-			t.Fatalf("building the socket probe: %v\n%s", err, out)
+			t.Fatalf("building the transport probe: %v\n%s", err, out)
 		}
 		return bin
 	}
 
-	// The probe: a listener in this process, a dial from inside a
-	// container through the candidate mounts.
+	// The probe: a TCP listener on the host's loopback, a dial from
+	// inside a container through the candidate mounts and the host
+	// network namespace.
 	probeShare := func(tr *containerTransport) bool {
-		listen := exec.Command(tr.probe, "listen", filepath.Join(tr.base, "sock"))
-		if err := listen.Start(); err != nil {
-			t.Fatalf("starting the probe listener: %v", err)
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("opening the probe listener: %v", err)
 		}
-		defer func() {
-			listen.Process.Kill()
-			listen.Wait()
-		}()
-		deadline := time.Now().Add(5 * time.Second)
-		for time.Now().Before(deadline) {
-			if _, err := os.Stat(filepath.Join(tr.base, "sock")); err == nil {
-				break
-			}
-			time.Sleep(50 * time.Millisecond)
-		}
+		defer ln.Close()
 		tr.ensureMountSources(t)
 		args := tr.runArgs()
 		probe := tr.containerPath(filepath.Join(tr.base, "probe"))
-		sock := tr.containerPath(filepath.Join(tr.base, "sock"))
-		args = append(args, "alpine:latest", "sh", "-c", probe+" "+sock)
+		addr := ln.Addr().String()
+		args = append(args, "alpine:latest", "sh", "-c", probe+" "+addr)
 		out, err := exec.Command("docker", args...).CombinedOutput()
 		return err == nil && strings.Contains(string(out), "DIAL-OK")
 	}
@@ -640,7 +616,7 @@ func probeTransport(t *testing.T) *containerTransport {
 		}
 	}
 
-	t.Skip("this machine's docker daemon cannot share a live unix socket into a container (neither bind mounts nor the shared volume work); acceptance gate 2 runs on the ubuntu-latest CI runner, where the daemon and the workspace share one filesystem")
+	t.Skip("this machine's docker daemon cannot share the gate's files into a container (neither bind mounts nor the shared volume work), so the container could not reach the coordinator's loopback listener; acceptance gate 2 runs on the ubuntu-latest CI runner, where the daemon and the workspace share one filesystem")
 	return nil
 }
 
@@ -678,13 +654,13 @@ func TestAcceptanceGate2ContainerAndHostAllocate(t *testing.T) {
 	}
 	tr := probeTransport(t)
 
-	// The coordinator: a real server on a temp socket, with the driver
-	// registry and the app's band — the phase-6 CI arrangement. The socket
-	// lives on the transport's shared filesystem so the container can dial
-	// it.
+	// The coordinator: a real HTTP server on a loopback port, with the
+	// driver registry and the app's band — the phase-6 CI arrangement.
+	// The container reaches it through the host network namespace
+	// (--network host) with WT_ENDPOINT and WT_CLIENT_TOKEN; the store is
+	// never shared into the container (PLAN-SCOPE.md, "Behaviours").
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	sock := filepath.Join(tr.base, "sock")
 	storeRoot := filepath.Join(t.TempDir(), "wt")
 	if err := os.MkdirAll(storeRoot, 0o700); err != nil {
 		t.Fatalf("store root: %v", err)
@@ -701,7 +677,7 @@ func TestAcceptanceGate2ContainerAndHostAllocate(t *testing.T) {
 	h.InstallDrivers(driver.NewRegistry(&driver.Port{}, &driver.Namespace{}, &driver.StatePath{}))
 	srv := coord.NewServer(h, log)
 	serveDone := make(chan error, 1)
-	go func() { serveDone <- srv.Serve(ctx, sock) }()
+	go func() { serveDone <- srv.Serve(ctx, "127.0.0.1:0") }()
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -709,10 +685,14 @@ func TestAcceptanceGate2ContainerAndHostAllocate(t *testing.T) {
 		case <-time.After(5 * time.Second):
 		}
 	})
+	t.Setenv("WT_HOME", storeRoot)
+
+	// The container's endpoint: the coordinator's actual bound address,
+	// from the endpoint file the server wrote.
+	endpoint := waitEndpoint(t, storeRoot)
 
 	sp := gate2Spec(t)
 	registerBand(t, h, sp, map[string]int{"api": gateBase, "proxy": gateBase})
-	t.Setenv("WT_SOCKET", sock)
 	fakeGhNoPR(t)
 
 	// The host repository: three worktrees of the app.
@@ -802,7 +782,7 @@ wt rm --cwd "$REPO" --slug wt-c
 		args := tr.runArgs()
 		args = append(args,
 			"--name", containerName,
-			"-e", "WT_SOCKET="+tr.containerSock(),
+			"-e", "WT_ENDPOINT="+endpoint,
 			"-e", "WT_CLIENT_TOKEN="+token,
 			"-e", "SRC="+tr.containerPath(containerSrc),
 			"-e", "REPO="+tr.containerPath(filepath.Join(tr.base, "repo")),
@@ -863,7 +843,7 @@ wt rm --cwd "$REPO" --slug wt-c
 	if code != ExitOK {
 		t.Fatalf("list exit = %d; stderr:\n%s", code, stderr)
 	}
-	var listed protocol.ListResult
+	var listed api.ListResult
 	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &listed); err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -922,7 +902,7 @@ wt rm --cwd "$REPO" --slug wt-c
 }
 
 // docJSON renders a doctor result for a failure message.
-func docJSON(doc protocol.DoctorResult) string {
+func docJSON(doc api.DoctorResult) string {
 	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return fmt.Sprint(doc)
