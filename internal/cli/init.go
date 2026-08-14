@@ -48,11 +48,11 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/descriptor"
 	"github.com/mrgeoffrich/worktree-manager/internal/envfile"
 	"github.com/mrgeoffrich/worktree-manager/internal/identity"
 	"github.com/mrgeoffrich/worktree-manager/internal/platform"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 )
 
@@ -190,7 +190,7 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	if existing != nil {
 		slotHint = existing.Slot
 	}
-	raw, rerr := sess.request("allocate", &protocol.AllocateArgs{
+	raw, rerr := sess.request("allocate", &api.AllocateArgs{
 		Spec: *sp, Slug: name, Path: cls.WorktreeRoot,
 		DescriptorPath: dpath, Description: *description,
 		SlotHint: slotHint,
@@ -199,7 +199,7 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 		WriteError(stderr, rerr)
 		return rerr.Code
 	}
-	var res protocol.AllocateResult
+	var res api.AllocateResult
 	if err := json.Unmarshal(raw, &res); err != nil {
 		WriteError(stderr, New(ExitFailure, fmt.Sprintf("decoding the allocation: %v", err), ""))
 		return ExitFailure
@@ -244,17 +244,17 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	// (exit 4 — no VM runner on this platform) comes back as a protocol
 	// error; the entry is the caller's own and reserving, so releasing it
 	// is the same rollback the in-band failure path drives.
-	mraw, merr := sess.request("materialise", &protocol.MaterialiseArgs{
+	mraw, merr := sess.request("materialise", &api.MaterialiseArgs{
 		App: sp.App, Slug: name, Spec: *sp,
 	})
 	if merr != nil {
-		if _, rerr := sess.request("release", &protocol.EntryRef{App: sp.App, Slug: name}); rerr != nil {
+		if _, rerr := sess.request("release", &api.EntryRef{App: sp.App, Slug: name}); rerr != nil {
 			fmt.Fprintf(stderr, "warning: releasing the entry after the failed init failed: %v; a reserving entry ages out on the coordinator's timer, and a tearing-down entry is repaired with 'wt rm --slug %s'\n", rerr, name)
 		}
 		WriteError(stderr, merr)
 		return merr.Code
 	}
-	var mres protocol.MaterialiseResult
+	var mres api.MaterialiseResult
 	if err := json.Unmarshal(mraw, &mres); err != nil {
 		WriteError(stderr, New(ExitFailure, fmt.Sprintf("decoding the materialisation: %v", err), ""))
 		return ExitFailure
@@ -276,7 +276,7 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 		// Clean rollback: drop the entry — the rollback that covers init's
 		// steps up to activation.
 		drop := func() {
-			if _, rerr := sess.request("release", &protocol.EntryRef{App: sp.App, Slug: name}); rerr != nil {
+			if _, rerr := sess.request("release", &api.EntryRef{App: sp.App, Slug: name}); rerr != nil {
 				fmt.Fprintf(stderr, "warning: releasing the entry after the failed init failed: %v; a reserving entry ages out on the coordinator's timer, and a tearing-down entry is repaired with 'wt rm --slug %s'\n", rerr, name)
 			}
 		}
@@ -371,7 +371,7 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 				fmt.Fprintf(stderr, "removed %s\n", f)
 			}
 		}
-		if _, rerr := sess.request("release", &protocol.EntryRef{App: sp.App, Slug: name}); rerr != nil {
+		if _, rerr := sess.request("release", &api.EntryRef{App: sp.App, Slug: name}); rerr != nil {
 			fmt.Fprintf(stderr, "warning: releasing the entry after the failed init failed: %v; a reserving entry ages out on the coordinator's timer, and a tearing-down entry is repaired with 'wt rm --slug %s'\n", rerr, name)
 		}
 		e := New(ExitFailure,
@@ -418,7 +418,7 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 		if phase == 0 {
 			// Step 6: flip the entry to active — the point past which
 			// rollback stops (ARCHITECTURE.md §9.1).
-			if _, aerr := sess.request("activate", &protocol.EntryRef{App: sp.App, Slug: name}); aerr != nil {
+			if _, aerr := sess.request("activate", &api.EntryRef{App: sp.App, Slug: name}); aerr != nil {
 				WriteError(stderr, aerr)
 				return aerr.Code
 			}

@@ -33,7 +33,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/treecheck"
 )
 
@@ -98,12 +98,12 @@ func runCleanup(args []string, stdout, stderr io.Writer) int {
 	}
 	defer sess.Close()
 
-	raw, lerr := sess.request("list", &protocol.ListArgs{})
+	raw, lerr := sess.request("list", &api.ListArgs{})
 	if lerr != nil {
 		WriteError(stderr, lerr)
 		return lerr.Code
 	}
-	var list protocol.ListResult
+	var list api.ListResult
 	if err := json.Unmarshal(raw, &list); err != nil {
 		WriteError(stderr, New(ExitFailure, fmt.Sprintf("decoding the list response: %v", err), ""))
 		return ExitFailure
@@ -113,7 +113,7 @@ func runCleanup(args []string, stdout, stderr io.Writer) int {
 	// caller's own or reclaimable (an aged-out ephemeral owner), and whose
 	// worktree the coordinator can stat. Everything else is skipped with
 	// the reason stated — a silent skip reads as success (plan.md §3).
-	var entries []protocol.ListEntry
+	var entries []api.ListEntry
 	var skipped []string
 	for _, e := range list.Entries {
 		if e.App != sp.App {
@@ -158,7 +158,7 @@ func runCleanup(args []string, stdout, stderr io.Writer) int {
 				final = append(final, r)
 				continue
 			}
-			var e protocol.ListEntry
+			var e api.ListEntry
 			for _, cand := range entries {
 				if cand.Slug == r.Slug {
 					e = cand
@@ -168,13 +168,13 @@ func runCleanup(args []string, stdout, stderr io.Writer) int {
 			row := cleanupRow{Slug: e.Slug, Action: "cleaned",
 				Detail: "merged PR; resources torn down, the registry entry was dropped"}
 			if containsFlag(e.Flags, "reclaimable") {
-				raw, rerr := sess.request("reconcile", &protocol.ReconcileArgs{App: sp.App, Spec: *sp,
-					Refs: []protocol.EntryRef{{App: sp.App, Slug: e.Slug}}})
+				raw, rerr := sess.request("reconcile", &api.ReconcileArgs{App: sp.App, Spec: *sp,
+					Refs: []api.EntryRef{{App: sp.App, Slug: e.Slug}}})
 				if rerr != nil {
 					final = append(final, cleanupRow{Slug: e.Slug, Action: "failed", Detail: rerr.Msg})
 					continue
 				}
-				var res protocol.ReconcileResult
+				var res api.ReconcileResult
 				if err := json.Unmarshal(raw, &res); err != nil {
 					WriteError(stderr, New(ExitFailure, fmt.Sprintf("decoding the reconcile response: %v", err), ""))
 					return ExitFailure
@@ -236,7 +236,7 @@ func runCleanup(args []string, stdout, stderr io.Writer) int {
 // "skipped" row naming the first failing check otherwise. The same
 // function serves the dry-run preview and the real run, which is what
 // makes the preview exactly what the real run does.
-func cleanupDecision(e protocol.ListEntry) cleanupRow {
+func cleanupDecision(e api.ListEntry) cleanupRow {
 	skip := func(detail string) cleanupRow {
 		return cleanupRow{Slug: e.Slug, Action: "skipped", Detail: detail}
 	}
@@ -279,7 +279,7 @@ func cleanupDecision(e protocol.ListEntry) cleanupRow {
 // worktree remove`, never --force (git refusing is signal that a check
 // missed something) — and returns the bounded-coverage statement the
 // cleaned row carries.
-func cleanupGitRemoveDetail(e protocol.ListEntry) string {
+func cleanupGitRemoveDetail(e api.ListEntry) string {
 	if _, err := os.Stat(e.Path); err != nil {
 		return "" // the directory is already gone; nothing to remove
 	}

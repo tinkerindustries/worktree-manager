@@ -16,9 +16,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/coord"
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
@@ -26,22 +26,21 @@ import (
 // TestRunListJSONAndTable: `wt list --json` prints exactly the registry the
 // coordinator reports (markers included), and the table renders it.
 func TestRunListJSONAndTable(t *testing.T) {
-	sock := shortSock(t, "list")
-	fakeCoordServer(t, sock, map[string]func(*protocol.Request) *protocol.Response{
-		"list": cannedT(&protocol.ListResult{Entries: []protocol.ListEntry{
+	ep := fakeCoordServer(t, map[string]func(*api.Request) *api.Response{
+		"list": cannedT(&api.ListResult{Entries: []api.ListEntry{
 			{App: "compose-app", Slug: "wt-1", Slot: 1, State: "active", Path: "/gone", PathVisible: true,
 				Owner: "4242", OwnerKind: "host", Flags: []string{"stale", "foreign"}},
 			{App: "compose-app", Slug: "wt-2", Slot: 2, State: "active", Path: "/container/wt-2", PathVisible: false,
 				Owner: "s123", OwnerKind: "ephemeral", Ephemeral: true, Flags: []string{"unverifiable", "reclaimable", "foreign"}},
 		}}),
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", ep)
 
 	code, stdout, stderr := runCLI(t, "list", "--json")
 	if code != ExitOK {
 		t.Fatalf("list --json exit = %d; stderr: %s", code, stderr)
 	}
-	var res protocol.ListResult
+	var res api.ListResult
 	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &res); err != nil {
 		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
 	}
@@ -63,21 +62,20 @@ func TestRunListJSONAndTable(t *testing.T) {
 // TestRunDoctorJSONAndClean: doctor renders the findings with their
 // remedies; a clean report prints "no findings".
 func TestRunDoctorJSONAndClean(t *testing.T) {
-	sock := shortSock(t, "doc")
-	fakeCoordServer(t, sock, map[string]func(*protocol.Request) *protocol.Response{
-		"doctor": cannedT(&protocol.DoctorResult{Findings: []protocol.DoctorFinding{
+	ep := fakeCoordServer(t, map[string]func(*api.Request) *api.Response{
+		"doctor": cannedT(&api.DoctorResult{Findings: []api.DoctorFinding{
 			{App: "compose-app", Slug: "wt-1", Level: "error",
 				Message: "the worktree directory /gone is gone",
 				Remedy:  "run 'wt rm --slug wt-1' (or 'wt reconcile') to tear the resources down and drop the entry"},
 		}, Notes: []string{"the docker daemon is unreachable; the compose-project-gone check was skipped"}}),
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", ep)
 
 	code, stdout, stderr := runCLI(t, "doctor", "--json")
 	if code != ExitOK {
 		t.Fatalf("doctor --json exit = %d; stderr: %s", code, stderr)
 	}
-	var res protocol.DoctorResult
+	var res api.DoctorResult
 	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &res); err != nil {
 		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
 	}
@@ -96,11 +94,10 @@ func TestRunDoctorJSONAndClean(t *testing.T) {
 		t.Errorf("stderr lacks the coverage note:\n%s", stderr)
 	}
 
-	sock2 := shortSock(t, "doc2")
-	fakeCoordServer(t, sock2, map[string]func(*protocol.Request) *protocol.Response{
-		"doctor": cannedT(&protocol.DoctorResult{}),
+	ep2 := fakeCoordServer(t, map[string]func(*api.Request) *api.Response{
+		"doctor": cannedT(&api.DoctorResult{}),
 	})
-	t.Setenv("WT_SOCKET", sock2)
+	t.Setenv("WT_ENDPOINT", ep2)
 	code, stdout, _ = runCLI(t, "doctor")
 	if code != ExitOK || !strings.Contains(stdout, "no findings") {
 		t.Errorf("clean doctor = %d %q", code, stdout)
@@ -110,20 +107,19 @@ func TestRunDoctorJSONAndClean(t *testing.T) {
 // TestRunClientsJSONAndTable: the client table renders kind, last seen,
 // entries owned and the aged-out state.
 func TestRunClientsJSONAndTable(t *testing.T) {
-	sock := shortSock(t, "clients")
-	fakeCoordServer(t, sock, map[string]func(*protocol.Request) *protocol.Response{
-		"clients.list": cannedT(&protocol.ClientsListResult{Clients: []protocol.ClientInfo{
+	ep := fakeCoordServer(t, map[string]func(*api.Request) *api.Response{
+		"clients.list": cannedT(&api.ClientsListResult{Clients: []api.ClientInfo{
 			{Identity: "4242", Kind: "host", LastSeen: "2026-08-12T10:00:00Z", Entries: 2},
 			{Identity: "s123", Kind: "ephemeral", Ephemeral: true, LastSeen: "2026-08-10T10:00:00Z", Entries: 1, AgedOut: true},
 		}}),
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", ep)
 
 	code, stdout, stderr := runCLI(t, "clients", "--json")
 	if code != ExitOK {
 		t.Fatalf("clients --json exit = %d; stderr: %s", code, stderr)
 	}
-	var res protocol.ClientsListResult
+	var res api.ClientsListResult
 	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &res); err != nil {
 		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
 	}
@@ -146,24 +142,23 @@ func TestRunClientsJSONAndTable(t *testing.T) {
 func TestRunReconcileDryRunAndReal(t *testing.T) {
 	sp := lifecycleSpec(t)
 	main, _ := lifecycleFixture(t, sp)
-	sock := shortSock(t, "rec")
 	// The list the fake serves: one stale entry of this app (its directory
 	// is gone, so the repair is the handle teardown) and one foreign entry
 	// of another app.
-	listResp := &protocol.ListResult{Entries: []protocol.ListEntry{
+	listResp := &api.ListResult{Entries: []api.ListEntry{
 		{App: sp.App, Slug: "wt-1", Slot: 1, State: "active", Description: "the gone worktree",
 			Path: filepath.Join(main, "gone"), PathVisible: true, Owner: "4242", OwnerKind: "host", Flags: []string{"stale"}},
 		{App: "other-app", Slug: "wt-x", Slot: 1, State: "active", Description: "another app",
 			Path: "/elsewhere", PathVisible: true, Owner: "4242", OwnerKind: "host", Flags: []string{"foreign"}},
 	}}
-	reconcileResp := &protocol.ReconcileResult{Outcomes: []protocol.ReconcileOutcome{
+	reconcileResp := &api.ReconcileResult{Outcomes: []api.ReconcileOutcome{
 		{App: sp.App, Slug: "wt-1", Action: "torn-down"},
 	}}
-	rec := newRecordingCoord(t, sock, map[string]func(*protocol.Request) *protocol.Response{
+	rec, ep := newRecordingCoord(t, map[string]func(*api.Request) *api.Response{
 		"list":      cannedT(listResp),
 		"reconcile": cannedT(reconcileResp),
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", ep)
 
 	code, stdout, stderr := runCLI(t, "reconcile", "--dry-run", "--cwd", main)
 	if code != ExitOK {
@@ -202,7 +197,7 @@ func TestRunReconcileDryRunAndReal(t *testing.T) {
 	if n := len(rec.requests["reconcile"]); n != 1 {
 		t.Fatalf("reconcile requests = %d, want 1", n)
 	}
-	var args protocol.ReconcileArgs
+	var args api.ReconcileArgs
 	if err := json.Unmarshal(rec.requests["reconcile"][0], &args); err != nil {
 		t.Fatalf("decoding the reconcile request: %v", err)
 	}
@@ -231,11 +226,11 @@ func TestRunReconcileTearsDownDeletedWorktree(t *testing.T) {
 	}
 	main, worktree := lifecycleFixture(t, sp)
 
-	// The real coordinator on a temp socket, exactly the phase-6 CI
-	// arrangement.
+	// The real coordinator on a loopback port, exactly the phase-6 CI
+	// arrangement; the client resolves it through the endpoint.json the
+	// server writes into the store root.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	sock := shortSock(t, "rec2")
 	storeRoot := filepath.Join(t.TempDir(), "wt")
 	if err := os.MkdirAll(storeRoot, 0o700); err != nil {
 		t.Fatalf("store root: %v", err)
@@ -252,7 +247,7 @@ func TestRunReconcileTearsDownDeletedWorktree(t *testing.T) {
 	h.InstallDrivers(driver.NewRegistry(&driver.Port{}, &driver.Namespace{}, &driver.StatePath{}))
 	srv := coord.NewServer(h, log)
 	serveDone := make(chan error, 1)
-	go func() { serveDone <- srv.Serve(ctx, sock) }()
+	go func() { serveDone <- srv.Serve(ctx, "127.0.0.1:0") }()
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -260,19 +255,15 @@ func TestRunReconcileTearsDownDeletedWorktree(t *testing.T) {
 		default:
 		}
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_HOME", storeRoot)
+	waitEndpoint(t, storeRoot)
 
 	// Register the band through the handler, the way `wt bands reserve`
 	// would.
-	sess, reply := h.Begin(coord.Peer{UID: 4242, Known: true}, &protocol.Hello{
-		Kind: protocol.KindHost, MinVer: protocol.VersionMin, MaxVer: protocol.VersionMax,
-	})
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
-	}
-	if resp := h.Handle(context.Background(), sess, &protocol.Request{
+	sess := &coord.Session{Version: api.VersionMax, Identity: coord.Identity{Kind: api.KindHost, Key: "4242"}}
+	if resp := h.Handle(context.Background(), sess, &api.Request{
 		Verb: "bands.reserve",
-		Args: mustJSONT(&protocol.ReserveBandArgs{Spec: *sp, Bases: map[string]int{"api": 7400}}),
+		Args: mustJSONT(&api.ReserveBandArgs{Spec: *sp, Bases: map[string]int{"api": 7400}}),
 	}); resp.Error != nil {
 		t.Fatalf("bands.reserve refused: %+v", resp.Error)
 	}
@@ -294,7 +285,7 @@ func TestRunReconcileTearsDownDeletedWorktree(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("list exit = %d; stderr: %s", code, stderr)
 	}
-	var listed protocol.ListResult
+	var listed api.ListResult
 	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &listed); err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -336,7 +327,7 @@ func TestRunReconcileTearsDownDeletedWorktree(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("doctor exit = %d; stderr: %s", code, stderr)
 	}
-	var doc protocol.DoctorResult
+	var doc api.DoctorResult
 	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &doc); err != nil {
 		t.Fatalf("doctor: %v", err)
 	}
@@ -350,7 +341,7 @@ func TestRunReconcileTearsDownDeletedWorktree(t *testing.T) {
 // TestRunListUnreachableExitsFive: the fleet verbs reach the coordinator,
 // so exit 5 is wired like every other coordinator verb.
 func TestRunListUnreachableExitsFive(t *testing.T) {
-	t.Setenv("WT_SOCKET", shortSock(t, "dead"))
+	t.Setenv("WT_ENDPOINT", "http://127.0.0.1:1")
 	for _, args := range [][]string{{"list"}, {"doctor"}, {"clients"}} {
 		code, _, stderr := runCLI(t, args...)
 		if code != ExitUnreachable {

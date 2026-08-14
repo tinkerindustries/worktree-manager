@@ -153,11 +153,11 @@ func runDaemonStatus(args []string, stdout, stderr io.Writer) int {
 		WriteError(stderr, New(ExitFailure, fmt.Sprintf("asking the supervisor: %v", err), ""))
 		return ExitFailure
 	}
-	// The socket path feeds the fix text; if it cannot be resolved the
-	// state is still a state, and the fix says to set WT_SOCKET.
-	socketPath, _ := platform.SocketPath()
+	// The endpoint feeds the fix text; if it cannot be resolved the
+	// state is still a state, and the fix says to set WT_ENDPOINT.
+	base, _, _ := resolveEndpoint()
 	dialErr := daemonDeps.reachable()
-	res := daemonStatusOf(registered, running, dialErr, platform.DaemonFixesFor(socketPath))
+	res := daemonStatusOf(registered, running, dialErr, platform.DaemonFixesFor(base))
 	// The lingering caveat applies to every state on Linux: a systemd
 	// user unit stops at logout unless lingering is enabled, so a running
 	// coordinator today is a dead one after logout. The note names the
@@ -278,7 +278,7 @@ func runDaemonInstall(args []string, stdout, stderr io.Writer) int {
 		// The address is configuration the user chose; the token is a
 		// secret and is never echoed — the operator already holds it, and
 		// an install transcript that repeated it would be a leak.
-		fmt.Fprintf(stdout, "loopback TCP: %s (token configured; clients dial tcp://%s with WT_CLIENT_TOKEN set)\n", *tcp, *tcp)
+		fmt.Fprintf(stdout, "listening on: %s (container token configured; containers set WT_ENDPOINT to this address and WT_CLIENT_TOKEN to the token)\n", *tcp)
 	}
 	if res.Note != "" {
 		fmt.Fprintf(stdout, "%s\n", res.Note)

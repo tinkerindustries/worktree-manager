@@ -19,7 +19,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 )
 
 // runList implements `wt list [--json] [--wide]`: the whole registry
@@ -29,14 +29,14 @@ func runList(args []string, stdout, stderr io.Writer) int {
 	return coordVerb("list", args, stdout, stderr, "list",
 		func(fs *flag.FlagSet) func() any {
 			wide := fs.Bool("wide", false, "show seed credentials (served to the owning client alone)")
-			return func() any { return &protocol.ListArgs{Wide: *wide} }
+			return func() any { return &api.ListArgs{Wide: *wide} }
 		}, writeListTable)
 }
 
 // writeListTable prints the registry in text form: one line per entry,
 // sorted by app then slot, with the markers in the flags column.
-func writeListTable(stdout, stderr io.Writer, res *protocol.ListResult) int {
-	entries := append([]protocol.ListEntry(nil), res.Entries...)
+func writeListTable(stdout, stderr io.Writer, res *api.ListResult) int {
+	entries := append([]api.ListEntry(nil), res.Entries...)
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].App != entries[j].App {
 			return entries[i].App < entries[j].App
@@ -76,7 +76,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 
 // writeDoctorReport prints the findings on stdout, each with the command
 // that fixes it, and the bounded-coverage notes on stderr.
-func writeDoctorReport(stdout, stderr io.Writer, res *protocol.DoctorResult) int {
+func writeDoctorReport(stdout, stderr io.Writer, res *api.DoctorResult) int {
 	for _, n := range res.Notes {
 		fmt.Fprintf(stderr, "note: %s\n", n)
 	}
@@ -101,7 +101,7 @@ func runClients(args []string, stdout, stderr io.Writer) int {
 }
 
 // writeClientsTable prints one line per known client.
-func writeClientsTable(stdout, stderr io.Writer, res *protocol.ClientsListResult) int {
+func writeClientsTable(stdout, stderr io.Writer, res *api.ClientsListResult) int {
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "IDENTITY\tKIND\tEPHEMERAL\tLAST SEEN\tENTRIES\tSTATE")
 	if len(res.Clients) == 0 {
@@ -176,12 +176,12 @@ func runReconcile(args []string, stdout, stderr io.Writer) int {
 	}
 	defer sess.Close()
 
-	raw, lerr := sess.request("list", &protocol.ListArgs{})
+	raw, lerr := sess.request("list", &api.ListArgs{})
 	if lerr != nil {
 		WriteError(stderr, lerr)
 		return lerr.Code
 	}
-	var list protocol.ListResult
+	var list api.ListResult
 	if err := json.Unmarshal(raw, &list); err != nil {
 		WriteError(stderr, New(ExitFailure, fmt.Sprintf("decoding the list response: %v", err), ""))
 		return ExitFailure
@@ -246,10 +246,10 @@ func runReconcile(args []string, stdout, stderr io.Writer) int {
 	} else {
 		// The real run: init's repair path for the entries with a directory,
 		// the coordinator's reap-teardown-drop for the rest.
-		var coordinatorRefs []protocol.EntryRef
+		var coordinatorRefs []api.EntryRef
 		for _, p := range plan {
 			if p.action != "init" {
-				coordinatorRefs = append(coordinatorRefs, protocol.EntryRef{App: sp.App, Slug: p.slug})
+				coordinatorRefs = append(coordinatorRefs, api.EntryRef{App: sp.App, Slug: p.slug})
 				continue
 			}
 			var buf bytes.Buffer
@@ -262,12 +262,12 @@ func runReconcile(args []string, stdout, stderr io.Writer) int {
 			rows = append(rows, reconcileRow{Slug: p.slug, Action: "repaired", Detail: detail})
 		}
 		if len(coordinatorRefs) > 0 {
-			raw, rerr := sess.request("reconcile", &protocol.ReconcileArgs{App: sp.App, Spec: *sp, Refs: coordinatorRefs})
+			raw, rerr := sess.request("reconcile", &api.ReconcileArgs{App: sp.App, Spec: *sp, Refs: coordinatorRefs})
 			if rerr != nil {
 				WriteError(stderr, rerr)
 				return rerr.Code
 			}
-			var res protocol.ReconcileResult
+			var res api.ReconcileResult
 			if err := json.Unmarshal(raw, &res); err != nil {
 				WriteError(stderr, New(ExitFailure, fmt.Sprintf("decoding the reconcile response: %v", err), ""))
 				return ExitFailure

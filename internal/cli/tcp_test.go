@@ -1,22 +1,19 @@
 package cli
 
-// tcp_test.go is the loopback TCP surface's end-to-end proof (phase 9,
-// docs/ARCHITECTURE.md §4.1): the real wtd binary, started in the
-// foreground with --tcp/--tcp-token, serving the real client (cli.Run)
-// over tcp://127.0.0.1:<port> with WT_CLIENT_TOKEN set — the transport for
-// hosts where a socket cannot be shared into a container (Docker Desktop's
-// virtiofs). It needs no docker: the fixture's spec is ports-only.
+// tcp_test.go is the HTTP wire's end-to-end proof (phase R1): the real
+// wtd binary, started in the foreground with --addr/--container-token,
+// serving the real client (cli.Run) over http://127.0.0.1:<port> — the
+// whole wire is loopback HTTP now, so this is the ordinary path, not an
+// opt-in surface. It needs no docker: the fixture's spec is ports-only.
 //
 // The assertions cover the whole surface: a full init/list/rm lifecycle
-// over TCP, the same refusal for a wrong token and a missing one (exit 3,
-// the coordinator's own refusal), the token's absence from the install
-// transcript, and wtd's own refusal to start a TCP listener without a
-// token or off loopback.
+// over HTTP, the same refusal for a wrong token and a missing one (exit
+// 3, the coordinator's own refusal, carried in the response body), and
+// wtd's own refusals at startup: a short container token and an off-
+// loopback bind without --allow-remote.
 
 import (
 	"bytes"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -27,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/descriptor"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 )
@@ -51,26 +49,19 @@ func buildWtd(t *testing.T) string {
 	return bin
 }
 
-// startWtdTCP starts the real coordinator with the TCP surface enabled and
-// returns the TCP address the client dials (parsed from the coordinator's
-// own log, so the test never races a guessed port), the unix socket path,
-// and the stop function.
-func startWtdTCP(t *testing.T) (tcpAddr, sockPath string, stop func()) {
+// startWtdTCP starts the real coordinator with the container token
+// enabled and returns the endpoint the client dials (read from the
+// endpoint.json the coordinator writes into WT_HOME — the race-free
+// source of the bound port) and the stop function.
+func startWtdTCP(t *testing.T) (endpoint string, stop func()) {
 	t.Helper()
 	bin := buildWtd(t)
-	// The platform listener: a short unix socket path, or a named pipe on
-	// Windows (a pipe name, not a filesystem path).
-	sock := shortSock(t, "tcp")
-	if runtime.GOOS == "windows" {
-		b := make([]byte, 8)
-		rand.Read(b)
-		sock = `\\.\pipe\wt-tcp-test-` + hex.EncodeToString(b)
-	}
 	storeRoot := filepath.Join(t.TempDir(), "wt")
-	cmd := exec.Command(bin, "--socket", sock, "--tcp", "127.0.0.1:0", "--tcp-token", tcpTestToken)
+	cmd := exec.Command(bin, "--addr", "127.0.0.1:0", "--container-token", tcpTestToken)
 	cmd.Env = append(os.Environ(), "WT_HOME="+storeRoot)
-	// The log is read from this goroutine while exec's copiers write to it,
-	// so the buffer locks.
+	// The client resolves the endpoint and the host token from
+	// endpoint.json under WT_HOME, exactly as a host client does.
+	t.Setenv("WT_HOME", storeRoot)
 	logBuf := &syncBuffer{}
 	cmd.Stdout = logBuf
 	cmd.Stderr = logBuf
@@ -83,34 +74,15 @@ func startWtdTCP(t *testing.T) (tcpAddr, sockPath string, stop func()) {
 	}
 	t.Cleanup(stop)
 
-	// Wait for the TCP listener's bound address, which wtd logs once the
-	// listener is open (ServeWithTCP logs "TCP listener open" with the
-	// real address — 127.0.0.1:0 cannot be guessed, so the log is the
-	// race-free source of the port).
 	deadline := time.Now().Add(10 * time.Second)
-	addr := ""
 	for time.Now().Before(deadline) {
-		for _, line := range strings.Split(logBuf.String(), "\n") {
-			if i := strings.Index(line, "msg=\"TCP listener open\""); i >= 0 {
-				if j := strings.Index(line[i:], "addr="); j >= 0 {
-					candidate := strings.TrimSpace(line[i+j+len("addr="):])
-					candidate = strings.Trim(candidate, "\"")
-					if strings.HasPrefix(candidate, "127.0.0.1:") {
-						addr = candidate
-						break
-					}
-				}
-			}
-		}
-		if addr != "" {
-			break
+		if ep, err := api.ReadEndpoint(api.EndpointPath(storeRoot)); err == nil {
+			return ep.BaseURL, stop
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	if addr == "" {
-		t.Fatalf("wtd never logged its TCP address; log:\n%s", logBuf.String())
-	}
-	return "tcp://" + addr, sock, stop
+	t.Fatalf("wtd never wrote the endpoint file; log:\n%s", logBuf.String())
+	return "", stop
 }
 
 // copyFixtureTreeRecursive copies the compose-app fixture tree into dst
@@ -219,21 +191,22 @@ func readTcpDescriptor(t *testing.T, worktree string) *descriptor.Descriptor {
 	return d
 }
 
-// TestLoopbackTCPEndToEndAgainstRealWtd is the phase-9 verification of the
-// TCP path end to end: a real wtd process, the real wire, the real client.
+// TestLoopbackTCPEndToEndAgainstRealWtd is the R1 verification of the
+// HTTP wire end to end: a real wtd process, the real wire, the real
+// client.
 func TestLoopbackTCPEndToEndAgainstRealWtd(t *testing.T) {
-	tcpAddr, sockPath, _ := startWtdTCP(t)
+	endpoint, _ := startWtdTCP(t)
 	main, worktree := tcpRepo(t)
-	t.Setenv("WT_SOCKET", tcpAddr)
+	t.Setenv("WT_ENDPOINT", endpoint)
 	t.Setenv("WT_CLIENT_TOKEN", tcpTestToken)
 	fakeGhAnswersNoPR(t)
 
-	// A full lifecycle over TCP: the named client allocates, materialises
+	// A full lifecycle over HTTP: the named client allocates, materialises
 	// (ports-only: no docker), activates and emits through the real wire.
 	// The band is registered first — bands.reserve is host-client-only (it
-	// changes machine-global policy), so it runs over the socket as the
-	// host client while the process cwd stands in the repository (no test
-	// in this package runs in parallel).
+	// changes machine-global policy), so it runs as the host client (no
+	// WT_CLIENT_TOKEN) while the process cwd stands in the repository (no
+	// test in this package runs in parallel).
 	oldwd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
@@ -242,29 +215,27 @@ func TestLoopbackTCPEndToEndAgainstRealWtd(t *testing.T) {
 		t.Fatalf("chdir %s: %v", main, err)
 	}
 	defer os.Chdir(oldwd)
-	t.Setenv("WT_SOCKET", sockPath)
 	os.Unsetenv("WT_CLIENT_TOKEN")
 	code, _, stderr := runCLI(t, "bands", "reserve", "--base", "api=10000", "--base", "proxy=10000")
 	if code != ExitOK {
 		t.Fatalf("bands reserve exit = %d; stderr:\n%s", code, stderr)
 	}
-	t.Setenv("WT_SOCKET", tcpAddr)
 	t.Setenv("WT_CLIENT_TOKEN", tcpTestToken)
 
 	code, _, stderr = runCLI(t, "init", "--cwd", worktree, "--description", "the TCP test's worktree")
 	if code != ExitOK {
-		t.Fatalf("init over TCP exit = %d; stderr:\n%s", code, stderr)
+		t.Fatalf("init over HTTP exit = %d; stderr:\n%s", code, stderr)
 	}
 	d := readTcpDescriptor(t, worktree)
 	if d.Slot != 1 {
-		t.Errorf("slot over TCP = %d, want 1", d.Slot)
+		t.Errorf("slot over HTTP = %d, want 1", d.Slot)
 	}
 
-	// The registry is readable over TCP: the client's own entry, owned by
+	// The registry is readable over HTTP: the client's own entry, owned by
 	// the token it presented.
 	code, stdout, stderr := runCLI(t, "list", "--json")
 	if code != ExitOK {
-		t.Fatalf("list over TCP exit = %d; stderr:\n%s", code, stderr)
+		t.Fatalf("list over HTTP exit = %d; stderr:\n%s", code, stderr)
 	}
 	var listed struct {
 		Entries []struct {
@@ -285,11 +256,11 @@ func TestLoopbackTCPEndToEndAgainstRealWtd(t *testing.T) {
 		t.Errorf("owner over TCP = %s/%s, want the presented token", listed.Entries[0].OwnerKind, listed.Entries[0].Owner)
 	}
 
-	// Teardown over TCP: rm runs the full sequence (fake gh answers the
+	// Teardown over HTTP: rm runs the full sequence (fake gh answers the
 	// no-PR contract) and the registry ends empty.
 	code, _, stderr = runCLI(t, "rm", "--cwd", main, "--slug", "wt-1")
 	if code != ExitOK {
-		t.Fatalf("rm over TCP exit = %d; stderr:\n%s", code, stderr)
+		t.Fatalf("rm over HTTP exit = %d; stderr:\n%s", code, stderr)
 	}
 	code, stdout, _ = runCLI(t, "list", "--json")
 	if code != ExitOK {
@@ -301,12 +272,18 @@ func TestLoopbackTCPEndToEndAgainstRealWtd(t *testing.T) {
 }
 
 // TestLoopbackTCPRejectsWrongAndMissingToken: the same refusal for both —
-// the listener is not an oracle — with exit code 3 carried through the
-// wire.
+// the API is not an oracle — with exit code 3 carried in the response
+// body and reaching the process exit status unchanged. A wrong bearer is
+// WT_CLIENT_TOKEN with a wrong value; a missing one is a host client
+// whose WT_HOME holds no endpoint.json (so it has no host token to
+// present).
 func TestLoopbackTCPRejectsWrongAndMissingToken(t *testing.T) {
-	addr, _, _ := startWtdTCP(t)
-	t.Setenv("WT_SOCKET", addr)
+	endpoint, _ := startWtdTCP(t)
 
+	// The missing-token case must not see the real store's endpoint.json.
+	t.Setenv("WT_HOME", t.TempDir())
+
+	var wrongMsg, missingMsg string
 	for _, tc := range []struct {
 		name string
 		env  string
@@ -315,6 +292,7 @@ func TestLoopbackTCPRejectsWrongAndMissingToken(t *testing.T) {
 		{"missing token", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("WT_ENDPOINT", endpoint)
 			if tc.env == "" {
 				os.Unsetenv("WT_CLIENT_TOKEN")
 			} else {
@@ -329,29 +307,40 @@ func TestLoopbackTCPRejectsWrongAndMissingToken(t *testing.T) {
 			if strings.Contains(stderr, tcpTestToken) || (tc.env != "" && strings.Contains(stderr, tc.env)) {
 				t.Errorf("the refusal leaks the token: %s", stderr)
 			}
+			if tc.env == "" {
+				missingMsg = stderr
+			} else {
+				wrongMsg = stderr
+			}
 		})
+	}
+	if wrongMsg != missingMsg {
+		t.Errorf("the refusals must not distinguish wrong from missing:\nwrong:   %smissing: %s", wrongMsg, missingMsg)
 	}
 }
 
-// TestWtdRefusesMisconfiguredTCP: a TCP listener without a token, a token
-// without a listener, a short token and a non-loopback address are all
-// refused at startup — the surface is opt-in and loopback-only.
-func TestWtdRefusesMisconfiguredTCP(t *testing.T) {
+// TestWtdRefusesMisconfiguredListener: a short container token and an
+// off-loopback bind without --allow-remote are refused at startup — the
+// coordinator is loopback-only by default and containers are opt-in.
+func TestWtdRefusesMisconfiguredListener(t *testing.T) {
 	bin := buildWtd(t)
-	cases := [][]string{
-		{"--socket", shortSock(t, "t1"), "--tcp", "127.0.0.1:0"},
-		{"--socket", shortSock(t, "t2"), "--tcp-token", tcpTestToken},
-		{"--socket", shortSock(t, "t3"), "--tcp", "127.0.0.1:0", "--tcp-token", "short"},
-		{"--socket", shortSock(t, "t4"), "--tcp", "0.0.0.0:7331", "--tcp-token", tcpTestToken},
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"short container token", []string{"--container-token", "short"}, "16 characters"},
+		{"off-loopback without --allow-remote", []string{"--addr", "0.0.0.0:7331"}, "loopback"},
+		{"wildcard bind", []string{"--addr", ":7331"}, "loopback"},
 	}
-	for _, args := range cases {
-		out, err := exec.Command(bin, args...).CombinedOutput()
+	for _, tc := range cases {
+		out, err := exec.Command(bin, tc.args...).CombinedOutput()
 		if err == nil {
-			t.Errorf("wtd %v started, want a refusal", args)
+			t.Errorf("wtd %v started, want a refusal", tc.args)
 			continue
 		}
-		if !strings.Contains(string(out), "tcp") && !strings.Contains(string(out), "TCP") && !strings.Contains(string(out), "loopback") {
-			t.Errorf("wtd %v refused without a TCP reason: %s", args, out)
+		if !strings.Contains(string(out), tc.want) {
+			t.Errorf("wtd %v refused without naming %q: %s", tc.args, tc.want, out)
 		}
 	}
 }
@@ -375,8 +364,8 @@ func TestDaemonInstallTCPWritesTokenIntoRegistration(t *testing.T) {
 	if strings.Contains(stdout, tcpTestToken) {
 		t.Errorf("the install transcript echoes the token:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "loopback TCP: 127.0.0.1:7331") {
-		t.Errorf("the install transcript must name the TCP address:\n%s", stdout)
+	if !strings.Contains(stdout, "127.0.0.1:7331") {
+		t.Errorf("the install transcript must name the listen address:\n%s", stdout)
 	}
 	// The registration file carries the token (the file is 0600 on unix
 	// when it does).
@@ -384,8 +373,8 @@ func TestDaemonInstallTCPWritesTokenIntoRegistration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading the registration: %v", err)
 	}
-	if !strings.Contains(string(data), "--tcp") || !strings.Contains(string(data), tcpTestToken) {
-		t.Errorf("the registration does not carry the TCP configuration:\n%s", data)
+	if !strings.Contains(string(data), "--addr") || !strings.Contains(string(data), "--container-token") || !strings.Contains(string(data), tcpTestToken) {
+		t.Errorf("the registration does not carry the listener configuration:\n%s", data)
 	}
 	// The 0600 rail is unix: Windows file modes are ACL-shaped, and the
 	// task XML's secrecy comes from the profile ACL, not a mode bit.

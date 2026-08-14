@@ -1,90 +1,79 @@
 package cli
 
 import (
-	"bufio"
 	"encoding/json"
-	"net"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 )
 
-// fakeCoordServer is a stand-in for the coordinator: it answers the hello
-// and then serves requests from a per-verb handler map, so the client's
-// dial, request and output paths run end to end without importing
-// coordinator code into the client's tests. The handler sees the request
-// and returns the response, which lets a test both inspect what the client
-// sent and control what it gets back.
-func fakeCoordServer(t *testing.T, sock string, handlers map[string]func(*protocol.Request) *protocol.Response) {
+// fakeCoordServer is a stand-in for the coordinator: it answers GET
+// /version (the dial's version check) and then serves requests from a
+// per-verb handler map, so the client's dial, request and output paths run
+// end to end without importing coordinator code into the client's tests.
+// The handler sees the request and returns the response, which lets a test
+// both inspect what the client sent and control what it gets back. The
+// fake never checks the bearer — authentication is the real server's own
+// test — so a test points the client at it with WT_ENDPOINT.
+func fakeCoordServer(t *testing.T, handlers map[string]func(*api.Request) *api.Response) string {
 	t.Helper()
-	ln, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatalf("fake coordinator listen: %v", err)
-	}
-	t.Cleanup(func() { ln.Close() })
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer conn.Close()
-				br := bufio.NewReader(conn)
-				bw := bufio.NewWriter(conn)
-				var hello protocol.Hello
-				if err := protocol.ReadMessage(br, &hello); err != nil {
-					return
-				}
-				protocol.WriteMessage(bw, &protocol.HelloReply{Agreed: hello.MaxVer})
-				bw.Flush()
-				for {
-					var req protocol.Request
-					if err := protocol.ReadMessage(br, &req); err != nil {
-						return
-					}
-					handle, ok := handlers[req.Verb]
-					if !ok {
-						handle = func(*protocol.Request) *protocol.Response {
-							return &protocol.Response{Error: &protocol.Error{
-								Code: 1, Msg: "fake coordinator: no canned response for " + req.Verb,
-								Remedy: "test defect",
-							}}
-						}
-					}
-					if err := protocol.WriteMessage(bw, handle(&req)); err != nil {
-						return
-					}
-					bw.Flush()
-				}
-			}()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET "+api.VersionPath, func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(api.VersionInfo{Min: api.VersionMin, Max: api.VersionMax})
+	})
+	for _, route := range api.Routes {
+		route := route
+		if route.Verb == api.VerbSession || route.Verb == api.VerbPing {
+			continue // the fake serves no session verb; ping is a handler-map verb below
 		}
-	}()
+		mux.HandleFunc(route.Method+" "+route.Path, func(w http.ResponseWriter, r *http.Request) {
+			verb, _ := api.VerbForPath(r.URL.Path)
+			var req api.Request
+			data, _ := io.ReadAll(r.Body)
+			req.Verb = verb
+			req.Args = data
+			handle, ok := handlers[verb]
+			if !ok {
+				handle = func(*api.Request) *api.Response {
+					return &api.Response{Error: &api.Error{
+						Code: 1, Msg: "fake coordinator: no canned response for " + verb,
+						Remedy: "test defect",
+					}}
+				}
+			}
+			json.NewEncoder(w).Encode(handle(&req))
+		})
+	}
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv.URL
 }
 
 // canned is the handler for a fixed response.
-func canned(resp *protocol.Response) func(*protocol.Request) *protocol.Response {
-	return func(*protocol.Request) *protocol.Response { return resp }
+func canned(resp *api.Response) func(*api.Request) *api.Response {
+	return func(*api.Request) *api.Response { return resp }
 }
 
 // TestRunBandsListJSON: `wt bands list --json` prints exactly one JSON
 // object with the ledger's two halves.
 func TestRunBandsListJSON(t *testing.T) {
-	sock := shortSock(t, "s")
-	fakeCoordServer(t, sock, map[string]func(*protocol.Request) *protocol.Response{
-		"bands.list": canned(&protocol.Response{Result: json.RawMessage(
+	ep := fakeCoordServer(t, map[string]func(*api.Request) *api.Response{
+		"bands.list": canned(&api.Response{Result: json.RawMessage(
 			`{"bands":[{"app":"plain-app","bases":{"api":8200}},{"app":"compose-app","bases":{"api":4200,"proxy":4200}}],` +
 				`"reservations":[{"ports":[5319,5320],"note":"compose-app production stack"}]}`)}),
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", ep)
 
 	code, stdout, stderr := runCLI(t, "bands", "list", "--json")
 	if code != ExitOK {
 		t.Fatalf("exit = %d; stderr: %s", code, stderr)
 	}
-	var res protocol.BandsListResult
+	var res api.BandsListResult
 	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &res); err != nil {
 		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
 	}
@@ -110,13 +99,12 @@ func TestRunBandsListJSON(t *testing.T) {
 
 // TestRunBandsListHuman: the text form names both halves of the ledger.
 func TestRunBandsListHuman(t *testing.T) {
-	sock := shortSock(t, "s")
-	fakeCoordServer(t, sock, map[string]func(*protocol.Request) *protocol.Response{
-		"bands.list": canned(&protocol.Response{Result: json.RawMessage(
+	ep := fakeCoordServer(t, map[string]func(*api.Request) *api.Response{
+		"bands.list": canned(&api.Response{Result: json.RawMessage(
 			`{"bands":[{"app":"compose-app","bases":{"api":4200,"proxy":4200}}],` +
 				`"reservations":[{"ports":[5319,5320],"note":"compose-app production stack"}]}`)}),
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", ep)
 
 	code, stdout, stderr := runCLI(t, "bands", "list")
 	if code != ExitOK {
@@ -132,11 +120,10 @@ func TestRunBandsListHuman(t *testing.T) {
 // TestRunBandsListEmpty: an empty ledger is reported as such, not as an
 // error.
 func TestRunBandsListEmpty(t *testing.T) {
-	sock := shortSock(t, "s")
-	fakeCoordServer(t, sock, map[string]func(*protocol.Request) *protocol.Response{
-		"bands.list": canned(&protocol.Response{Result: json.RawMessage(`{"bands":[],"reservations":[]}`)}),
+	ep := fakeCoordServer(t, map[string]func(*api.Request) *api.Response{
+		"bands.list": canned(&api.Response{Result: json.RawMessage(`{"bands":[],"reservations":[]}`)}),
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", ep)
 
 	code, stdout, stderr := runCLI(t, "bands", "list")
 	if code != ExitOK {
@@ -151,18 +138,17 @@ func TestRunBandsListEmpty(t *testing.T) {
 // carries the ports and the note to the coordinator and prints the
 // registration back.
 func TestRunBandsReserveHost(t *testing.T) {
-	sock := shortSock(t, "s")
-	var got protocol.ReserveBandArgs
-	fakeCoordServer(t, sock, map[string]func(*protocol.Request) *protocol.Response{
-		"bands.reserve": func(req *protocol.Request) *protocol.Response {
+	var got api.ReserveBandArgs
+	ep := fakeCoordServer(t, map[string]func(*api.Request) *api.Response{
+		"bands.reserve": func(req *api.Request) *api.Response {
 			if err := json.Unmarshal(req.Args, &got); err != nil {
 				t.Errorf("decoding the reserve request: %v", err)
 			}
-			return canned(&protocol.Response{Result: json.RawMessage(
+			return canned(&api.Response{Result: json.RawMessage(
 				`{"host":true,"ports":[5319,5320],"note":"compose-app production stack"}`)})(req)
 		},
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", ep)
 
 	code, stdout, stderr := runCLI(t, "bands", "reserve", "--host",
 		"--port", "5320", "--port", "5319",
@@ -176,7 +162,7 @@ func TestRunBandsReserveHost(t *testing.T) {
 	if len(got.Ports) != 2 || got.Ports[0] != 5320 || got.Ports[1] != 5319 {
 		t.Errorf("request ports = %v, want the ports as given", got.Ports)
 	}
-	var res protocol.ReserveBandResult
+	var res api.ReserveBandResult
 	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &res); err != nil {
 		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
 	}
@@ -188,7 +174,7 @@ func TestRunBandsReserveHost(t *testing.T) {
 // TestRunBandsReserveHostUsage: the note is required, --host and --base are
 // mutually exclusive, and --port without --host is a usage error.
 func TestRunBandsReserveHostUsage(t *testing.T) {
-	t.Setenv("WT_SOCKET", shortSock(t, "dead"))
+	t.Setenv("WT_ENDPOINT", "http://127.0.0.1:1")
 
 	code, _, stderr := runCLI(t, "bands", "reserve", "--host", "--port", "5319")
 	if code != ExitUsage {
@@ -219,18 +205,17 @@ func TestRunBandsReserveHostUsage(t *testing.T) {
 // spans in the reply come from the coordinator's required-size computation.
 func TestRunBandsReserveAppMode(t *testing.T) {
 	chdir(t, filepath.Join("..", "..", "testdata", "fixtures", "compose-app"))
-	sock := shortSock(t, "s")
-	var got protocol.ReserveBandArgs
-	fakeCoordServer(t, sock, map[string]func(*protocol.Request) *protocol.Response{
-		"bands.reserve": func(req *protocol.Request) *protocol.Response {
+	var got api.ReserveBandArgs
+	ep := fakeCoordServer(t, map[string]func(*api.Request) *api.Response{
+		"bands.reserve": func(req *api.Request) *api.Response {
 			if err := json.Unmarshal(req.Args, &got); err != nil {
 				t.Errorf("decoding the reserve request: %v", err)
 			}
-			return canned(&protocol.Response{Result: json.RawMessage(
+			return canned(&api.Response{Result: json.RawMessage(
 				`{"app":"compose-app","bases":{"api":4200,"proxy":4200},"spans":{"api":32,"proxy":64}}`)})(req)
 		},
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", ep)
 
 	code, stdout, stderr := runCLI(t, "bands", "reserve",
 		"--base", "api=4200", "--base", "proxy=4200")
@@ -254,7 +239,7 @@ func TestRunBandsReserveAppMode(t *testing.T) {
 // missing base for a port resource are usage errors caught client-side.
 func TestRunBandsReserveAppModeUsage(t *testing.T) {
 	chdir(t, filepath.Join("..", "..", "testdata", "fixtures", "compose-app"))
-	t.Setenv("WT_SOCKET", shortSock(t, "dead"))
+	t.Setenv("WT_ENDPOINT", "http://127.0.0.1:1")
 
 	code, _, _ := runCLI(t, "bands", "reserve", "--base", "compose=4200")
 	if code != ExitUsage {
@@ -269,7 +254,7 @@ func TestRunBandsReserveAppModeUsage(t *testing.T) {
 // TestRunBandsReserveNotAdopted: reserve needs the committed spec; outside
 // a repository it reports not adopted with exit 4, never a socket error.
 func TestRunBandsReserveNotAdopted(t *testing.T) {
-	t.Setenv("WT_SOCKET", shortSock(t, "dead"))
+	t.Setenv("WT_ENDPOINT", "http://127.0.0.1:1")
 	code, _, stderr := runCLI(t, "bands", "reserve", "--base", "api=4200")
 	if code != ExitUnavailable {
 		t.Errorf("exit = %d, want 4 (not adopted)", code)
@@ -282,15 +267,14 @@ func TestRunBandsReserveNotAdopted(t *testing.T) {
 // TestRunBandsReserveCoordinatorRefusalPassesThrough: a coordinator-side
 // refusal carries its own exit code and remedy to the process.
 func TestRunBandsReserveCoordinatorRefusalPassesThrough(t *testing.T) {
-	sock := shortSock(t, "s")
-	fakeCoordServer(t, sock, map[string]func(*protocol.Request) *protocol.Response{
-		"bands.reserve": canned(&protocol.Response{Error: &protocol.Error{
+	ep := fakeCoordServer(t, map[string]func(*api.Request) *api.Response{
+		"bands.reserve": canned(&api.Response{Error: &api.Error{
 			Code:   3,
 			Msg:    "a host reservation must carry a note naming what holds the range",
 			Remedy: "re-run with --note",
 		}}),
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", ep)
 	code, _, stderr := runCLI(t, "bands", "reserve", "--host", "--port", "5319", "--note", "x")
 	if code != ExitRefused {
 		t.Errorf("exit = %d, want 3 (refused)", code)
@@ -303,7 +287,7 @@ func TestRunBandsReserveCoordinatorRefusalPassesThrough(t *testing.T) {
 // TestRunBandsUnreachableExits5: with the coordinator stopped, both bands
 // verbs exit 5 naming the start command.
 func TestRunBandsUnreachableExits5(t *testing.T) {
-	t.Setenv("WT_SOCKET", shortSock(t, "dead"))
+	t.Setenv("WT_ENDPOINT", "http://127.0.0.1:1")
 
 	code, _, stderr := runCLI(t, "bands", "list")
 	if code != ExitUnreachable {
