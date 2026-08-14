@@ -68,10 +68,14 @@ module by `dist/build.sh` and published by the release workflow
 
 | Artefact | Format | Contains |
 |---|---|---|
-| `wt-<version>-darwin-arm64.tar.gz`, `wt-<version>-darwin-amd64.tar.gz` | tar.gz | `wt`, `wtd`, `install.sh`, `README.txt` |
-| `wt-<version>-linux-amd64.tar.gz` | tar.gz | `wt`, `wtd`, `install.sh`, `README.txt` |
-| `wt-<version>-windows-amd64.zip` | zip | `wt.exe`, `wtd.exe`, `install.ps1`, `README.txt` |
+| `wt-<version>-darwin-arm64.tar.gz`, `wt-<version>-darwin-amd64.tar.gz` | tar.gz | `wt`, `wtd`, `install.sh`, `README.txt`, `SHA256SUMS` |
+| `wt-<version>-linux-amd64.tar.gz` | tar.gz | `wt`, `wtd`, `install.sh`, `README.txt`, `SHA256SUMS` |
+| `wt-<version>-windows-amd64.zip` | zip | `wt.exe`, `wtd.exe`, `install.ps1`, `README.txt`, `SHA256SUMS` |
 | `SHA256SUMS` | text | the sha256 of every archive, for verification before installing |
+
+Every archive carries its own `SHA256SUMS` covering the two binaries it
+contains — the installer verifies the binaries against it before copying
+anything, and an archive without one is refused, not skipped.
 
 The two binaries always ship side by side — `wt daemon install` finds
 `wtd` next to `wt` (`platform.CoordinatorBinaryPath`), which is what makes
@@ -118,6 +122,45 @@ cd wt-<version>-<os>-<arch>
   the registration that carries it is written 0600 on unix, and it should
   be generated with a strong random source and kept out of shell history
   (`WT_CONTAINER_TOKEN` exists for that).
+- Before anything is copied, both binaries are verified against the
+  archive's `SHA256SUMS` (sha256sum on Linux, shasum -a 256 on macOS,
+  Get-FileHash on Windows). A mismatched digest refuses naming the file;
+  a missing manifest refuses too — an archive without one is not a
+  distribution this installer built. `--skip-verify` / `-SkipVerify` is
+  the deliberate override.
+- Every install prints what it is replacing and with what, from the
+  binaries' own `--version` lines: `installing wt 0.2.0 (a8e3192)` on a
+  first install, `replacing wt 0.2.0 (913f21a) with 0.2.0 (a8e3192)`
+  when an older wt is already in the prefix. The binaries are replaced by
+  copy-to-temp-then-rename, so a running coordinator keeps executing the
+  old image until it exits (Windows ends the logon task first, because
+  Windows cannot rename over a running executable).
+- `--dry-run` / `-DryRun` prints every action — the verification, the
+  paths that would be written, the address and container-token decision,
+  the supervisor command — and changes nothing on disk. The last line is
+  `dry run: nothing was changed`.
+- `--uninstall` / `-Uninstall` reverses an install: it drives `wt daemon
+  uninstall` (stop the coordinator, deregister it from the supervisor,
+  remove the registration file) and then removes the two binaries from
+  the prefix. The store is never removed, and the uninstall refuses —
+  exit 3, nothing changed — while the registry still holds entries,
+  naming `wt list` and `wt rm`; `wt daemon uninstall --force` is the
+  documented way past the refusal.
+
+### Uninstall
+
+`wt daemon uninstall [--prefix <dir>] [--force] [--json]` reverses `wt
+daemon install` — launchctl bootout, `systemctl --user disable --now` and
+`schtasks /End` + `/Delete /F` per platform, then the registration file is
+removed. It is client-local: no coordinator call, no route. The store
+(`~/.wt`, or `WT_HOME`) is never removed — `wt.db` is the only record of
+what is allocated on the machine, and deleting it would strand every
+container, port and VM the tool has handed out — and the verb prints the
+store path and says it was left alone. A registry that still holds
+entries refuses with exit 3, naming how many and the commands that
+resolve them (`wt list`, then `wt rm`); `--force` overrides the refusal
+and is the only way past it. Running it twice is a no-op: nothing
+registered the second time.
 
 ### Container clients
 

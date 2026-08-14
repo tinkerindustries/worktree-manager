@@ -86,7 +86,8 @@ configuration; neither binary branches on repo identity.
 - `internal/cli` — verb dispatch, flag parsing, output, the exit-code error
   type, the one dial-and-request helper (exit 5 lives there), and the
   verbs: `spec validate`, `spec explain`, `guard`, `show`,
-  `daemon status`, `daemon install`, `bands list`, `bands suggest`,
+  `daemon status`, `daemon install`, `daemon uninstall`, `bands list`,
+  `bands suggest`,
   `bands reserve`, `ports scan`, `init`, `start`, `rm`, `list`, `doctor`,
   `reconcile`, `clients` and `cleanup` (gated on gh: missing or
   unauthenticated gh cleans nothing and exits 4; the full rm safety
@@ -94,7 +95,13 @@ configuration; neither binary branches on repo identity.
   touched). `daemon status` reports the systemd lingering caveat on Linux,
   and `daemon install` registers with launchd, systemd (with its paired
   socket unit, which now carries a TCP `ListenStream`) or the Task
-  Scheduler per platform. `daemon install --addr <host:port>` and
+  Scheduler per platform. `daemon uninstall` is the reverse — stop,
+  deregister, remove the registration file — client-local with no
+  coordinator call and no route; it never removes the store, and it
+  refuses with exit 3 while the registry still holds entries, naming
+  `wt list` and `wt rm` (`--force` is the only way past the refusal; the
+  count is the client's one deliberate read of wt.db, which is why the
+  `wt` binary links modernc). `daemon install --addr <host:port>` and
   `--container-token <token>` are independent settings — a custom address
   needs no token and a token needs no custom address. With no `--addr` the
   install probes for a free port, pins it into the registration and says
@@ -228,9 +235,19 @@ configuration; neither binary branches on repo identity.
   `api/openapi.yaml` and `internal/api/client`.
 - `dist/` — the phase-9 distribution: `build.sh` (one archive per
   platform with both binaries plus the installer, run by the release
-  workflow on every `v*` tag), `install.sh`/`install.ps1` (install into a
-  prefix, then drive `wt daemon install`; an explicit `--prefix` is
-  self-contained and loads nothing), `ziphelper.go` (the stdlib-only
+  workflow on every `v*` tag; it writes a `SHA256SUMS` manifest outside
+  the archives and a second one inside each archive covering the two
+  binaries, and wires the archive version and commit into both binaries
+  with `-ldflags -X` so `wt --version`/`wtd --version` report them),
+  `install.sh`/`install.ps1` (verify the binaries against the archive's
+  `SHA256SUMS` before copying — a missing manifest or a mismatched
+  digest refuses, naming `--skip-verify`/`-SkipVerify` as the deliberate
+  override — replace the binaries by copy-to-temp-then-rename, print what
+  is being replaced and with what, support `--dry-run`/`-DryRun` (prints
+  every action and changes nothing) and `--uninstall`/`-Uninstall`
+  (drive `wt daemon uninstall`, then remove the binaries; the store is
+  never removed), then drive `wt daemon install`; an explicit `--prefix`
+  is self-contained and loads nothing), `ziphelper.go` (the stdlib-only
   Windows zip builder).
 - `.claude/skills/onboarding/` — the onboarding skill (a document): the
   eight phases, the primitives card, the plain-app walkthrough. It is the
