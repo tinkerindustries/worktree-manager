@@ -14,7 +14,6 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -261,8 +260,9 @@ func (h *Handler) Handle(ctx context.Context, s *Session, req *api.Request) *api
 	case "ping":
 		// The protocol plumbing's one verb: a full request round trip with
 		// nothing behind it. Not a wt command — later phases add the real
-		// verbs on the same dispatch.
-		return &api.Response{Result: json.RawMessage(`{"ok":true}`)}
+		// verbs on the same dispatch. Phase R2: the answer is a typed
+		// result, so the described API derives it like every other result.
+		return &api.Response{Result: mustJSON(api.PingResult{OK: true})}
 	case verbAllocate:
 		return h.allocate(s, req)
 	case verbMaterialise:

@@ -1,0 +1,1866 @@
+openapi: 3.1.0
+info:
+  title: worktree-manager
+  version: 1..1
+  description: "The worktree-manager coordinator API: per-worktree resource allocation served by wtd over loopback HTTP. Every RPC is POST /v1/<verb> with the verb's args object as the JSON body; the two exceptions are GET /version (the unversioned version-range report) and GET /v1/ping. These are RPCs, not REST resources — no resource semantics, no path parameters, no query strings (plan.md §5, phase R1). The route table in internal/api is the single source of this document and of the generated client, so the two cannot drift."
+servers:
+- url: http://127.0.0.1:7833
+  description: the compiled-in default. A running coordinator writes its real address and the host token into endpoint.json under WT_HOME/$HOME/.wt; a host client reads it, and a container, which never mounts the store, is given WT_ENDPOINT and WT_CLIENT_TOKEN explicitly.
+paths:
+  /version:
+    get:
+      operationId: version
+      summary: the coordinator's supported API version range
+      description: "VersionInfo is the GET /version response: the coordinator's supported API version range. Unversioned on purpose — a client that cannot parse it is a client that needs the upgrade message, and the endpoint exists precisely so a mismatched pair learns about each other."
+      security:
+      - wtClient: []
+      responses:
+        "200":
+          description: the version range, as one JSON object — the one response that is not the Response envelope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VersionInfo"
+        "400":
+          description: "code 2. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "403":
+          description: "code 3 — refused: the Host check, or a request without X-Wt-Client: 1. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "424":
+          description: "code 4. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "500":
+          description: "code 1. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+  /v1/session:
+    post:
+      operationId: session
+      summary: "SessionResult is the POST /v1/session response: the issued ephemeral session id."
+      security:
+      - bearerAuth: []
+        wtClient: []
+      requestBody:
+        description: "the empty object: session carries no arguments"
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: the Response envelope carrying the SessionResult result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    $ref: "#/components/schemas/SessionResult"
+                  error:
+                    $ref: "#/components/schemas/Error"
+        "400":
+          description: "code 2: the request body exceeds the 1 MiB cap, or is malformed. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "403":
+          description: "code 3 — refused: the bearer, the Host check, X-Wt-Client, or a safety check. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "404":
+          description: "a path outside the route table: a plain 404, not a coordinator error — a route-table-derived client cannot produce it"
+        "424":
+          description: "code 4 — a capability the coordinator depends on is missing. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "500":
+          description: "code 1 — a coordinator failure. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+  /v1/allocate:
+    post:
+      operationId: allocate
+      summary: "AllocateArgs is the allocate request: the parsed spec (the client sends the spec with each call — ARCHITECTURE.md §8.1), the slug, the path as the creating client saw it, where the descriptor went, the ten-words-or-fewer description, and the seed credentials recorded for the owning client alone."
+      security:
+      - bearerAuth: []
+        wtClient: []
+      requestBody:
+        description: "AllocateArgs is the allocate request: the parsed spec (the client sends the spec with each call — ARCHITECTURE.md §8.1), the slug, the path as the creating client saw it, where the descriptor went, the ten-words-or-fewer description, and the seed credentials recorded for the owning client alone."
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AllocateArgs"
+      responses:
+        "200":
+          description: the Response envelope carrying the AllocateResult result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    $ref: "#/components/schemas/AllocateResult"
+                  error:
+                    $ref: "#/components/schemas/Error"
+        "400":
+          description: "code 2: the request body exceeds the 1 MiB cap, or is malformed. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "403":
+          description: "code 3 — refused: the bearer, the Host check, X-Wt-Client, or a safety check. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "404":
+          description: "a path outside the route table: a plain 404, not a coordinator error — a route-table-derived client cannot produce it"
+        "424":
+          description: "code 4 — a capability the coordinator depends on is missing. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "500":
+          description: "code 1 — a coordinator failure. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+  /v1/materialise:
+    post:
+      operationId: materialise
+      summary: "MaterialiseArgs is the materialise request: the spec and the entry whose resources are applied in dependency order."
+      security:
+      - bearerAuth: []
+        wtClient: []
+      requestBody:
+        description: "MaterialiseArgs is the materialise request: the spec and the entry whose resources are applied in dependency order."
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MaterialiseArgs"
+      responses:
+        "200":
+          description: the Response envelope carrying the MaterialiseResult result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    $ref: "#/components/schemas/MaterialiseResult"
+                  error:
+                    $ref: "#/components/schemas/Error"
+        "400":
+          description: "code 2: the request body exceeds the 1 MiB cap, or is malformed. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "403":
+          description: "code 3 — refused: the bearer, the Host check, X-Wt-Client, or a safety check. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "404":
+          description: "a path outside the route table: a plain 404, not a coordinator error — a route-table-derived client cannot produce it"
+        "424":
+          description: "code 4 — a capability the coordinator depends on is missing. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "500":
+          description: "code 1 — a coordinator failure. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+  /v1/activate:
+    post:
+      operationId: activate
+      summary: "EntryRef names one registry entry: the app and slug pair that identifies it. Mutating calls against it run the ownership check (ARCHITECTURE.md §4.3, §8.6 rule 6)."
+      security:
+      - bearerAuth: []
+        wtClient: []
+      requestBody:
+        description: "EntryRef names one registry entry: the app and slug pair that identifies it. Mutating calls against it run the ownership check (ARCHITECTURE.md §4.3, §8.6 rule 6)."
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EntryRef"
+      responses:
+        "200":
+          description: the Response envelope carrying the ActivateResult result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    $ref: "#/components/schemas/ActivateResult"
+                  error:
+                    $ref: "#/components/schemas/Error"
+        "400":
+          description: "code 2: the request body exceeds the 1 MiB cap, or is malformed. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "403":
+          description: "code 3 — refused: the bearer, the Host check, X-Wt-Client, or a safety check. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "404":
+          description: "a path outside the route table: a plain 404, not a coordinator error — a route-table-derived client cannot produce it"
+        "424":
+          description: "code 4 — a capability the coordinator depends on is missing. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "500":
+          description: "code 1 — a coordinator failure. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+  /v1/release:
+    post:
+      operationId: release
+      summary: "EntryRef names one registry entry: the app and slug pair that identifies it. Mutating calls against it run the ownership check (ARCHITECTURE.md §4.3, §8.6 rule 6)."
+      security:
+      - bearerAuth: []
+        wtClient: []
+      requestBody:
+        description: "EntryRef names one registry entry: the app and slug pair that identifies it. Mutating calls against it run the ownership check (ARCHITECTURE.md §4.3, §8.6 rule 6)."
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EntryRef"
+      responses:
+        "200":
+          description: the Response envelope carrying the ReleaseResult result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    $ref: "#/components/schemas/ReleaseResult"
+                  error:
+                    $ref: "#/components/schemas/Error"
+        "400":
+          description: "code 2: the request body exceeds the 1 MiB cap, or is malformed. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "403":
+          description: "code 3 — refused: the bearer, the Host check, X-Wt-Client, or a safety check. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "404":
+          description: "a path outside the route table: a plain 404, not a coordinator error — a route-table-derived client cannot produce it"
+        "424":
+          description: "code 4 — a capability the coordinator depends on is missing. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "500":
+          description: "code 1 — a coordinator failure. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+  /v1/rm:
+    post:
+      operationId: rm
+      summary: "RmArgs is the rm request: the entry (app, slug), the spec (teardown needs it for the dependent projects and the purge refusal), whether the reaper is opted out, whether this is a preview, and the CLI purge flags."
+      security:
+      - bearerAuth: []
+        wtClient: []
+      requestBody:
+        description: "RmArgs is the rm request: the entry (app, slug), the spec (teardown needs it for the dependent projects and the purge refusal), whether the reaper is opted out, whether this is a preview, and the CLI purge flags."
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RmArgs"
+      responses:
+        "200":
+          description: the Response envelope carrying the RmResult result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    $ref: "#/components/schemas/RmResult"
+                  error:
+                    $ref: "#/components/schemas/Error"
+        "400":
+          description: "code 2: the request body exceeds the 1 MiB cap, or is malformed. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "403":
+          description: "code 3 — refused: the bearer, the Host check, X-Wt-Client, or a safety check. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "404":
+          description: "a path outside the route table: a plain 404, not a coordinator error — a route-table-derived client cannot produce it"
+        "424":
+          description: "code 4 — a capability the coordinator depends on is missing. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "500":
+          description: "code 1 — a coordinator failure. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+  /v1/bands/reserve:
+    post:
+      operationId: bands.reserve
+      summary: "ReserveBandArgs is the bands.reserve request. Two forms, mutually exclusive. App mode carries the parsed spec and one base per port resource, so the coordinator can compute the band's required size from the spec — the onboarding skill chooses only where the bases sit, not how large they are (02-coordination.md §6.2). Host mode carries the ports no app may allocate from, the compose project names no teardown may reach, and the required note naming what holds the range (plan.md §8, R6): nothing infers a production stack, a person declares it once per machine."
+      security:
+      - bearerAuth: []
+        wtClient: []
+      requestBody:
+        description: "ReserveBandArgs is the bands.reserve request. Two forms, mutually exclusive. App mode carries the parsed spec and one base per port resource, so the coordinator can compute the band's required size from the spec — the onboarding skill chooses only where the bases sit, not how large they are (02-coordination.md §6.2). Host mode carries the ports no app may allocate from, the compose project names no teardown may reach, and the required note naming what holds the range (plan.md §8, R6): nothing infers a production stack, a person declares it once per machine."
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReserveBandArgs"
+      responses:
+        "200":
+          description: the Response envelope carrying the ReserveBandResult result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    $ref: "#/components/schemas/ReserveBandResult"
+                  error:
+                    $ref: "#/components/schemas/Error"
+        "400":
+          description: "code 2: the request body exceeds the 1 MiB cap, or is malformed. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "403":
+          description: "code 3 — refused: the bearer, the Host check, X-Wt-Client, or a safety check. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "404":
+          description: "a path outside the route table: a plain 404, not a coordinator error — a route-table-derived client cannot produce it"
+        "424":
+          description: "code 4 — a capability the coordinator depends on is missing. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "500":
+          description: "code 1 — a coordinator failure. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+  /v1/bands/list:
+    post:
+      operationId: bands.list
+      summary: "BandsListResult is the whole ledger: the app bands and the machine-wide reservations."
+      security:
+      - bearerAuth: []
+        wtClient: []
+      requestBody:
+        description: "the empty object: bands.list carries no arguments"
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: the Response envelope carrying the BandsListResult result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    $ref: "#/components/schemas/BandsListResult"
+                  error:
+                    $ref: "#/components/schemas/Error"
+        "400":
+          description: "code 2: the request body exceeds the 1 MiB cap, or is malformed. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "403":
+          description: "code 3 — refused: the bearer, the Host check, X-Wt-Client, or a safety check. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "404":
+          description: "a path outside the route table: a plain 404, not a coordinator error — a route-table-derived client cannot produce it"
+        "424":
+          description: "code 4 — a capability the coordinator depends on is missing. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "500":
+          description: "code 1 — a coordinator failure. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+  /v1/bands/suggest:
+    post:
+      operationId: bands.suggest
+      summary: "SuggestBandArgs is the bands.suggest request: the spec whose port resources need bases. The client sends the parsed spec exactly as bands.reserve does — the coordinator computes the required size from it and proposes where the bases could sit against the current ledger."
+      security:
+      - bearerAuth: []
+        wtClient: []
+      requestBody:
+        description: "SuggestBandArgs is the bands.suggest request: the spec whose port resources need bases. The client sends the parsed spec exactly as bands.reserve does — the coordinator computes the required size from it and proposes where the bases could sit against the current ledger."
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SuggestBandArgs"
+      responses:
+        "200":
+          description: the Response envelope carrying the SuggestBandResult result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    $ref: "#/components/schemas/SuggestBandResult"
+                  error:
+                    $ref: "#/components/schemas/Error"
+        "400":
+          description: "code 2: the request body exceeds the 1 MiB cap, or is malformed. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "403":
+          description: "code 3 — refused: the bearer, the Host check, X-Wt-Client, or a safety check. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "404":
+          description: "a path outside the route table: a plain 404, not a coordinator error — a route-table-derived client cannot produce it"
+        "424":
+          description: "code 4 — a capability the coordinator depends on is missing. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "500":
+          description: "code 1 — a coordinator failure. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+  /v1/ports/scan:
+    post:
+      operationId: ports.scan
+      summary: "PortsScanResult is the whole scan: the listeners sorted by port, plus the bounded-coverage notes — what the scan could not see and why (a silent degrade reads as success, plan.md §3)."
+      security:
+      - bearerAuth: []
+        wtClient: []
+      requestBody:
+        description: "the empty object: ports.scan carries no arguments"
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: the Response envelope carrying the PortsScanResult result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    $ref: "#/components/schemas/PortsScanResult"
+                  error:
+                    $ref: "#/components/schemas/Error"
+        "400":
+          description: "code 2: the request body exceeds the 1 MiB cap, or is malformed. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "403":
+          description: "code 3 — refused: the bearer, the Host check, X-Wt-Client, or a safety check. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "404":
+          description: "a path outside the route table: a plain 404, not a coordinator error — a route-table-derived client cannot produce it"
+        "424":
+          description: "code 4 — a capability the coordinator depends on is missing. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "500":
+          description: "code 1 — a coordinator failure. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+  /v1/list:
+    post:
+      operationId: list
+      summary: "ListArgs is the list request. Wide asks for the owning client's seed credentials — served to the owning client alone and redacted for every other client either way (ARCHITECTURE.md §12.2): a --wide form may show them to the owner, never to anyone else."
+      security:
+      - bearerAuth: []
+        wtClient: []
+      requestBody:
+        description: "ListArgs is the list request. Wide asks for the owning client's seed credentials — served to the owning client alone and redacted for every other client either way (ARCHITECTURE.md §12.2): a --wide form may show them to the owner, never to anyone else."
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ListArgs"
+      responses:
+        "200":
+          description: the Response envelope carrying the ListResult result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    $ref: "#/components/schemas/ListResult"
+                  error:
+                    $ref: "#/components/schemas/Error"
+        "400":
+          description: "code 2: the request body exceeds the 1 MiB cap, or is malformed. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "403":
+          description: "code 3 — refused: the bearer, the Host check, X-Wt-Client, or a safety check. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "404":
+          description: "a path outside the route table: a plain 404, not a coordinator error — a route-table-derived client cannot produce it"
+        "424":
+          description: "code 4 — a capability the coordinator depends on is missing. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "500":
+          description: "code 1 — a coordinator failure. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+  /v1/doctor:
+    post:
+      operationId: doctor
+      summary: "DoctorResult is the whole report: the findings plus the bounded-coverage notes — what doctor could not check and why (a silent degrade reads as success, plan.md §3)."
+      security:
+      - bearerAuth: []
+        wtClient: []
+      requestBody:
+        description: "the empty object: doctor carries no arguments"
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: the Response envelope carrying the DoctorResult result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    $ref: "#/components/schemas/DoctorResult"
+                  error:
+                    $ref: "#/components/schemas/Error"
+        "400":
+          description: "code 2: the request body exceeds the 1 MiB cap, or is malformed. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "403":
+          description: "code 3 — refused: the bearer, the Host check, X-Wt-Client, or a safety check. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "404":
+          description: "a path outside the route table: a plain 404, not a coordinator error — a route-table-derived client cannot produce it"
+        "424":
+          description: "code 4 — a capability the coordinator depends on is missing. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "500":
+          description: "code 1 — a coordinator failure. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+  /v1/reconcile:
+    post:
+      operationId: reconcile
+      summary: "ReconcileArgs is the reconcile request: the app, the spec (reap and teardown need it, exactly as rm does), and the refs the caller believes are its own or reclaimable. The coordinator re-checks every ref against the ownership and aged-out rules — the caller's claim is never trusted."
+      security:
+      - bearerAuth: []
+        wtClient: []
+      requestBody:
+        description: "ReconcileArgs is the reconcile request: the app, the spec (reap and teardown need it, exactly as rm does), and the refs the caller believes are its own or reclaimable. The coordinator re-checks every ref against the ownership and aged-out rules — the caller's claim is never trusted."
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReconcileArgs"
+      responses:
+        "200":
+          description: the Response envelope carrying the ReconcileResult result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    $ref: "#/components/schemas/ReconcileResult"
+                  error:
+                    $ref: "#/components/schemas/Error"
+        "400":
+          description: "code 2: the request body exceeds the 1 MiB cap, or is malformed. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "403":
+          description: "code 3 — refused: the bearer, the Host check, X-Wt-Client, or a safety check. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "404":
+          description: "a path outside the route table: a plain 404, not a coordinator error — a route-table-derived client cannot produce it"
+        "424":
+          description: "code 4 — a capability the coordinator depends on is missing. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "500":
+          description: "code 1 — a coordinator failure. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+  /v1/clients/list:
+    post:
+      operationId: clients.list
+      summary: ClientsListResult is the whole client table.
+      security:
+      - bearerAuth: []
+        wtClient: []
+      requestBody:
+        description: "the empty object: clients.list carries no arguments"
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: the Response envelope carrying the ClientsListResult result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    $ref: "#/components/schemas/ClientsListResult"
+                  error:
+                    $ref: "#/components/schemas/Error"
+        "400":
+          description: "code 2: the request body exceeds the 1 MiB cap, or is malformed. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "403":
+          description: "code 3 — refused: the bearer, the Host check, X-Wt-Client, or a safety check. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "404":
+          description: "a path outside the route table: a plain 404, not a coordinator error — a route-table-derived client cannot produce it"
+        "424":
+          description: "code 4 — a capability the coordinator depends on is missing. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "500":
+          description: "code 1 — a coordinator failure. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+  /v1/ping:
+    get:
+      operationId: ping
+      summary: "PingResult is the GET /v1/ping response: the wire's one plumbing verb answers with a fixed success object — a full request round trip with nothing behind it. Phase R2 gives it a real type so the described API can derive its schema like every other result, instead of the raw literal the transport used to emit."
+      security:
+      - bearerAuth: []
+        wtClient: []
+      responses:
+        "200":
+          description: the Response envelope carrying the PingResult result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    $ref: "#/components/schemas/PingResult"
+                  error:
+                    $ref: "#/components/schemas/Error"
+        "400":
+          description: "code 2: the request body exceeds the 1 MiB cap, or is malformed. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "403":
+          description: "code 3 — refused: the bearer, the Host check, X-Wt-Client, or a safety check. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "404":
+          description: "a path outside the route table: a plain 404, not a coordinator error — a route-table-derived client cannot produce it"
+        "424":
+          description: "code 4 — a capability the coordinator depends on is missing. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+        "500":
+          description: "code 1 — a coordinator failure. The one error body shape: {\"error\":{\"code\":int,\"msg\":string,\"remedy\":string}} — the body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Response"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: "the bearer token is the whole of identity: the host token from the 0600 endpoint.json, the coordinator's --container-token for a named container, or an issued session id for an ephemeral one. A missing, wrong or wrong-kind token is refused with one identical message, compared in constant time (plan.md §5, phase R1)."
+    wtClient:
+      type: apiKey
+      in: header
+      name: X-Wt-Client
+      description: "every request, the version report included, must carry X-Wt-Client: 1 — a browser cannot set a custom header on a simple-form POST, so this forces a preflight that is never answered. No CORS header is ever sent (plan.md §5, phase R1)."
+  schemas:
+    Response:
+      type: object
+      description: "Response is the answer to one request: either a result or an error that carries the exit code the client should use — that is what lets exit codes 3 and 4 originate in the coordinator and still reach the process exit status unchanged (ARCHITECTURE.md §11.3). The response body is authoritative for the exit code; the HTTP status is advisory, for anything reading the API that is not wt."
+      properties:
+        result: {}
+        error:
+          anyOf:
+          - $ref: "#/components/schemas/Error"
+          - type: "null"
+    Error:
+      type: object
+      description: Error crosses the wire with the exit code, message and remedy — the same shape internal/cli's Error carries, so a response error maps straight onto the client's process exit code and its "every error names the command that fixes it" rule (plan.md §3).
+      properties:
+        code:
+          type: integer
+        msg:
+          type: string
+        remedy:
+          type: string
+      required:
+      - code
+      - msg
+      - remedy
+    VersionInfo:
+      type: object
+      description: "VersionInfo is the GET /version response: the coordinator's supported API version range. Unversioned on purpose — a client that cannot parse it is a client that needs the upgrade message, and the endpoint exists precisely so a mismatched pair learns about each other."
+      properties:
+        min:
+          type: integer
+        max:
+          type: integer
+      required:
+      - min
+      - max
+    SessionResult:
+      type: object
+      description: "SessionResult is the POST /v1/session response: the issued ephemeral session id."
+      properties:
+        session_id:
+          type: string
+      required:
+      - session_id
+    PingResult:
+      type: object
+      description: "PingResult is the GET /v1/ping response: the wire's one plumbing verb answers with a fixed success object — a full request round trip with nothing behind it. Phase R2 gives it a real type so the described API can derive its schema like every other result, instead of the raw literal the transport used to emit."
+      properties:
+        ok:
+          type: boolean
+      required:
+      - ok
+    AllocateArgs:
+      type: object
+      description: "AllocateArgs is the allocate request: the parsed spec (the client sends the spec with each call — ARCHITECTURE.md §8.1), the slug, the path as the creating client saw it, where the descriptor went, the ten-words-or-fewer description, and the seed credentials recorded for the owning client alone."
+      properties:
+        spec:
+          $ref: "#/components/schemas/Spec"
+        slug:
+          type: string
+        path:
+          type: string
+        descriptor_path:
+          type: string
+        description:
+          type: string
+        secrets:
+          type: object
+          additionalProperties:
+            type: string
+        slot_hint:
+          type: integer
+      required:
+      - spec
+      - slug
+      - path
+    Spec:
+      type: object
+      description: Spec is the whole wt.yaml document.
+      properties:
+        Version:
+          type: integer
+        App:
+          type: string
+        Slots:
+          $ref: "#/components/schemas/Slots"
+        Resources:
+          type: array
+          items:
+            $ref: "#/components/schemas/Resource"
+        Reserved:
+          $ref: "#/components/schemas/Reserved"
+        Shared:
+          type: array
+          items:
+            $ref: "#/components/schemas/Shared"
+        Hooks:
+          $ref: "#/components/schemas/Hooks"
+        Reaper:
+          $ref: "#/components/schemas/Reaper"
+        Emit:
+          $ref: "#/components/schemas/Emit"
+      required:
+      - Version
+      - App
+      - Slots
+      - Resources
+      - Reserved
+      - Shared
+      - Hooks
+      - Reaper
+      - Emit
+    Slots:
+      type: object
+      description: "Slots is the slot namespace ceiling. Slots run from 1 to Max; slot 0 is the primary checkout and is never allocated (ARCHITECTURE.md §8.4). The pointer records presence: absent means the default of 32 (M2 §5.3), an explicit value below 1 is refused."
+      properties:
+        Max:
+          type:
+          - integer
+          - "null"
+      required:
+      - Max
+    Resource:
+      type: object
+      description: Resource is one entry of the resources list. It is a flat struct carrying the union of every resource type's fields; the Type field selects the interpretation, and validation refuses a field that is not valid for the declared type (a state-path carrying `pool:` is refused whole, per the refuse-rather-than-partially-honour rule in plan.md §3).
+      properties:
+        Type:
+          type: string
+        Name:
+          type: string
+        Form:
+          description: port
+          type:
+          - string
+          - "null"
+        Size:
+          type:
+          - integer
+          - "null"
+        Offset:
+          type:
+          - integer
+          - "null"
+        Kind:
+          description: namespace
+          type:
+          - string
+          - "null"
+        Files:
+          type: array
+          items:
+            type: string
+        Pool:
+          description: cidr
+          type:
+          - string
+          - "null"
+        OnExhaustion:
+          type:
+          - string
+          - "null"
+        Template:
+          description: state-path
+          type:
+          - string
+          - "null"
+        Default:
+          type:
+          - string
+          - "null"
+        Flag:
+          type:
+          - string
+          - "null"
+        Seed:
+          anyOf:
+          - $ref: "#/components/schemas/Seed"
+          - type: "null"
+        Purge:
+          anyOf:
+          - $ref: "#/components/schemas/Purge"
+          - type: "null"
+        Driver:
+          description: machine
+          type:
+          - string
+          - "null"
+        MaxConcurrent:
+          type:
+          - integer
+          - "null"
+        KeepFlag:
+          type:
+          - string
+          - "null"
+      required:
+      - Type
+      - Name
+      - Form
+      - Size
+      - Offset
+      - Kind
+      - Files
+      - Pool
+      - OnExhaustion
+      - Template
+      - Default
+      - Flag
+      - Seed
+      - Purge
+      - Driver
+      - MaxConcurrent
+      - KeepFlag
+    Seed:
+      type: object
+      description: Seed is a state-path resource's seeding declaration, M3 §4.4.
+      properties:
+        From:
+          type: string
+        Modes:
+          type: array
+          items:
+            type: string
+        Default:
+          type:
+          - string
+          - "null"
+      required:
+      - From
+      - Modes
+      - Default
+    Purge:
+      type: object
+      description: Purge is a state-path resource's purge declaration, M3 §4.4.
+      properties:
+        Flag:
+          type: string
+      required:
+      - Flag
+    Reserved:
+      type: object
+      description: Reserved is the spec's committed defaults — properties of the repository, unlike the host-global band reservations, which live in the ledger (ARCHITECTURE.md §8.4).
+      properties:
+        Ports:
+          type: array
+          items:
+            type: integer
+      required:
+      - Ports
+    Shared:
+      type: object
+      description: "Shared is one hand-authored entry of the shared block, M3 §6. The other half of the block — every resource with default: shared — is generated in a later phase; the schema accepts only the hand-authored form."
+      properties:
+        Name:
+          type: string
+        Impact:
+          type: string
+      required:
+      - Name
+      - Impact
+    Hooks:
+      type: object
+      description: "Hooks is the six repo-declared commands the client sequences, in run order. The names come from 04-lifecycle.md §5 (install, prepull, build, seed, health) plus start, which the §4 sequence table requires and which wt start is defined as (ARCHITECTURE.md §6.1: \"run the hooks that bring the stack up\")."
+      properties:
+        Install:
+          anyOf:
+          - $ref: "#/components/schemas/Hook"
+          - type: "null"
+        Prepull:
+          anyOf:
+          - $ref: "#/components/schemas/Hook"
+          - type: "null"
+        Build:
+          anyOf:
+          - $ref: "#/components/schemas/Hook"
+          - type: "null"
+        Start:
+          anyOf:
+          - $ref: "#/components/schemas/Hook"
+          - type: "null"
+        Seed:
+          anyOf:
+          - $ref: "#/components/schemas/Hook"
+          - type: "null"
+        Health:
+          anyOf:
+          - $ref: "#/components/schemas/Hook"
+          - type: "null"
+      required:
+      - Install
+      - Prepull
+      - Build
+      - Start
+      - Seed
+      - Health
+    Hook:
+      type: object
+      description: "Hook is one hook: a command string over the same template variables the resource templates use, an optional timeout, and optional sticky parameters (04-lifecycle.md §5.2)."
+      properties:
+        Run:
+          type: string
+        Timeout:
+          type: string
+        Params:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/Param"
+      required:
+      - Run
+      - Timeout
+      - Params
+    Param:
+      type: object
+      description: Param is one hook parameter. A sticky parameter is chosen on first run, persisted in the descriptor and reused (04-lifecycle.md §5.2). The field set is frozen here; the behaviour is phase 5.
+      properties:
+        Sticky:
+          type: boolean
+        Default:
+          type: string
+      required:
+      - Sticky
+      - Default
+    Reaper:
+      type: object
+      description: "Reaper is the coordinator-side reaper's configuration (04-lifecycle.md §6's first rail): the binaries the reaper may signal. Only binaries the spec names are signalled — a process that merely grabbed a port is reported and never signalled, because it is probably the developer's own instance. The list defaults to empty, so a spec that names nothing signals nothing: that is the safe direction and it must remain the default. Names are matched against the base name of each holder's command as listener discovery reports it."
+      properties:
+        Binaries:
+          type: array
+          items:
+            type: string
+      required:
+      - Binaries
+    Emit:
+      type: object
+      description: "Emit declares the three delivery channels (05-delivery.md §1): the descriptor, the optional .env block and the optional generated reader."
+      properties:
+        Descriptor:
+          $ref: "#/components/schemas/Descriptor"
+        Env:
+          anyOf:
+          - $ref: "#/components/schemas/EnvEmit"
+          - type: "null"
+        Reader:
+          anyOf:
+          - $ref: "#/components/schemas/Reader"
+          - type: "null"
+      required:
+      - Descriptor
+      - Env
+      - Reader
+    Descriptor:
+      type: object
+      description: "Descriptor is the always-written per-worktree file (05-delivery.md §2): its filename, undotted, at the worktree root, and its format."
+      properties:
+        Filename:
+          type: string
+        Format:
+          type: string
+      required:
+      - Filename
+      - Format
+    EnvEmit:
+      type: object
+      description: "EnvEmit is the optional .env managed block (05-delivery.md §3): the file path, whether a first init seeds from the main checkout (B17.3), and the managed keys, each an environment variable name mapped to a template."
+      properties:
+        Path:
+          type: string
+        Seed:
+          type: boolean
+        Keys:
+          type: object
+          additionalProperties:
+            type: string
+      required:
+      - Path
+      - Seed
+      - Keys
+    Reader:
+      type: object
+      description: "Reader is the optional generated descriptor reader (05-delivery.md §4). language may only be go — PLAN-SCOPE.md rules out every other language. path, package and env_var are what the phase-5 generator needs: where the file goes, its Go package name, and the app-scoped environment variable that names a descriptor (05-delivery.md §4.1, \"BACIO_ENV, not WT_ENV\")."
+      properties:
+        Language:
+          type: string
+        Path:
+          type: string
+        Package:
+          type: string
+        EnvVar:
+          type: string
+      required:
+      - Language
+      - Path
+      - Package
+      - EnvVar
+    AllocateResult:
+      type: object
+      description: "AllocateResult is the coordinator's answer: the slot every resource derives from, the denormalised resource table, the state the entry was committed in (reserving), whether the coordinator can stat the recorded path, and the owner's own secrets echoed back — the owner is the only client they are ever served to (ARCHITECTURE.md §12.2). ProbeNote carries the bounded-coverage statement when the chosen slot's probe was unavailable: allocation proceeded on the registry alone, and the output says so (03-drivers.md §4.1)."
+      properties:
+        app:
+          type: string
+        slug:
+          type: string
+        slot:
+          type: integer
+        state:
+          type: string
+        resources:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/Resolved"
+        path_visible:
+          type: boolean
+        secrets:
+          type: object
+          additionalProperties:
+            type: string
+        probe_note:
+          type: string
+        skipped:
+          description: Skipped names the slots the probe held and why — a held port is never remediated, and the allocator says which slot it skipped (B1.6, 03-drivers.md §4.1).
+          type: array
+          items:
+            type: string
+        notes:
+          description: "Notes are the allocation's bounded-coverage statements beyond the probe: a cidr that fell back to the shared pool, naming the remedy (03-drivers.md §4.3's loud fallback — a fallback that is silent is the failure the rule exists to prevent)."
+          type: array
+          items:
+            type: string
+        path:
+          description: Path is the entry's recorded worktree path, present only when an entry already existed.
+          type: string
+        existed:
+          description: Existed reports whether an entry for this (app, slug) was already in the registry (init's four attach outcomes).
+          type: boolean
+        shared:
+          description: Shared is the descriptor's shared block, computed coordinator-side.
+          type: array
+          items:
+            $ref: "#/components/schemas/SharedRow"
+      required:
+      - app
+      - slug
+      - slot
+      - state
+      - resources
+      - path_visible
+    Resolved:
+      type: object
+      description: Resolved is one row of the resolved resource table.
+      properties:
+        type:
+          type: string
+        value: {}
+      required:
+      - type
+      - value
+    SharedRow:
+      type: object
+      description: SharedRow is one name-and-impact pair of the descriptor's shared block, computed by the coordinator — the only side that imports the drivers and can supply the blast-radius prose — and carried to the client's emitter, which copies it into the descriptor it writes (descriptor.BuildShared's callback half is the seam the drivers plug into).
+      properties:
+        name:
+          type: string
+        impact:
+          type: string
+      required:
+      - name
+      - impact
+    MaterialiseArgs:
+      type: object
+      description: "MaterialiseArgs is the materialise request: the spec and the entry whose resources are applied in dependency order."
+      properties:
+        app:
+          type: string
+        slug:
+          type: string
+        spec:
+          $ref: "#/components/schemas/Spec"
+        seed_modes:
+          description: SeedModes overrides the spec's seed.default per state-path resource (03-drivers.md §4.4); absent an override the spec's default applies.
+          type: object
+          additionalProperties:
+            type: string
+      required:
+      - app
+      - slug
+      - spec
+    MaterialiseResult:
+      type: object
+      description: "MaterialiseResult is the coordinator's answer to materialise. On success the entry stays reserving and the client activates it. On an apply failure with a clean reverse-order rollback the entry also stays reserving and the client drops it with release — the rollback that covers init's steps up to activation (ARCHITECTURE.md §9.1). On an apply failure whose rollback itself failed, the entry moves to tearing-down with the survivors noted and the slot stays held (B2.3): resources are out there, and the client must not release what survived."
+      properties:
+        app:
+          type: string
+        slug:
+          type: string
+        outcomes:
+          type: array
+          items:
+            $ref: "#/components/schemas/MaterialiseOutcome"
+        state:
+          type: string
+        failed:
+          type: string
+        err:
+          type: string
+        rolled_back:
+          type: array
+          items:
+            type: string
+        rollback_err:
+          type: string
+      required:
+      - app
+      - slug
+      - outcomes
+      - state
+    MaterialiseOutcome:
+      type: object
+      description: "MaterialiseOutcome is one resource's apply outcome: the resource and the bounded-coverage notes its driver returned (what was seeded, from where, and what could not be done — a silent degrade reads as success, plan.md §3)."
+      properties:
+        resource:
+          type: string
+        notes:
+          type: array
+          items:
+            type: string
+      required:
+      - resource
+    EntryRef:
+      type: object
+      description: "EntryRef names one registry entry: the app and slug pair that identifies it. Mutating calls against it run the ownership check (ARCHITECTURE.md §4.3, §8.6 rule 6)."
+      properties:
+        app:
+          type: string
+        slug:
+          type: string
+      required:
+      - app
+      - slug
+    ActivateResult:
+      type: object
+      description: "ActivateResult is the coordinator's answer to activate: the entry's new state."
+      properties:
+        app:
+          type: string
+        slug:
+          type: string
+        state:
+          type: string
+      required:
+      - app
+      - slug
+      - state
+    ReleaseResult:
+      type: object
+      description: "ReleaseResult is the coordinator's answer to release: the entry is gone."
+      properties:
+        app:
+          type: string
+        slug:
+          type: string
+        removed:
+          type: boolean
+        notes:
+          description: "Notes are the bounded-coverage statements the release carries: a machine kept by its keep flag names the documented bypass, so the deliberate survivor is never silent (B4.3)."
+          type: array
+          items:
+            type: string
+      required:
+      - app
+      - slug
+      - removed
+    RmArgs:
+      type: object
+      description: "RmArgs is the rm request: the entry (app, slug), the spec (teardown needs it for the dependent projects and the purge refusal), whether the reaper is opted out, whether this is a preview, and the CLI purge flags."
+      properties:
+        app:
+          type: string
+        slug:
+          type: string
+        spec:
+          $ref: "#/components/schemas/Spec"
+        keep_processes:
+          description: "KeepProcesses opts the reaper out: nothing is signalled and the survivors are the caller's business."
+          type: boolean
+        keep_flags:
+          description: KeepFlags are the CLI keep flags the caller passed (e.g. "--keep-vm"). A machine resource whose keep_flag matches one is left up on teardown — the entry drops but the VM stays (B4.3).
+          type: array
+          items:
+            type: string
+        dry_run:
+          description: "DryRun previews: the reaper lists what it would signal and nothing is torn down."
+          type: boolean
+        purge_flags:
+          type: array
+          items:
+            type: string
+      required:
+      - app
+      - slug
+      - spec
+    RmResult:
+      type: object
+      description: RmResult is the coordinator's answer to rm. EntryFound is false when the registry holds no entry for the ref — the caller then decides between the two no-entry paths (04-lifecycle.md §7.3). On a clean teardown Removed is true and the entry is gone; otherwise TeardownNote names what survived and the slot stays held.
+      properties:
+        entry_found:
+          type: boolean
+        reap:
+          $ref: "#/components/schemas/ReapReport"
+        path:
+          description: Path is the entry's recorded worktree path — the client's target for the `git worktree remove` half, and the answer to where the tree is when the caller is outside it.
+          type: string
+        resources:
+          description: Resources are the entry's resource names, in teardown order — what was (or, under --dry-run, would be) torn down.
+          type: array
+          items:
+            type: string
+        removed:
+          type: boolean
+        teardown_note:
+          type: string
+        notes:
+          description: "Notes are the bounded-coverage statements the teardown carries: a machine kept by its keep flag names the documented bypass (B4.3)."
+          type: array
+          items:
+            type: string
+      required:
+      - entry_found
+      - reap
+      - removed
+    ReapReport:
+      type: object
+      description: "ReapReport is the reaper's bounded-coverage statement: what it could and could not do, and what it did. A silent degrade reads as success, so every limit is stated here with the remedy (plan.md §3)."
+      properties:
+        available:
+          description: Available is false when the reap could not run at all — the coordinator is inside a container whose namespaces discovery would see, or discovery failed. The note names the remedy; teardown completes regardless and the user is told to kill manually (B7.1).
+          type: boolean
+        note:
+          description: Note carries the unavailable reason, or the --keep-processes opt-out statement.
+          type: string
+        holders:
+          description: Holders are the processes bound to the worktree's ports that were reported and never signalled, and why.
+          type: array
+          items:
+            $ref: "#/components/schemas/ReapHolder"
+        signalled:
+          description: Signalled are the spec-named binaries the reaper stopped (or would have stopped, under --dry-run).
+          type: array
+          items:
+            $ref: "#/components/schemas/ReapAction"
+        skipped_ports:
+          description: SkippedPorts are the worktree ports that were never touched because they fall in the spec's reserved block or the host-global reservations — the exclusion list is reused, never a second one (B8.3).
+          type: array
+          items:
+            type: integer
+        kept_processes:
+          description: KeptProcesses reports the --keep-processes opt-out.
+          type: boolean
+      required:
+      - available
+    ReapHolder:
+      type: object
+      description: "ReapHolder is one process bound to a worktree port that was reported and never signalled: it is not one of the spec's own binaries, or its port is reserved — in both cases it is probably the developer's own instance (B7.1, ARCHITECTURE.md §12.1)."
+      properties:
+        pid:
+          type: integer
+        command:
+          type: string
+        port:
+          type: integer
+        reason:
+          type: string
+      required:
+      - pid
+      - command
+      - port
+      - reason
+    ReapAction:
+      type: object
+      description: "ReapAction is one process the reaper signalled — or, under --dry-run, one it would have. Signal names the step that ran: \"TERM\", \"KILL\" (after the three-second wait), or \"would-signal\" under --dry-run."
+      properties:
+        pid:
+          type: integer
+        command:
+          type: string
+        port:
+          type: integer
+        signal:
+          type: string
+        err:
+          description: "Err reports a signal that failed — the process may have exited during the wait, or the signal could not be delivered — and, on a KILL that ran, carries the escalation note stating that the graceful step did not stop the process (the Windows half of 08-platform.md §4.3: the reaper reports which of the two paths it took)."
+          type: string
+      required:
+      - pid
+      - command
+      - port
+      - signal
+    ReserveBandArgs:
+      type: object
+      description: "ReserveBandArgs is the bands.reserve request. Two forms, mutually exclusive. App mode carries the parsed spec and one base per port resource, so the coordinator can compute the band's required size from the spec — the onboarding skill chooses only where the bases sit, not how large they are (02-coordination.md §6.2). Host mode carries the ports no app may allocate from, the compose project names no teardown may reach, and the required note naming what holds the range (plan.md §8, R6): nothing infers a production stack, a person declares it once per machine."
+      properties:
+        spec:
+          $ref: "#/components/schemas/Spec"
+        bases:
+          type: object
+          additionalProperties:
+            type: integer
+        host:
+          type: boolean
+        ports:
+          type: array
+          items:
+            type: integer
+        names:
+          type: array
+          items:
+            type: string
+        note:
+          type: string
+    ReserveBandResult:
+      type: object
+      description: ReserveBandResult reports what the ledger now holds. Spans carries, per port resource, the number of consecutive ports its base must cover — the required size computed from the spec (slot ceiling × ports per slot).
+      properties:
+        app:
+          type: string
+        bases:
+          type: object
+          additionalProperties:
+            type: integer
+        spans:
+          type: object
+          additionalProperties:
+            type: integer
+        host:
+          type: boolean
+        ports:
+          type: array
+          items:
+            type: integer
+        names:
+          type: array
+          items:
+            type: string
+        note:
+          type: string
+    BandsListResult:
+      type: object
+      description: "BandsListResult is the whole ledger: the app bands and the machine-wide reservations."
+      properties:
+        bands:
+          type: array
+          items:
+            $ref: "#/components/schemas/BandInfo"
+        reservations:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReservationInfo"
+      required:
+      - bands
+      - reservations
+    BandInfo:
+      type: object
+      description: BandInfo is one app's band as bands.list reports it.
+      properties:
+        app:
+          type: string
+        bases:
+          type: object
+          additionalProperties:
+            type: integer
+      required:
+      - app
+      - bases
+    ReservationInfo:
+      type: object
+      description: ReservationInfo is one host-global reservation as bands.list reports it.
+      properties:
+        ports:
+          type: array
+          items:
+            type: integer
+        names:
+          type: array
+          items:
+            type: string
+        note:
+          type: string
+      required:
+      - ports
+      - note
+    SuggestBandArgs:
+      type: object
+      description: "SuggestBandArgs is the bands.suggest request: the spec whose port resources need bases. The client sends the parsed spec exactly as bands.reserve does — the coordinator computes the required size from it and proposes where the bases could sit against the current ledger."
+      properties:
+        spec:
+          $ref: "#/components/schemas/Spec"
+      required:
+      - spec
+    SuggestBandResult:
+      type: object
+      description: "SuggestBandResult is the coordinator's answer: one suggestion per port resource, in spec order, plus the bounded-coverage notes — a resource with no free base anywhere in the port space, or a range skipped."
+      properties:
+        app:
+          type: string
+        suggestions:
+          type: array
+          items:
+            $ref: "#/components/schemas/BandSuggestion"
+        notes:
+          type: array
+          items:
+            type: string
+      required:
+      - app
+      - suggestions
+    BandSuggestion:
+      type: object
+      description: "BandSuggestion is one proposed base: the resource, the base, the span the band must cover (slot ceiling × ports per slot, the coordinator's required-size computation), and the inclusive range the base's band occupies."
+      properties:
+        resource:
+          type: string
+        base:
+          type: integer
+        span:
+          type: integer
+        low:
+          type: integer
+        high:
+          type: integer
+      required:
+      - resource
+      - base
+      - span
+      - low
+      - high
+    PortsScanResult:
+      type: object
+      description: "PortsScanResult is the whole scan: the listeners sorted by port, plus the bounded-coverage notes — what the scan could not see and why (a silent degrade reads as success, plan.md §3)."
+      properties:
+        listeners:
+          type: array
+          items:
+            $ref: "#/components/schemas/PortsScanEntry"
+        notes:
+          type: array
+          items:
+            type: string
+      required:
+      - listeners
+    PortsScanEntry:
+      type: object
+      description: "PortsScanEntry is one listener as ports.scan reports it: the port, the owning pid, and the command name listener discovery reported. Port 0 means discovery could not report the port (an unusual lsof dialect); the entry is still a fact — the process is listening on something."
+      properties:
+        port:
+          type: integer
+        pid:
+          type: integer
+        command:
+          type: string
+      required:
+      - port
+      - pid
+      - command
+    ListArgs:
+      type: object
+      description: "ListArgs is the list request. Wide asks for the owning client's seed credentials — served to the owning client alone and redacted for every other client either way (ARCHITECTURE.md §12.2): a --wide form may show them to the owner, never to anyone else."
+      properties:
+        wide:
+          type: boolean
+    ListResult:
+      type: object
+      description: ListResult is the whole registry as list reports it, across every repo.
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/ListEntry"
+      required:
+      - entries
+    ListEntry:
+      type: object
+      description: "ListEntry is one registry entry as list reports it. The flags are the distinct markers of 06-fleet.md §3 and ARCHITECTURE.md §9.3, and the whole point of the phase is that the first two stay distinct:"
+      properties:
+        app:
+          type: string
+        slug:
+          type: string
+        slot:
+          type: integer
+        description:
+          type: string
+        state:
+          type: string
+        path:
+          type: string
+        path_visible:
+          type: boolean
+        owner:
+          type: string
+        owner_kind:
+          type: string
+        ephemeral:
+          type: boolean
+        created_at:
+          type: string
+        last_seen:
+          type: string
+        resources:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/Resolved"
+        secrets:
+          type: object
+          additionalProperties:
+            type: string
+        flags:
+          type: array
+          items:
+            type: string
+      required:
+      - app
+      - slug
+      - slot
+      - state
+      - path
+      - path_visible
+      - owner
+      - owner_kind
+      - ephemeral
+      - created_at
+      - last_seen
+      - resources
+    DoctorResult:
+      type: object
+      description: "DoctorResult is the whole report: the findings plus the bounded-coverage notes — what doctor could not check and why (a silent degrade reads as success, plan.md §3)."
+      properties:
+        findings:
+          type: array
+          items:
+            $ref: "#/components/schemas/DoctorFinding"
+        notes:
+          type: array
+          items:
+            type: string
+      required:
+      - findings
+    DoctorFinding:
+      type: object
+      description: "DoctorFinding is one row of a doctor report: a level, the message, and — for every finding that reports a problem — the exact command that fixes it (06-fleet.md §4, a hard rule). Info-level rows are observations (unverifiable, port free) and carry no remedy because there is nothing to fix."
+      properties:
+        app:
+          type: string
+        slug:
+          type: string
+        level:
+          type: string
+        message:
+          type: string
+        remedy:
+          type: string
+      required:
+      - level
+      - message
+    ReconcileArgs:
+      type: object
+      description: "ReconcileArgs is the reconcile request: the app, the spec (reap and teardown need it, exactly as rm does), and the refs the caller believes are its own or reclaimable. The coordinator re-checks every ref against the ownership and aged-out rules — the caller's claim is never trusted."
+      properties:
+        app:
+          type: string
+        spec:
+          $ref: "#/components/schemas/Spec"
+        refs:
+          type: array
+          items:
+            $ref: "#/components/schemas/EntryRef"
+      required:
+      - app
+      - spec
+      - refs
+    ReconcileResult:
+      type: object
+      description: ReconcileResult is the whole batch outcome.
+      properties:
+        outcomes:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReconcileOutcome"
+      required:
+      - outcomes
+    ReconcileOutcome:
+      type: object
+      description: "ReconcileOutcome is one entry's repair outcome:"
+      properties:
+        app:
+          type: string
+        slug:
+          type: string
+        action:
+          type: string
+        note:
+          type: string
+      required:
+      - app
+      - slug
+      - action
+    ClientsListResult:
+      type: object
+      description: ClientsListResult is the whole client table.
+      properties:
+        clients:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClientInfo"
+      required:
+      - clients
+    ClientInfo:
+      type: object
+      description: "ClientInfo is one row of the client table as clients.list reports it: identity, kind, the coordinator's own measurement of when it was last seen (never a timestamp a client wrote), how many registry entries the client owns, and — for an ephemeral client whose last seen is older than the reclamation interval — that it has aged out and its entries are reclaimable."
+      properties:
+        identity:
+          type: string
+        kind:
+          type: string
+        ephemeral:
+          type: boolean
+        last_seen:
+          type: string
+        entries:
+          type: integer
+        aged_out:
+          type: boolean
+      required:
+      - identity
+      - kind
+      - ephemeral
+      - last_seen
+      - entries
