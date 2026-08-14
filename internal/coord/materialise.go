@@ -45,12 +45,11 @@ func (h *Handler) materialise(s *Session, req *protocol.Request) *protocol.Respo
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	reg, err := h.st.ReadRegistry()
+	e, ok, err := h.st.GetEntry(args.App, args.Slug)
 	if err != nil {
 		return h.storeErr("reading the registry", err)
 	}
-	e := registryEntry(reg, args.App, args.Slug)
-	if e == nil {
+	if !ok {
 		return respErr(1, fmt.Sprintf("no registry entry for app %q slug %q", args.App, args.Slug),
 			"allocate the worktree first, then re-run")
 	}
@@ -124,23 +123,28 @@ func (h *Handler) materialise(s *Session, req *protocol.Request) *protocol.Respo
 	if rep.RollbackErr != nil {
 		out.State = store.StateTearingDown
 		out.RollbackErr = rep.RollbackErr.Error()
-		// The registry is re-read: the copy above was taken before the
+		// The entry is re-read: the copy above was taken before the
 		// drivers ran without the lock, and another client may have
 		// written since.
-		reg, err := h.st.ReadRegistry()
+		fresh, ok, err := h.st.GetEntry(args.App, args.Slug)
 		if err != nil {
 			return h.storeErr("reading the registry", err)
 		}
-		fresh := registryEntry(reg, args.App, args.Slug)
-		if fresh == nil {
+		if !ok {
 			return respErr(1, fmt.Sprintf("no registry entry for app %q slug %q", args.App, args.Slug),
 				"the entry went away mid-materialisation; re-run 'wt list' to see the current state")
 		}
 		fresh.State = store.StateTearingDown
 		fresh.TeardownNote = fmt.Sprintf("materialisation of %s failed and its rollback left resources behind: %v; the slot stays held until a re-run frees everything",
 			rep.Failed, rep.RollbackErr)
-		fresh.LastSeen = time.Now().UTC().Format(time.RFC3339Nano)
-		if err := h.st.WriteRegistry(reg); err != nil {
+		// The state change, the note and the last-seen move land as one
+		// transaction, exactly like a teardown's.
+		if err := h.st.WithTx(func(tx *store.Tx) error {
+			if err := tx.UpdateEntryState(fresh.App, fresh.Slug, store.StateTearingDown, fresh.TeardownNote); err != nil {
+				return err
+			}
+			return tx.TouchEntry(fresh.App, fresh.Slug, time.Now())
+		}); err != nil {
 			return h.storeErr("writing the registry", err)
 		}
 		return &protocol.Response{Result: mustJSON(out)}

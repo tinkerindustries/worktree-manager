@@ -46,7 +46,7 @@ func reapPortsEntry(t *testing.T, h *Harness, ports ...int) *store.Entry {
 		Path: "/tmp/wt/wt-1", State: store.StateActive,
 		Resources: resources, CreatedAt: now, LastSeen: now,
 	}
-	if err := h.Store.WriteRegistry(store.RegistryFile{Entries: []store.Entry{*e}}); err != nil {
+	if err := h.Store.UpsertEntry(*e); err != nil {
 		t.Fatalf("writing the registry: %v", err)
 	}
 	return e
@@ -220,9 +220,9 @@ func TestCoordReapNeverTouchesReservedPorts(t *testing.T) {
 	port2 := freeCoordPort(t)
 	pid2, comm2 := listenProc(t, port2)
 	e2 := reapPortsEntry(t, h, port2)
-	if err := h.Store.WriteBands(store.BandsFile{Reservations: []store.Reservation{
-		{Ports: []int{port2}, Note: "the co-resident production stack"},
-	}}); err != nil {
+	if err := h.Store.AddReservation(store.Reservation{
+		Ports: []int{port2}, Note: "the co-resident production stack",
+	}); err != nil {
 		t.Fatalf("writing the ledger: %v", err)
 	}
 	h.H.ReapBinaries = func(*spec.Spec) []string { return []string{comm2} }

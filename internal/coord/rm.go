@@ -38,12 +38,11 @@ func (h *Handler) rm(s *Session, req *protocol.Request) *protocol.Response {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	reg, err := h.st.ReadRegistry()
+	e, ok, err := h.st.GetEntry(args.App, args.Slug)
 	if err != nil {
 		return h.storeErr("reading the registry", err)
 	}
-	e := registryEntry(reg, args.App, args.Slug)
-	if e == nil {
+	if !ok {
 		// Not an error: the client's no-entry paths (04-lifecycle.md §7.3)
 		// decide what the git half does.
 		return &protocol.Response{Result: mustJSON(protocol.RmResult{EntryFound: false})}

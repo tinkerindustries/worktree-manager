@@ -97,12 +97,11 @@ func (h *Handler) SweepCleanup() (int, error) {
 
 	cleaned := 0
 	for _, c := range candidates {
-		reg, err := h.st.ReadRegistry()
+		e, ok, err := h.st.GetEntry(c.app, c.slug)
 		if err != nil {
 			return cleaned, err
 		}
-		e := registryEntry(reg, c.app, c.slug)
-		if e == nil {
+		if !ok {
 			continue // gone since the snapshot; nothing to clean
 		}
 		skip := func(reason string) {
@@ -141,12 +140,11 @@ func (h *Handler) SweepCleanup() (int, error) {
 		}
 		// The registry moved on while the checks ran; the teardown works
 		// from the entry as it stands now.
-		reg, err = h.st.ReadRegistry()
+		e, ok, err = h.st.GetEntry(c.app, c.slug)
 		if err != nil {
 			return cleaned, err
 		}
-		e = registryEntry(reg, c.app, c.slug)
-		if e == nil {
+		if !ok {
 			skip("the entry went away while the checks ran")
 			continue
 		}

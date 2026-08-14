@@ -301,11 +301,11 @@ func TestSweepCleanupForeignEphemeralNeverAdopted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := range reg.Entries {
-		reg.Entries[i].LastSeen = "2000-01-01T00:00:00Z"
-	}
-	if err := h.Store.WriteRegistry(reg); err != nil {
-		t.Fatal(err)
+	for _, e := range reg.Entries {
+		e.LastSeen = "2000-01-01T00:00:00Z"
+		if err := h.Store.UpsertEntry(e); err != nil {
+			t.Fatal(err)
+		}
 	}
 	fakeSweepGh(t, h, func() string { return `{"number":7,"state":"MERGED"}` })
 

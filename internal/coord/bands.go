@@ -41,15 +41,10 @@ func (h *Handler) reserveBand(s *Session, req *protocol.Request) *protocol.Respo
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	bands, err := h.st.ReadBands()
-	if err != nil {
-		return h.storeErr("reading the band ledger", err)
-	}
-
 	if args.Host {
-		return h.reserveHost(s, &args, &bands)
+		return h.reserveHost(s, &args)
 	}
-	return h.reserveApp(s, &args, &bands)
+	return h.reserveApp(s, &args)
 }
 
 // reserveApp registers one app's band. The coordinator computes the
@@ -57,7 +52,7 @@ func (h *Handler) reserveBand(s *Session, req *protocol.Request) *protocol.Respo
 // ceiling — so the onboarding skill only chooses where the bases sit, not
 // how large they are. One app, one band: re-registration replaces in place,
 // which is how a re-run of onboarding fixes a bad band.
-func (h *Handler) reserveApp(s *Session, args *protocol.ReserveBandArgs, bands *store.BandsFile) *protocol.Response {
+func (h *Handler) reserveApp(s *Session, args *protocol.ReserveBandArgs) *protocol.Response {
 	if err := spec.Validate(&args.Spec); err != nil {
 		return respErr(3, fmt.Sprintf("the spec sent with the registration is refused whole: %v", err),
 			"fix the spec, then re-run: wt bands reserve")
@@ -100,14 +95,11 @@ func (h *Handler) reserveApp(s *Session, args *protocol.ReserveBandArgs, bands *
 		}
 	}
 
-	band := findBand(*bands, app)
-	if band == nil {
-		bands.Bands = append(bands.Bands, store.Band{App: app, Bases: args.Bases, Spans: spans})
-	} else {
-		band.Bases = args.Bases // one app, one band: re-registration replaces
-		band.Spans = spans      // the spans are phase 6's overlap-check input
-	}
-	if err := h.st.WriteBands(*bands); err != nil {
+	// One app, one band: re-registration replaces in place, which is how a
+	// re-run of onboarding fixes a bad band. The upsert is the whole
+	// replacement — the store drops the app's old rows and inserts the new
+	// ones in one transaction.
+	if err := h.st.UpsertBand(store.Band{App: app, Bases: args.Bases, Spans: spans}); err != nil {
 		return h.storeErr("writing the band ledger", err)
 	}
 	return &protocol.Response{Result: mustJSON(protocol.ReserveBandResult{
@@ -124,7 +116,7 @@ func (h *Handler) reserveApp(s *Session, args *protocol.ReserveBandArgs, bands *
 // person declares the co-resident stack's compose project name once per
 // machine, and label-based teardown is refused when a resolved name matches
 // it.
-func (h *Handler) reserveHost(s *Session, args *protocol.ReserveBandArgs, bands *store.BandsFile) *protocol.Response {
+func (h *Handler) reserveHost(s *Session, args *protocol.ReserveBandArgs) *protocol.Response {
 	if args.Note == "" {
 		return respErr(3, "a host reservation must carry a note naming what holds the range",
 			"re-run with --note, e.g. wt bands reserve --host --port 5319 --port 5320 --name compose-app-prod --note \"compose-app production stack\"")
@@ -168,8 +160,7 @@ func (h *Handler) reserveHost(s *Session, args *protocol.ReserveBandArgs, bands 
 		}
 	}
 	sort.Strings(names)
-	bands.Reservations = append(bands.Reservations, store.Reservation{Ports: ports, Names: names, Note: args.Note})
-	if err := h.st.WriteBands(*bands); err != nil {
+	if err := h.st.AddReservation(store.Reservation{Ports: ports, Names: names, Note: args.Note}); err != nil {
 		return h.storeErr("writing the band ledger", err)
 	}
 	return &protocol.Response{Result: mustJSON(protocol.ReserveBandResult{

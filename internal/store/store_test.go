@@ -7,7 +7,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 )
 
 // tempRoot is t.TempDir() with symlinks resolved, so a path expectation
@@ -92,126 +91,142 @@ func TestOpenUnwritableRootNamesThePath(t *testing.T) {
 	}
 }
 
-func TestAtomicWriteRoundTrip(t *testing.T) {
+// TestOpenCreatesPrivateDatabase is the R0 file-modes criterion: Open
+// creates wt.db, and the WAL and SHM sidecars the driver creates at the
+// process umask are all 0600 — entry secrets live in the database, so the
+// modes are verified at open, not assumed. The database is usable and the
+// schema is in place.
+func TestOpenCreatesPrivateDatabase(t *testing.T) {
+	root := filepath.Join(tempRoot(t), "wt")
+	st, err := Open(root)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if st.Root() != root {
+		t.Errorf("Root() = %q, want %q", st.Root(), root)
+	}
+	// The three files exist and are 0600 on unix; on Windows the store
+	// root's current-user ACL covers them (platform's own test).
+	if runtime.GOOS != "windows" {
+		for _, name := range []string{DBFileName, DBFileName + "-wal", DBFileName + "-shm"} {
+			fi, err := os.Stat(filepath.Join(root, name))
+			if err != nil {
+				t.Fatalf("stat %s: %v", name, err)
+			}
+			if fi.Mode().Perm() != 0o600 {
+				t.Errorf("%s mode = %v, want 0600", name, fi.Mode().Perm())
+			}
+		}
+	}
+	// A fresh store is empty at every whole-collection read.
+	reg, err := st.ReadRegistry()
+	if err != nil {
+		t.Fatalf("ReadRegistry: %v", err)
+	}
+	if len(reg.Entries) != 0 || reg.SchemaVersion != SchemaVersion {
+		t.Errorf("fresh registry = %+v, want empty at schema %d", reg, SchemaVersion)
+	}
+	bands, err := st.ReadBands()
+	if err != nil {
+		t.Fatalf("ReadBands: %v", err)
+	}
+	if len(bands.Bands) != 0 || len(bands.Reservations) != 0 {
+		t.Errorf("fresh bands = %+v, want empty", bands)
+	}
+	clients, err := st.ReadClients()
+	if err != nil {
+		t.Fatalf("ReadClients: %v", err)
+	}
+	if len(clients.Clients) != 0 {
+		t.Errorf("fresh clients = %+v, want empty", clients)
+	}
+	specs, err := st.ReadSpecs()
+	if err != nil {
+		t.Fatalf("ReadSpecs: %v", err)
+	}
+	if len(specs.Specs) != 0 {
+		t.Errorf("fresh specs = %+v, want empty", specs)
+	}
+}
+
+// TestOpenRefusesBrokenDatabase: a database that cannot be opened is
+// refused with the reasoning an unparseable registry carried — the
+// registry is the only source of repository locations, so
+// rebuild-from-descriptors cannot be safe. A garbage file standing in for
+// wt.db fails at open, naming the path.
+func TestOpenRefusesBrokenDatabase(t *testing.T) {
 	root := filepath.Join(tempRoot(t), "wt")
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(root, "clients.json")
-	if err := AtomicWrite(path, []byte("{\"schema_version\":1}\n"), 0o600); err != nil {
-		t.Fatalf("AtomicWrite: %v", err)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
+	if err := os.WriteFile(filepath.Join(root, DBFileName), []byte("not a sqlite database"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != "{\"schema_version\":1}\n" {
-		t.Errorf("read back %q", data)
+	_, err := Open(root)
+	if err == nil {
+		t.Fatal("Open over a garbage wt.db succeeded, want a refusal")
 	}
-	fi, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
+	msg := err.Error()
+	if !strings.Contains(msg, DBFileName) {
+		t.Errorf("error does not name the database file: %v", msg)
 	}
-	// Mode bits are the permission model on unix; on Windows the ACL on
-	// the store root is (08-platform.md §4.6).
-	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
-		t.Errorf("store file mode = %v, want 0600", fi.Mode().Perm())
-	}
-	// Overwrite: the rename path replaces the existing file atomically.
-	if err := AtomicWrite(path, []byte("{\"schema_version\":1,\"clients\":[]}\n"), 0o600); err != nil {
-		t.Fatalf("AtomicWrite overwrite: %v", err)
-	}
-	data, err = os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), "\"clients\":[]") {
-		t.Errorf("overwrite did not take: %q", data)
-	}
-	// No temp files survive.
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 {
-		t.Errorf("directory holds %d entries after the writes, want exactly clients.json", len(entries))
+	if !strings.Contains(msg, "cannot be opened") {
+		t.Errorf("error does not say the database cannot be opened: %v", msg)
 	}
 }
 
-func TestSaveLoadClientsJSON(t *testing.T) {
-	root := filepath.Join(tempRoot(t), "wt")
-	st, err := Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// A missing file is an empty table.
-	f, err := st.ReadClients()
-	if err != nil {
-		t.Fatalf("ReadClients on an empty store: %v", err)
-	}
-	if len(f.Clients) != 0 {
-		t.Errorf("new store has %d clients, want 0", len(f.Clients))
-	}
-	if f.SchemaVersion != SchemaVersion {
-		t.Errorf("new store schema_version = %d, want %d", f.SchemaVersion, SchemaVersion)
-	}
-
-	now := time.Now().UTC().Format(time.RFC3339)
-	f.Clients = []ClientEntry{
-		{Identity: "1000", Kind: "host", LastSeen: now, Ephemeral: false},
-		{Identity: "s1a2b3", Kind: "ephemeral", LastSeen: now, Ephemeral: true},
-	}
-	if err := st.WriteClients(f); err != nil {
-		t.Fatalf("WriteClients: %v", err)
-	}
-
-	got, err := st.ReadClients()
-	if err != nil {
-		t.Fatalf("ReadClients: %v", err)
-	}
-	if len(got.Clients) != 2 {
-		t.Fatalf("read back %d clients, want 2", len(got.Clients))
-	}
-	if got.Clients[0] != f.Clients[0] || got.Clients[1] != f.Clients[1] {
-		t.Errorf("round trip changed the table: %+v", got.Clients)
-	}
-	if got.SchemaVersion != SchemaVersion {
-		t.Errorf("round trip schema_version = %d, want %d", got.SchemaVersion, SchemaVersion)
-	}
-
-	// The file on disk really carries schema_version and is JSON, never YAML
-	// — a slug of "no" would come back as a boolean through a YAML 1.1
-	// parser, which is why the store is JSON (ARCHITECTURE.md §8.2).
-	raw, err := os.ReadFile(filepath.Join(root, ClientsFileName))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(raw), `"schema_version": 1`) {
-		t.Errorf("clients.json lacks its schema_version field:\n%s", raw)
-	}
-}
-
-// TestSchemaVersionRefusal: a store file written by a newer schema is
-// refused, naming the upgrade — the "lists but does not write" rail
-// (02-coordination.md §11).
+// TestSchemaVersionRefusal: a database whose meta.schema_version is newer
+// than this build is refused at every strict read and every mutation,
+// naming the upgrade — the "lists but does not write" rail
+// (02-coordination.md §11) — while the lenient read still lists it.
 func TestSchemaVersionRefusal(t *testing.T) {
 	root := filepath.Join(tempRoot(t), "wt")
 	st, err := Open(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.WriteFile(ClientsFileName, []byte("{\"schema_version\":2,\"clients\":[]}\n")); err != nil {
+	if _, err := st.db.Exec("UPDATE meta SET value = '2' WHERE key = 'schema_version'"); err != nil {
 		t.Fatal(err)
 	}
-	_, err = st.ReadClients()
+	_, err = st.ReadRegistry()
 	var ve *VersionError
 	if !errors.As(err, &ve) {
-		t.Fatalf("ReadClients = %v, want a VersionError", err)
+		t.Fatalf("ReadRegistry = %v, want a VersionError", err)
 	}
 	if ve.File != 2 || ve.Current != SchemaVersion {
 		t.Errorf("VersionError = %+v, want file 2 current %d", ve, SchemaVersion)
 	}
 	if !strings.Contains(ve.Error(), "upgrade wtd") {
 		t.Errorf("VersionError does not name the upgrade: %v", ve.Error())
+	}
+	// Every other strict read and mutation refuses the same way.
+	if _, err := st.ReadBands(); !errors.As(err, &ve) {
+		t.Errorf("ReadBands = %v, want a VersionError", err)
+	}
+	if _, err := st.ReadClients(); !errors.As(err, &ve) {
+		t.Errorf("ReadClients = %v, want a VersionError", err)
+	}
+	if _, err := st.ReadSpecs(); !errors.As(err, &ve) {
+		t.Errorf("ReadSpecs = %v, want a VersionError", err)
+	}
+	if _, _, err := st.GetEntry("app", "slug"); !errors.As(err, &ve) {
+		t.Errorf("GetEntry = %v, want a VersionError", err)
+	}
+	if err := st.UpsertEntry(Entry{}); !errors.As(err, &ve) {
+		t.Errorf("UpsertEntry = %v, want a VersionError", err)
+	}
+	if err := st.UpdateEntryState("a", "s", "active", ""); !errors.As(err, &ve) {
+		t.Errorf("UpdateEntryState = %v, want a VersionError", err)
+	}
+	if err := st.WithTx(func(*Tx) error { return nil }); !errors.As(err, &ve) {
+		t.Errorf("WithTx = %v, want a VersionError", err)
+	}
+	// The lenient read still lists: it carries the database's own version.
+	f, err := st.ReadRegistryList()
+	if err != nil {
+		t.Fatalf("ReadRegistryList of a newer database: %v", err)
+	}
+	if f.SchemaVersion != 2 {
+		t.Errorf("listed registry schema_version = %d, want 2 (the database's own)", f.SchemaVersion)
 	}
 }

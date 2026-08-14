@@ -2,34 +2,17 @@ package store
 
 import (
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 )
 
-// TestRegistryRoundTrip: entries survive a write and a strict read, with the
-// schema_version envelope on the file and on every entry, and JSON rather
-// than YAML on disk (a slug of "no" would come back as a boolean through a
-// YAML 1.1 parser — ARCHITECTURE.md §8.2).
-func TestRegistryRoundTrip(t *testing.T) {
-	root := filepath.Join(tempRoot(t), "wt")
-	st, err := Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f, err := st.ReadRegistry()
-	if err != nil {
-		t.Fatalf("ReadRegistry on an empty store: %v", err)
-	}
-	if len(f.Entries) != 0 || f.SchemaVersion != SchemaVersion {
-		t.Errorf("new store registry = %+v, want empty at schema %d", f, SchemaVersion)
-	}
-
+// testEntry is the shared entry shape the registry fixtures mutate.
+func testEntry() Entry {
 	now := "2026-08-12T10:00:00.123456789Z"
-	want := Entry{
+	return Entry{
 		App: "compose-app", Slug: "brisk-otter", Slot: 1,
 		Owner: "4242", OwnerKind: "host", Ephemeral: false,
 		Path: "/Users/test/wt/brisk-otter", PathVisible: true,
@@ -43,11 +26,21 @@ func TestRegistryRoundTrip(t *testing.T) {
 		Secrets:        map[string]string{"admin_password": "hunter2"},
 		CreatedAt:      now, LastSeen: now,
 	}
-	f.Entries = []Entry{want}
-	if err := st.WriteRegistry(f); err != nil {
-		t.Fatalf("WriteRegistry: %v", err)
-	}
+}
 
+// TestRegistryRoundTrip: entries survive an upsert and a read, including
+// the JSON resources and secrets columns; the port value comes back as an
+// int, the same normalisation the JSON file applied.
+func TestRegistryRoundTrip(t *testing.T) {
+	root := tempRoot(t)
+	st, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := testEntry()
+	if err := st.UpsertEntry(want); err != nil {
+		t.Fatalf("UpsertEntry: %v", err)
+	}
 	got, err := st.ReadRegistry()
 	if err != nil {
 		t.Fatalf("ReadRegistry: %v", err)
@@ -62,8 +55,8 @@ func TestRegistryRoundTrip(t *testing.T) {
 		e.DescriptorPath != want.DescriptorPath {
 		t.Errorf("entry round trip changed it:\n got %+v\nwant %+v", e, want)
 	}
-	if e.Resources["api"].Value != 4201 || e.Resources["api"].Type != "port" {
-		t.Errorf("resources round trip = %+v", e.Resources)
+	if v, ok := e.Resources["api"].Value.(int); !ok || v != 4201 {
+		t.Errorf("port resource round trip = %#v, want int 4201", e.Resources["api"].Value)
 	}
 	if e.Resources["compose"].Value != "compose-app-brisk-otter-1" {
 		t.Errorf("compose resource round trip = %+v", e.Resources["compose"])
@@ -71,51 +64,313 @@ func TestRegistryRoundTrip(t *testing.T) {
 	if e.Secrets["admin_password"] != "hunter2" {
 		t.Errorf("secrets round trip = %+v", e.Secrets)
 	}
-	if got.SchemaVersion != SchemaVersion || e.SchemaVersion != SchemaVersion {
-		t.Errorf("schema_version = file %d entry %d, want %d", got.SchemaVersion, e.SchemaVersion, SchemaVersion)
-	}
-
-	raw, err := os.ReadFile(filepath.Join(root, RegistryFileName))
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(raw)
-	if !strings.Contains(text, `"schema_version": 1`) {
-		t.Errorf("registry lacks its schema_version envelope:\n%s", text)
-	}
-	if !strings.Contains(text, "admin_password") {
-		t.Errorf("registry lost the secrets field:\n%s", text)
+	if got.SchemaVersion != SchemaVersion {
+		t.Errorf("schema_version = %d, want %d", got.SchemaVersion, SchemaVersion)
 	}
 }
 
-// TestReadRegistryListReadsNewerSchema: a registry written by a newer schema
-// version is read well enough to list — the lenient read decodes it and
-// reports the file's own version — while the strict read refuses.
-func TestReadRegistryListReadsNewerSchema(t *testing.T) {
-	root := filepath.Join(tempRoot(t), "wt")
-	st, err := Open(root)
+// TestGetEntry: one row by app and slug, with the not-found outcome
+// distinct from an error.
+func TestGetEntry(t *testing.T) {
+	st, err := Open(tempRoot(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	newer := `{"schema_version":2,"entries":[{"app":"future-app","slug":"x","slot":1,"owner":"1","owner_kind":"host","state":"active","created_at":"2026-01-01T00:00:00Z","last_seen":"2026-01-01T00:00:00Z"}]}`
-	if err := st.WriteFile(RegistryFileName, []byte(newer)); err != nil {
+	if e, ok, err := st.GetEntry("compose-app", "brisk-otter"); err != nil || ok || e != nil {
+		t.Errorf("GetEntry of a missing entry = (%v, %v, %v), want (nil, false, nil)", e, ok, err)
+	}
+	want := testEntry()
+	if err := st.UpsertEntry(want); err != nil {
+		t.Fatal(err)
+	}
+	e, ok, err := st.GetEntry("compose-app", "brisk-otter")
+	if err != nil || !ok {
+		t.Fatalf("GetEntry = (%v, %v, %v)", e, ok, err)
+	}
+	if e.Slot != 1 || e.State != StateActive {
+		t.Errorf("GetEntry = %+v", e)
+	}
+}
+
+// TestDuplicateSlotRefusedByDatabase is the R0 criterion that the
+// constraint carries its own weight: two entries with the same (app,
+// slot) inserted directly through the store — no coordinator, no mutex —
+// with the second refused by the database's UNIQUE (app, slot) index.
+func TestDuplicateSlotRefusedByDatabase(t *testing.T) {
+	st, err := Open(tempRoot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := testEntry()
+	if err := st.UpsertEntry(first); err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	second := testEntry()
+	second.Slug = "another-slug" // same app, same slot, different key
+	if err := st.UpsertEntry(second); err == nil {
+		t.Fatal("upserting a second entry with the same (app, slot) succeeded; the database must refuse it")
+	} else if !strings.Contains(err.Error(), "UNIQUE constraint failed: entries.app, entries.slot") {
+		t.Errorf("refusal = %v, want the database's UNIQUE (app, slot) constraint to be named", err)
+	}
+	// The first entry is untouched.
+	got, err := st.ReadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Entries) != 1 || got.Entries[0].Slug != "brisk-otter" {
+		t.Errorf("registry after the refused upsert = %+v, want only the first entry", got.Entries)
+	}
+}
+
+// TestEntryLifecycle: the state transition and last-seen move, and the
+// entry drop, all through the row-level mutations.
+func TestEntryLifecycle(t *testing.T) {
+	st, err := Open(tempRoot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertEntry(testEntry()); err != nil {
+		t.Fatal(err)
+	}
+	seen := time.Date(2026, 8, 13, 9, 0, 0, 0, time.UTC)
+	if err := st.UpdateEntryState("compose-app", "brisk-otter", StateTearingDown, "teardown left the compose project behind"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.TouchEntry("compose-app", "brisk-otter", seen); err != nil {
+		t.Fatal(err)
+	}
+	e, ok, err := st.GetEntry("compose-app", "brisk-otter")
+	if err != nil || !ok {
+		t.Fatalf("GetEntry = (%v, %v, %v)", e, ok, err)
+	}
+	if e.State != StateTearingDown || !strings.Contains(e.TeardownNote, "compose project") {
+		t.Errorf("entry after the state update = %+v", e)
+	}
+	if e.LastSeen != "2026-08-13T09:00:00Z" {
+		t.Errorf("last_seen = %q, want the touched time in RFC3339Nano UTC", e.LastSeen)
+	}
+	if err := st.DeleteEntry("compose-app", "brisk-otter"); err != nil {
+		t.Fatal(err)
+	}
+	if e, ok, err := st.GetEntry("compose-app", "brisk-otter"); err != nil || ok {
+		t.Errorf("GetEntry after DeleteEntry = (%v, %v, %v), want gone", e, ok, err)
+	}
+}
+
+// TestWithTxRollsBack: a transaction whose function fails applies
+// nothing — the half-apply rail the coordinator leans on for teardown
+// state writes and reclamation.
+func TestWithTxRollsBack(t *testing.T) {
+	st, err := Open(tempRoot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	boom := errors.New("boom")
+	err = st.WithTx(func(tx *Tx) error {
+		if err := tx.UpsertEntry(testEntry()); err != nil {
+			return err
+		}
+		if err := tx.UpsertClient(ClientEntry{Identity: "4242", Kind: "host", LastSeen: "2026-08-13T09:00:00Z"}); err != nil {
+			return err
+		}
+		return boom
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("WithTx = %v, want the function's error", err)
+	}
+	reg, err := st.ReadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reg.Entries) != 0 {
+		t.Errorf("the rolled-back transaction left %d entries", len(reg.Entries))
+	}
+	clients, err := st.ReadClients()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(clients.Clients) != 0 {
+		t.Errorf("the rolled-back transaction left %d clients", len(clients.Clients))
+	}
+	// A committed transaction applies everything.
+	if err := st.WithTx(func(tx *Tx) error {
+		if err := tx.UpsertEntry(testEntry()); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reg, err = st.ReadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reg.Entries) != 1 {
+		t.Errorf("the committed transaction left %d entries, want 1", len(reg.Entries))
+	}
+}
+
+// TestBandsRoundTrip: app bands and host reservations survive an upsert
+// and a read, bases with their spans and reservations with their ports,
+// names and note.
+func TestBandsRoundTrip(t *testing.T) {
+	st, err := Open(tempRoot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertBand(Band{App: "compose-app", Bases: map[string]int{"api": 4200, "proxy": 4200}, Spans: map[string]int{"api": 64, "proxy": 64}}); err != nil {
+		t.Fatalf("UpsertBand: %v", err)
+	}
+	if err := st.AddReservation(Reservation{Ports: []int{5319, 5320}, Names: []string{"compose-app-prod"}, Note: "compose-app production stack"}); err != nil {
+		t.Fatalf("AddReservation: %v", err)
+	}
+	got, err := st.ReadBands()
+	if err != nil {
+		t.Fatalf("ReadBands: %v", err)
+	}
+	if len(got.Bands) != 1 || len(got.Reservations) != 1 {
+		t.Fatalf("bands round trip = %+v", got)
+	}
+	if got.Bands[0].App != "compose-app" || got.Bands[0].Bases["api"] != 4200 || got.Bands[0].Spans["proxy"] != 64 {
+		t.Errorf("band = %+v", got.Bands[0])
+	}
+	if got.Reservations[0].Ports[0] != 5319 || got.Reservations[0].Names[0] != "compose-app-prod" ||
+		got.Reservations[0].Note != "compose-app production stack" {
+		t.Errorf("reservation = %+v", got.Reservations[0])
+	}
+}
+
+// TestBandReRegistrationReplaces: one app, one band — a re-registration
+// with fewer resources drops the stale bases rather than leaving them
+// behind.
+func TestBandReRegistrationReplaces(t *testing.T) {
+	st, err := Open(tempRoot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	full := Band{App: "compose-app", Bases: map[string]int{"api": 4200, "proxy": 4300}, Spans: map[string]int{"api": 64, "proxy": 64}}
+	if err := st.UpsertBand(full); err != nil {
+		t.Fatal(err)
+	}
+	reduced := Band{App: "compose-app", Bases: map[string]int{"api": 4400}, Spans: map[string]int{"api": 64}}
+	if err := st.UpsertBand(reduced); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.ReadBands()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Bands) != 1 {
+		t.Fatalf("bands = %+v, want one band", got.Bands)
+	}
+	if len(got.Bands[0].Bases) != 1 || got.Bands[0].Bases["api"] != 4400 {
+		t.Errorf("re-registration left stale bases: %+v", got.Bands[0])
+	}
+}
+
+// TestClientsRoundTrip: the client table survives upserts and deletes.
+func TestClientsRoundTrip(t *testing.T) {
+	st, err := Open(tempRoot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := "2026-08-13T09:00:00.123456789Z"
+	host := ClientEntry{Identity: "4242", Kind: "host", LastSeen: now}
+	eph := ClientEntry{Identity: "s1a2b3", Kind: "ephemeral", LastSeen: now, Ephemeral: true}
+	if err := st.UpsertClient(host); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertClient(eph); err != nil {
+		t.Fatal(err)
+	}
+	// Reconnection updates the row in place, one row per (identity, kind).
+	if err := st.UpsertClient(ClientEntry{Identity: "4242", Kind: "host", LastSeen: "2026-08-13T10:00:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.ReadClients()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Clients) != 2 {
+		t.Fatalf("clients = %+v, want 2 rows", got.Clients)
+	}
+	for _, c := range got.Clients {
+		if c.Identity == "4242" && c.LastSeen != "2026-08-13T10:00:00Z" {
+			t.Errorf("host row was not updated in place: %+v", c)
+		}
+	}
+	if err := st.DeleteClient("s1a2b3", "ephemeral"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = st.ReadClients()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Clients) != 1 || got.Clients[0].Identity != "4242" {
+		t.Errorf("clients after DeleteClient = %+v", got.Clients)
+	}
+}
+
+// TestSpecsCacheRoundTrip: the per-app spec cache survives an upsert and
+// a delete, and a fresh store is an empty cache.
+func TestSpecsCacheRoundTrip(t *testing.T) {
+	st, err := Open(tempRoot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sp := spec.Spec{Version: 1, App: "compose-app"}
+	if err := st.UpsertSpec("compose-app", sp); err != nil {
+		t.Fatal(err)
+	}
+	f, err := st.ReadSpecs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := f.Specs["compose-app"]
+	if !ok || got.App != "compose-app" {
+		t.Errorf("cache = %+v", f.Specs)
+	}
+	if err := st.DeleteSpec("compose-app"); err != nil {
+		t.Fatal(err)
+	}
+	f, err = st.ReadSpecs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Specs) != 0 {
+		t.Errorf("cache after DeleteSpec = %+v, want empty", f.Specs)
+	}
+}
+
+// TestReadRegistryListReadsNewerSchema: a database written by a newer
+// schema is read well enough to list — the lenient read decodes it and
+// reports the database's own version — while the strict read refuses.
+func TestReadRegistryListReadsNewerSchema(t *testing.T) {
+	st, err := Open(tempRoot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertEntry(testEntry()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec("UPDATE meta SET value = '2' WHERE key = 'schema_version'"); err != nil {
 		t.Fatal(err)
 	}
 
-	// Lists: the lenient read decodes the entry and carries the file's
+	// Lists: the lenient read decodes the entry and carries the database's
 	// version, so the caller can see it is newer.
 	f, err := st.ReadRegistryList()
 	if err != nil {
 		t.Fatalf("ReadRegistryList: %v", err)
 	}
 	if f.SchemaVersion != 2 {
-		t.Errorf("listed registry schema_version = %d, want 2 (the file's own)", f.SchemaVersion)
+		t.Errorf("listed registry schema_version = %d, want 2 (the database's own)", f.SchemaVersion)
 	}
-	if len(f.Entries) != 1 || f.Entries[0].App != "future-app" || f.Entries[0].Slug != "x" {
-		t.Errorf("listed entries = %+v, want the future entry", f.Entries)
+	if len(f.Entries) != 1 || f.Entries[0].Slug != "brisk-otter" {
+		t.Errorf("listed entries = %+v, want the stored entry", f.Entries)
 	}
 
-	// Writes: the strict read refuses the newer file naming the upgrade.
+	// Writes: the strict read refuses the newer database naming the upgrade.
 	_, err = st.ReadRegistry()
 	var ve *VersionError
 	if !errors.As(err, &ve) {
@@ -126,150 +381,5 @@ func TestReadRegistryListReadsNewerSchema(t *testing.T) {
 	}
 	if !strings.Contains(ve.Error(), "upgrade wtd") {
 		t.Errorf("VersionError does not name the upgrade: %v", ve.Error())
-	}
-}
-
-// TestWriteRegistryRefusesNewerVersion: writing a registry whose own
-// schema_version claims a newer schema is refused at the write path — the
-// "does not write" half is structural, not a habit of the caller.
-func TestWriteRegistryRefusesNewerVersion(t *testing.T) {
-	root := filepath.Join(tempRoot(t), "wt")
-	st, err := Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f := RegistryFile{Versioned: Versioned{SchemaVersion: 2}}
-	err = st.WriteRegistry(f)
-	if err == nil {
-		t.Fatal("WriteRegistry of a schema-2 file succeeded, want a refusal")
-	}
-	var ve *VersionError
-	if !errors.As(err, &ve) || ve.File != 2 {
-		t.Errorf("WriteRegistry error = %v, want a VersionError for schema 2", err)
-	}
-}
-
-// TestReadRegistryListReportsUnparseable: an unparseable registry is
-// reported and never truncated and recreated — the file survives untouched
-// and both read paths name it.
-func TestReadRegistryListReportsUnparseable(t *testing.T) {
-	root := filepath.Join(tempRoot(t), "wt")
-	st, err := Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	garbage := []byte("{not json")
-	if err := st.WriteFile(RegistryFileName, garbage); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.ReadRegistryList(); err == nil {
-		t.Fatal("ReadRegistryList of an unparseable file succeeded")
-	}
-	raw, err := os.ReadFile(filepath.Join(root, RegistryFileName))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(raw) != string(garbage) {
-		t.Error("the unparseable registry was modified; it must be reported, never truncated and recreated")
-	}
-}
-
-// TestBandsRoundTrip: app bands and host reservations survive a write and a
-// read, with the schema_version envelope.
-func TestBandsRoundTrip(t *testing.T) {
-	root := filepath.Join(tempRoot(t), "wt")
-	st, err := Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f, err := st.ReadBands()
-	if err != nil {
-		t.Fatalf("ReadBands on an empty store: %v", err)
-	}
-	if len(f.Bands) != 0 || len(f.Reservations) != 0 {
-		t.Errorf("new store bands = %+v, want empty", f)
-	}
-	f.Bands = []Band{{App: "compose-app", Bases: map[string]int{"api": 4200, "proxy": 4200}}}
-	f.Reservations = []Reservation{{Ports: []int{5319, 5320}, Note: "compose-app production stack"}}
-	if err := st.WriteBands(f); err != nil {
-		t.Fatalf("WriteBands: %v", err)
-	}
-	got, err := st.ReadBands()
-	if err != nil {
-		t.Fatalf("ReadBands: %v", err)
-	}
-	if got.SchemaVersion != SchemaVersion || len(got.Bands) != 1 || len(got.Reservations) != 1 {
-		t.Fatalf("bands round trip = %+v", got)
-	}
-	if got.Bands[0].App != "compose-app" || got.Bands[0].Bases["api"] != 4200 || got.Bands[0].Bases["proxy"] != 4200 {
-		t.Errorf("band = %+v", got.Bands[0])
-	}
-	if got.Reservations[0].Ports[0] != 5319 || got.Reservations[0].Note != "compose-app production stack" {
-		t.Errorf("reservation = %+v", got.Reservations[0])
-	}
-	raw, err := os.ReadFile(filepath.Join(root, BandsFileName))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(raw), `"schema_version": 1`) {
-		t.Errorf("bands.json lacks its schema_version envelope:\n%s", raw)
-	}
-}
-
-// TestSpecsCacheRoundTrip: the per-app spec cache survives the atomic
-// write and the lenient load, and a missing file is an empty cache.
-func TestSpecsCacheRoundTrip(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "wt")
-	st, err := Open(root)
-	if err != nil {
-		t.Fatalf("opening the store: %v", err)
-	}
-	sp := spec.Spec{Version: 1, App: "compose-app"}
-	if err := st.WriteSpecs(SpecsFile{Specs: map[string]spec.Spec{"compose-app": sp}}); err != nil {
-		t.Fatalf("writing the cache: %v", err)
-	}
-	f, err := st.ReadSpecs()
-	if err != nil {
-		t.Fatalf("reading the cache: %v", err)
-	}
-	got, ok := f.Specs["compose-app"]
-	if !ok || got.App != "compose-app" {
-		t.Errorf("cache = %+v", f.Specs)
-	}
-	// A missing file is an empty cache.
-	empty, err := Open(filepath.Join(t.TempDir(), "wt"))
-	if err != nil {
-		t.Fatalf("opening an empty store: %v", err)
-	}
-	ef, err := empty.ReadSpecs()
-	if err != nil {
-		t.Fatalf("reading an empty cache: %v", err)
-	}
-	if len(ef.Specs) != 0 {
-		t.Errorf("empty cache = %+v, want none", ef.Specs)
-	}
-}
-
-// TestBandSpansRoundTrip: the ledger records each base's span — phase 6's
-// doctor reads it to detect overlap between two apps without either app's
-// spec.
-func TestBandSpansRoundTrip(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "wt")
-	st, err := Open(root)
-	if err != nil {
-		t.Fatalf("opening the store: %v", err)
-	}
-	if err := st.WriteBands(BandsFile{Bands: []Band{
-		{App: "compose-app", Bases: map[string]int{"api": 4200, "proxy": 4200},
-			Spans: map[string]int{"api": 64, "proxy": 64}},
-	}}); err != nil {
-		t.Fatalf("writing the ledger: %v", err)
-	}
-	f, err := st.ReadBands()
-	if err != nil {
-		t.Fatalf("reading the ledger: %v", err)
-	}
-	if len(f.Bands) != 1 || f.Bands[0].Spans["api"] != 64 {
-		t.Errorf("ledger = %+v", f.Bands)
 	}
 }
