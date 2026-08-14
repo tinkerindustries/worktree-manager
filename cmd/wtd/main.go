@@ -37,9 +37,17 @@ import (
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
 
-// version is the coordinator's release version (RELEASE.md owns the
-// versioning policy; this is the phase-2 value).
-const version = "0.2.0"
+// version and commit are the coordinator's release identity, printed by
+// `wtd --version` as "wtd <version> (<commit>)" and logged at startup.
+// dist/build.sh overrides both with -ldflags -X from the git
+// describe/rev-parse values that name the archive — the same version the
+// wt client is built with, because the two binaries ship together — and
+// the defaults are the fallback for a bare `go build ./cmd/wtd`
+// (RELEASE.md owns the versioning policy; this is the phase-2 value).
+var (
+	version = "0.2.0"
+	commit  = "unknown"
+)
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -52,12 +60,17 @@ func run(args []string) int {
 	allowRemote := fs.Bool("allow-remote", false, "allow a non-loopback bind address (--addr off loopback is refused without this)")
 	activate := fs.Bool("activate", false, "consume the listening socket systemd passed via LISTEN_FDS (the systemd unit passes this; mutually exclusive with --addr)")
 	containerToken := fs.String("container-token", "", "the token that admits container clients (WT_CLIENT_TOKEN); 16+ characters; absent, only host clients are accepted")
+	versionFlag := fs.Bool("version", false, "print the version and the commit, then exit")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
 	if fs.NArg() > 0 {
 		fmt.Fprintf(os.Stderr, "wtd: unexpected arguments: %v\n", fs.Args())
 		return 1
+	}
+	if *versionFlag {
+		fmt.Printf("wtd %s (%s)\n", version, commit)
+		return 0
 	}
 
 	// The address and the token are validated by the same function
