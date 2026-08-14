@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"strconv"
 )
 
@@ -144,6 +145,61 @@ func (s *Store) AddReservation(r Reservation) error {
 	}
 	return s.WithTx(func(tx *Tx) error {
 		ctx := context.Background()
+		res, err := tx.q.AddReservation(ctx, r.Note)
+		if err != nil {
+			return err
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			return err
+		}
+		for _, p := range r.Ports {
+			if err := tx.q.AddReservationPort(ctx, AddReservationPortParams{ReservationID: id, Port: int64(p)}); err != nil {
+				return err
+			}
+		}
+		for _, n := range r.Names {
+			if err := tx.q.AddReservationName(ctx, AddReservationNameParams{ReservationID: id, Name: n}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// ReplaceReservationByNote makes r the only reservation carrying its note:
+// any previous reservation with the same note, and its ports and names, are
+// removed first, all in one transaction.
+//
+// It exists for reservations a process re-asserts rather than a person
+// declares once — the coordinator registering its own listening port at
+// every start (see coord.ReserveOwnPort). Adding those with AddReservation
+// would accumulate one row per restart, and moving the coordinator to a new
+// --addr would leave the old port reserved forever with nothing holding it.
+//
+// The note is therefore an identity here, not just a label, which is why
+// this is a separate method: an operator's `wt bands reserve --host` note is
+// free text and must never silently replace another.
+func (s *Store) ReplaceReservationByNote(r Reservation) error {
+	if err := s.checkSchemaVersion(); err != nil {
+		return err
+	}
+	if r.Note == "" {
+		return errors.New("a reservation replaced by note needs a note; an empty note would match every unlabelled reservation")
+	}
+	return s.WithTx(func(tx *Tx) error {
+		ctx := context.Background()
+		// Ports and names first: they reference the reservation rows this
+		// then deletes, and the schema does not cascade.
+		if err := tx.q.DeleteReservationPortsByNote(ctx, r.Note); err != nil {
+			return err
+		}
+		if err := tx.q.DeleteReservationNamesByNote(ctx, r.Note); err != nil {
+			return err
+		}
+		if err := tx.q.DeleteReservationsByNote(ctx, r.Note); err != nil {
+			return err
+		}
 		res, err := tx.q.AddReservation(ctx, r.Note)
 		if err != nil {
 			return err

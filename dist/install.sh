@@ -13,31 +13,35 @@
 # Without --prefix the binaries go to $HOME/.local/bin and the
 # coordinator is registered with the real supervisor.
 #
-# The opt-in loopback TCP surface is configured with --tcp <addr> and
-# --tcp-token <token> (both together, loopback address, 16+ characters) —
-# for hosts where a socket cannot be shared into a container.
+# The coordinator listens on a loopback HTTP port. --addr overrides the
+# default; --container-token admits container clients (16+ characters).
+# The two are independent: a custom port needs no token, and a token needs
+# no custom port.
 set -eu
 
 usage() {
 	cat <<'EOF'
-usage: install.sh [--prefix <dir>] [--tcp <addr> --tcp-token <token>]
+usage: install.sh [--prefix <dir>] [--addr <addr>] [--container-token <tok>]
 
-  --prefix <dir>     install the binaries into <dir>/bin and write the
-                     supervisor registration under <dir> (self-contained;
-                     nothing is loaded). Default: $HOME/.local/bin with a
-                     real supervisor registration.
-  --tcp <addr>       also start the coordinator's opt-in loopback TCP
-                     listener at this address (requires --tcp-token).
-  --tcp-token <tok>  the token every TCP connection must present (at
-                     least 16 characters; WT_TCP_TOKEN also works).
-  -h, --help         this help.
+  --prefix <dir>          install the binaries into <dir>/bin and write the
+                          supervisor registration under <dir>
+                          (self-contained; nothing is loaded). Default:
+                          $HOME/.local/bin with a real supervisor
+                          registration.
+  --addr <addr>           the loopback address the coordinator listens on.
+                          Default: a free port, chosen at install time.
+  --container-token <tok> admit container clients with this token (at
+                          least 16 characters; WT_CONTAINER_TOKEN also
+                          works, which keeps it out of shell history).
+                          Absent, only host clients are admitted.
+  -h, --help              this help.
 EOF
 }
 
 PREFIX="${WT_PREFIX:-$HOME/.local}"
 REG_PREFIX=""
-TCP=""
-TCP_TOKEN="${WT_TCP_TOKEN:-}"
+ADDR=""
+CONTAINER_TOKEN="${WT_CONTAINER_TOKEN:-}"
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -47,14 +51,14 @@ while [ $# -gt 0 ]; do
 		REG_PREFIX="$2"
 		shift 2
 		;;
-	--tcp)
-		[ $# -ge 2 ] || { echo "install.sh: --tcp needs an argument" >&2; exit 2; }
-		TCP="$2"
+	--addr)
+		[ $# -ge 2 ] || { echo "install.sh: --addr needs an argument" >&2; exit 2; }
+		ADDR="$2"
 		shift 2
 		;;
-	--tcp-token)
-		[ $# -ge 2 ] || { echo "install.sh: --tcp-token needs an argument" >&2; exit 2; }
-		TCP_TOKEN="$2"
+	--container-token)
+		[ $# -ge 2 ] || { echo "install.sh: --container-token needs an argument" >&2; exit 2; }
+		CONTAINER_TOKEN="$2"
 		shift 2
 		;;
 	-h | --help)
@@ -79,11 +83,6 @@ for bin in wt wtd; do
 	fi
 done
 
-if [ -n "$TCP" ] && [ -z "$TCP_TOKEN" ]; then
-	echo "install.sh: --tcp requires --tcp-token: peer credentials do not exist on a TCP connection, so the listener is unauthenticated without one" >&2
-	exit 2
-fi
-
 BINDIR="$PREFIX/bin"
 mkdir -p "$BINDIR"
 cp "$SCRIPT_DIR/wt" "$SCRIPT_DIR/wtd" "$BINDIR/"
@@ -94,21 +93,28 @@ echo "installed wt and wtd into $BINDIR"
 # the installer drives `wt daemon install`, which owns the per-platform
 # registration (launchd on macOS, the systemd user unit on Linux, the
 # logon scheduled task on Windows). An explicit prefix directs the
-# registration at the same prefix, where it is inert data. The TCP
-# arguments are one word each by construction (a host:port address and a
+# registration at the same prefix, where it is inert data. The arguments
+# are one word each by construction (a host:port address and a
 # whitespace-free token — the validation `wt daemon install` runs), so the
 # unquoted expansion is safe under `set -u`.
-TCP_ARGS=""
-if [ -n "$TCP" ]; then
-	TCP_ARGS="--tcp $TCP --tcp-token $TCP_TOKEN"
+#
+# --addr and --container-token are passed independently: the coordinator
+# has a default address and admits containers only when a token is
+# configured, so neither implies the other.
+COORD_ARGS=""
+if [ -n "$ADDR" ]; then
+	COORD_ARGS="--addr $ADDR"
+fi
+if [ -n "$CONTAINER_TOKEN" ]; then
+	COORD_ARGS="$COORD_ARGS --container-token $CONTAINER_TOKEN"
 fi
 if [ -n "$REG_PREFIX" ]; then
-	"$BINDIR/wt" daemon install --prefix "$REG_PREFIX" --wtd "$BINDIR/wtd" $TCP_ARGS
+	"$BINDIR/wt" daemon install --prefix "$REG_PREFIX" --wtd "$BINDIR/wtd" $COORD_ARGS
 else
-	"$BINDIR/wt" daemon install --wtd "$BINDIR/wtd" $TCP_ARGS
+	"$BINDIR/wt" daemon install --wtd "$BINDIR/wtd" $COORD_ARGS
 fi
-if [ -n "$TCP" ] && [ -z "$REG_PREFIX" ]; then
-	echo "loopback TCP enabled on $TCP; a container client dials tcp://<host>:<port> with WT_CLIENT_TOKEN set"
+if [ -n "$CONTAINER_TOKEN" ] && [ -z "$REG_PREFIX" ]; then
+	echo "container clients admitted; a container sets WT_ENDPOINT to the address above and WT_CLIENT_TOKEN to the token"
 fi
 
 echo "verify with: wt daemon status"

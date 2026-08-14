@@ -83,6 +83,33 @@ func (q *Queries) DeleteEntry(ctx context.Context, arg DeleteEntryParams) error 
 	return err
 }
 
+const deleteReservationNamesByNote = `-- name: DeleteReservationNamesByNote :exec
+DELETE FROM reservation_names WHERE reservation_id IN (SELECT id FROM reservations WHERE note = ?)
+`
+
+func (q *Queries) DeleteReservationNamesByNote(ctx context.Context, note string) error {
+	_, err := q.db.ExecContext(ctx, deleteReservationNamesByNote, note)
+	return err
+}
+
+const deleteReservationPortsByNote = `-- name: DeleteReservationPortsByNote :exec
+DELETE FROM reservation_ports WHERE reservation_id IN (SELECT id FROM reservations WHERE note = ?)
+`
+
+func (q *Queries) DeleteReservationPortsByNote(ctx context.Context, note string) error {
+	_, err := q.db.ExecContext(ctx, deleteReservationPortsByNote, note)
+	return err
+}
+
+const deleteReservationsByNote = `-- name: DeleteReservationsByNote :exec
+DELETE FROM reservations WHERE note = ?
+`
+
+func (q *Queries) DeleteReservationsByNote(ctx context.Context, note string) error {
+	_, err := q.db.ExecContext(ctx, deleteReservationsByNote, note)
+	return err
+}
+
 const deleteSpec = `-- name: DeleteSpec :exec
 DELETE FROM specs WHERE app = ?
 `

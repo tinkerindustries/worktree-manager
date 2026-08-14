@@ -348,7 +348,7 @@ func TestWtdRefusesMisconfiguredListener(t *testing.T) {
 // TestDaemonInstallTCPWritesTokenIntoRegistration: `wt daemon install
 // --tcp/--tcp-token` under a prefix writes the registration carrying the
 // listener configuration, without ever echoing the token to the user.
-func TestDaemonInstallTCPWritesTokenIntoRegistration(t *testing.T) {
+func TestDaemonInstallWritesContainerTokenIntoRegistration(t *testing.T) {
 	prefix := t.TempDir()
 	// A stand-in wtd binary: the install only stats it.
 	wtd := filepath.Join(prefix, "wtd")
@@ -357,7 +357,7 @@ func TestDaemonInstallTCPWritesTokenIntoRegistration(t *testing.T) {
 	}
 
 	code, stdout, stderr := runCLI(t, "daemon", "install", "--prefix", prefix, "--wtd", wtd,
-		"--tcp", "127.0.0.1:7331", "--tcp-token", tcpTestToken)
+		"--addr", "127.0.0.1:7331", "--container-token", tcpTestToken)
 	if code != ExitOK {
 		t.Fatalf("daemon install exit = %d; stderr:\n%s", code, stderr)
 	}
@@ -418,4 +418,68 @@ func (b *syncBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
+}
+
+// TestDaemonInstallCustomAddrNeedsNoContainerToken is the R3 regression.
+// Before the validation split, the address and the token were checked as a
+// pair — a hangover from when the TCP listener was opt-in — so installing a
+// registration on a custom port without also inventing a container token
+// was impossible. That is the ordinary case for the second user on a
+// machine, whose coordinator cannot have the default port.
+func TestDaemonInstallCustomAddrNeedsNoContainerToken(t *testing.T) {
+	prefix := t.TempDir()
+	wtd := filepath.Join(prefix, "wtd")
+	if err := os.WriteFile(wtd, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("writing the stand-in wtd: %v", err)
+	}
+
+	code, stdout, stderr := runCLI(t, "daemon", "install", "--prefix", prefix, "--wtd", wtd,
+		"--addr", "127.0.0.1:9001")
+	if code != ExitOK {
+		t.Fatalf("daemon install --addr with no container token exit = %d; stderr:\n%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "127.0.0.1:9001") {
+		t.Errorf("the transcript must name the address it registered:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "not admitted") {
+		t.Errorf("the transcript must say containers are not admitted when no token was given:\n%s", stdout)
+	}
+
+	data, err := os.ReadFile(filepath.Join(prefix, registrationFilenameForThisPlatform()))
+	if err != nil {
+		t.Fatalf("reading the registration: %v", err)
+	}
+	if !strings.Contains(string(data), "127.0.0.1:9001") {
+		t.Errorf("the registration does not carry the address:\n%s", data)
+	}
+	if strings.Contains(string(data), "--container-token") {
+		t.Errorf("the registration carries --container-token though none was configured:\n%s", data)
+	}
+}
+
+// TestDaemonInstallPinsAFreePortWhenTheDefaultIsHeld: with no --addr the
+// install probes and pins a concrete port, so a second user's registration
+// names a port their coordinator can actually take, and says so rather than
+// silently choosing.
+func TestDaemonInstallPinsAFreePortWhenTheDefaultIsHeld(t *testing.T) {
+	prefix := t.TempDir()
+	wtd := filepath.Join(prefix, "wtd")
+	if err := os.WriteFile(wtd, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("writing the stand-in wtd: %v", err)
+	}
+
+	code, stdout, stderr := runCLI(t, "daemon", "install", "--prefix", prefix, "--wtd", wtd)
+	if code != ExitOK {
+		t.Fatalf("daemon install exit = %d; stderr:\n%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "listening on:") {
+		t.Errorf("the transcript must always name the address it registered:\n%s", stdout)
+	}
+	data, err := os.ReadFile(filepath.Join(prefix, registrationFilenameForThisPlatform()))
+	if err != nil {
+		t.Fatalf("reading the registration: %v", err)
+	}
+	if !strings.Contains(string(data), "--addr") {
+		t.Errorf("the registration must pin a concrete address rather than leaving it to the default:\n%s", data)
+	}
 }
