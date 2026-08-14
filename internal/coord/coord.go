@@ -352,28 +352,20 @@ func tcpAuthRefusal() *protocol.Error {
 	}
 }
 
-// observe records one connection in clients.json. Last-seen is the
+// observe records one connection in the client table. Last-seen is the
 // coordinator's own clock — a measured time, never something a client
-// wrote (ARCHITECTURE.md §10.2).
+// wrote (ARCHITECTURE.md §10.2). The upsert is the whole operation: a
+// returning client's row is refreshed in place, a new client's row is
+// inserted, in one statement.
 func (h *Handler) observe(id Identity) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	f, err := h.st.ReadClients()
-	if err != nil {
-		return err
-	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if c := findClient(f, id.Kind, id.Key); c != nil {
-		c.LastSeen = now
-	} else {
-		f.Clients = append(f.Clients, store.ClientEntry{
-			Identity:  id.Key,
-			Kind:      id.Kind,
-			LastSeen:  now,
-			Ephemeral: id.Ephemeral,
-		})
-	}
-	return h.st.WriteClients(f)
+	return h.st.UpsertClient(store.ClientEntry{
+		Identity:  id.Key,
+		Kind:      id.Kind,
+		LastSeen:  time.Now().UTC().Format(time.RFC3339Nano),
+		Ephemeral: id.Ephemeral,
+	})
 }
 
 // newSessionID issues the session id the coordinator gives an ephemeral

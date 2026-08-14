@@ -231,7 +231,7 @@ func (h *Handler) allocate(s *Session, req *protocol.Request) *protocol.Response
 	}
 
 	reg.Entries = append(reg.Entries, entry)
-	if err := h.st.WriteRegistry(reg); err != nil {
+	if err := h.st.UpsertEntry(entry); err != nil {
 		return h.storeErr("writing the registry", err)
 	}
 
@@ -505,24 +505,27 @@ func (h *Handler) activate(s *Session, req *protocol.Request) *protocol.Response
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	reg, err := h.st.ReadRegistry()
+	e, ok, err := h.st.GetEntry(ref.App, ref.Slug)
 	if err != nil {
 		return h.storeErr("reading the registry", err)
 	}
-	e := registryEntry(reg, ref.App, ref.Slug)
-	if e == nil {
+	if !ok {
 		return respErr(1, fmt.Sprintf("no registry entry for app %q slug %q", ref.App, ref.Slug),
 			"allocate the worktree first, then re-run")
 	}
 	if perr := h.checkOwner(s, e); perr != nil {
 		return &protocol.Response{Error: perr}
 	}
-	e.State = store.StateActive
-	e.LastSeen = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := h.st.WriteRegistry(reg); err != nil {
+	now := time.Now()
+	if err := h.st.WithTx(func(tx *store.Tx) error {
+		if err := tx.UpdateEntryState(e.App, e.Slug, store.StateActive, ""); err != nil {
+			return err
+		}
+		return tx.TouchEntry(e.App, e.Slug, now)
+	}); err != nil {
 		return h.storeErr("writing the registry", err)
 	}
-	return &protocol.Response{Result: mustJSON(protocol.ActivateResult{App: e.App, Slug: e.Slug, State: e.State})}
+	return &protocol.Response{Result: mustJSON(protocol.ActivateResult{App: e.App, Slug: e.Slug, State: store.StateActive})}
 }
 
 // release implements the release verb: drop the entry entirely — the
@@ -543,32 +546,24 @@ func (h *Handler) release(s *Session, req *protocol.Request) *protocol.Response 
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	reg, err := h.st.ReadRegistry()
+	e, ok, err := h.st.GetEntry(ref.App, ref.Slug)
 	if err != nil {
 		return h.storeErr("reading the registry", err)
 	}
-	idx := -1
-	for i := range reg.Entries {
-		if reg.Entries[i].App == ref.App && reg.Entries[i].Slug == ref.Slug {
-			idx = i
-			break
-		}
-	}
-	if idx == -1 {
+	if !ok {
 		return respErr(1, fmt.Sprintf("no registry entry for app %q slug %q", ref.App, ref.Slug),
 			"allocate the worktree first, then re-run")
 	}
-	if perr := h.checkOwner(s, &reg.Entries[idx]); perr != nil {
+	if perr := h.checkOwner(s, e); perr != nil {
 		return &protocol.Response{Error: perr}
 	}
-	if reg.Entries[idx].State == store.StateTearingDown {
+	if e.State == store.StateTearingDown {
 		return respErr(3,
 			fmt.Sprintf("entry %q is tearing-down with resources outstanding (%s); releasing it would orphan what survived",
-				ref.Slug, teardownNoteText(&reg.Entries[idx])),
+				ref.Slug, teardownNoteText(e)),
 			fmt.Sprintf("re-run the teardown: wt rm --slug %s (or wt reconcile), which retries the teardown and drops the entry when nothing survives", ref.Slug))
 	}
-	dropEntry(&reg, ref.App, ref.Slug)
-	if err := h.st.WriteRegistry(reg); err != nil {
+	if err := h.st.DeleteEntry(ref.App, ref.Slug); err != nil {
 		return h.storeErr("writing the registry", err)
 	}
 	return &protocol.Response{Result: mustJSON(protocol.ReleaseResult{App: ref.App, Slug: ref.Slug, Removed: true})}
@@ -599,21 +594,11 @@ func (h *Handler) AgeReserving(now time.Time, timeout time.Duration) (int, error
 }
 
 // storeErr turns a store failure into the wire error with the exit code and
-// remedy. An unparseable registry is reported, never truncated and
-// recreated (02-coordination.md §14).
-//
-// The 06-fleet.md §5 row "registry unparseable | rebuild from every
-// descriptor this view can see" is answered here, in phase 8, and the
-// answer is that the rebuild still cannot happen: the registry is the only
-// source of repository locations on the machine (doctorRepos states the
-// same bound), so a rebuild could only discover the descriptors of the one
-// repository the caller happens to stand in. Rebuilding from that one
-// repo's worktrees would silently drop every other repo's entries — and
-// the rebuild cannot know which entries were this view's, so every
-// descriptor-visible worktree would be re-registered under the caller's
-// ownership, stealing other clients' slots and resources. A7's "rebuilding
-// the registry from descriptors must always be safe" is exactly what that
-// would violate, so the refusal stands, naming the restore.
+// remedy. A store database written by a newer schema is refused naming the
+// upgrade. A database that cannot be opened at all never reaches a handler
+// — wtd refuses to start over it, because the registry is the only source
+// of repository locations on the machine and rebuild-from-descriptors
+// cannot be safe (the same bound doctorRepos states).
 func (h *Handler) storeErr(action string, err error) *protocol.Response {
 	var ve *store.VersionError
 	if errors.As(err, &ve) {
@@ -621,9 +606,6 @@ func (h *Handler) storeErr(action string, err error) *protocol.Response {
 	}
 	msg := fmt.Sprintf("%s: %v", action, err)
 	remedy := "check the coordinator's store (WT_HOME) is readable and writable, then re-run"
-	if strings.Contains(err.Error(), "not a readable store file") {
-		remedy = "restore the store file from a backup; an unparseable registry is never truncated and recreated — rebuilding it from descriptors is not possible, because the registry is the only source of repository locations and a rebuild from one repo's worktrees would silently drop every other repo's (and every other client's) entries"
-	}
 	return respErr(1, msg, remedy)
 }
 
@@ -640,20 +622,6 @@ func mustJSON(v any) json.RawMessage {
 		panic(fmt.Sprintf("coord: marshaling a response: %v", err))
 	}
 	return data
-}
-
-// dropEntry removes one entry from the registry and reports whether it was
-// there. Every caller has already looked the entry up, so the report is
-// what keeps a lookup that went stale from splicing at index -1 and taking
-// the coordinator down.
-func dropEntry(reg *store.RegistryFile, app, slug string) bool {
-	for i := range reg.Entries {
-		if reg.Entries[i].App == app && reg.Entries[i].Slug == slug {
-			reg.Entries = append(reg.Entries[:i], reg.Entries[i+1:]...)
-			return true
-		}
-	}
-	return false
 }
 
 // registryEntry finds one entry by app and slug.

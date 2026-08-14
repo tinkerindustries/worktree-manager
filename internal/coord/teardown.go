@@ -48,12 +48,11 @@ func (h *Handler) Teardown(s *Session, ref protocol.EntryRef, sp *spec.Spec, pur
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	reg, err := h.st.ReadRegistry()
+	e, ok, err := h.st.GetEntry(ref.App, ref.Slug)
 	if err != nil {
 		return h.storeErr("reading the registry", err)
 	}
-	e := registryEntry(reg, ref.App, ref.Slug)
-	if e == nil {
+	if !ok {
 		return respErr(1, fmt.Sprintf("no registry entry for app %q slug %q", ref.App, ref.Slug),
 			"allocate the worktree first, then re-run")
 	}
@@ -88,7 +87,7 @@ func (h *Handler) teardownEntry(s *Session, e *store.Entry, sp *spec.Spec, purge
 		return &protocol.Response{Error: cerr}
 	}
 
-	reg, err := h.st.ReadRegistry()
+	_, ok, err := h.st.GetEntry(app, slug)
 	if err != nil {
 		return h.storeErr("reading the registry", err)
 	}
@@ -99,11 +98,11 @@ func (h *Handler) teardownEntry(s *Session, e *store.Entry, sp *spec.Spec, purge
 		// naming the documented bypass, so the leftover is never silent
 		// (B4.3).
 		notes := h.keptMachineNotes(sp, e, keepFlags)
-		if !dropEntry(&reg, app, slug) {
+		if !ok {
 			return respErr(1, fmt.Sprintf("no registry entry for app %q slug %q", app, slug),
 				"the entry went away mid-teardown; re-run 'wt list' to see the current state")
 		}
-		if err := h.st.WriteRegistry(reg); err != nil {
+		if err := h.st.DeleteEntry(app, slug); err != nil {
 			return h.storeErr("writing the registry", err)
 		}
 		return &protocol.Response{Result: mustJSON(protocol.ReleaseResult{
@@ -113,13 +112,19 @@ func (h *Handler) teardownEntry(s *Session, e *store.Entry, sp *spec.Spec, purge
 
 	// Something survived: tearing-down is a resting state, the note lists
 	// exactly what survived, and the slot stays held (B2.3, ARCHITECTURE.md
-	// §11.2).
+	// §11.2). The state change, the note and the last-seen move land as one
+	// transaction — a tearing-down entry without its note would leave what
+	// survived unnamed.
 	note := teardownNote(rep)
-	seen := time.Now().UTC().Format(time.RFC3339Nano)
-	e.State, e.TeardownNote, e.LastSeen = store.StateTearingDown, note, seen
-	if fresh := registryEntry(reg, app, slug); fresh != nil {
-		fresh.State, fresh.TeardownNote, fresh.LastSeen = store.StateTearingDown, note, seen
-		if err := h.st.WriteRegistry(reg); err != nil {
+	seen := time.Now()
+	e.State, e.TeardownNote, e.LastSeen = store.StateTearingDown, note, seen.UTC().Format(time.RFC3339Nano)
+	if ok {
+		if err := h.st.WithTx(func(tx *store.Tx) error {
+			if err := tx.UpdateEntryState(app, slug, store.StateTearingDown, note); err != nil {
+				return err
+			}
+			return tx.TouchEntry(app, slug, seen)
+		}); err != nil {
 			return h.storeErr("writing the registry", err)
 		}
 	}

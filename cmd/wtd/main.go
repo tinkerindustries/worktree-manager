@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/coord"
@@ -83,6 +84,17 @@ func run(args []string) int {
 	if err != nil {
 		log.Error("opening the store", "err", err)
 		return 1
+	}
+
+	// The clean break: the four JSON files of phases 0–9 are never read,
+	// and a store that still carries registry.json gets exactly one warning
+	// naming it and saying it is no longer read — a log line, not a refusal,
+	// because silence would strand containers, ports and VMs that nothing
+	// will ever tear down (PLAN-SCOPE.md non-goal 1).
+	if _, serr := os.Stat(filepath.Join(root, store.RegistryFileName)); serr == nil {
+		log.Warn("registry.json is present but is no longer read: the store is now the SQLite database (wt.db). " +
+			"Anything recorded only in registry.json — containers, ports, VMs — will never be torn down; " +
+			"inspect it and release anything still running, then remove the file")
 	}
 
 	socketPath := *socket

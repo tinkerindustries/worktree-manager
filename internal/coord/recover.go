@@ -113,11 +113,17 @@ func (h *Handler) resolveReserving(match func(*store.Entry) bool, noSpecNote, lo
 			// projects or the purge refusal, so a teardown would be a partial
 			// honour of a destructive operation (plan.md §3). The entry moves
 			// to tearing-down with the note naming the command that supplies
-			// the spec; the slot stays held — never dropped blind.
+			// the spec; the slot stays held — never dropped blind. The state
+			// change, the note and the last-seen move land as one
+			// transaction.
 			target.State = store.StateTearingDown
 			target.TeardownNote = noSpecNote
-			target.LastSeen = time.Now().UTC().Format(time.RFC3339Nano)
-			if err := h.st.WriteRegistry(reg); err != nil {
+			if err := h.st.WithTx(func(tx *store.Tx) error {
+				if err := tx.UpdateEntryState(app, slug, store.StateTearingDown, noSpecNote); err != nil {
+					return err
+				}
+				return tx.TouchEntry(app, slug, time.Now())
+			}); err != nil {
 				return resolved, err
 			}
 			h.log.Info(logPrefix+": reserving entry moved to tearing-down (no spec found)",

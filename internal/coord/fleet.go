@@ -147,11 +147,12 @@ func (h *Handler) doctor(s *Session, req *protocol.Request) *protocol.Response {
 	reg, err := h.st.ReadRegistryList()
 	if err != nil {
 		// M6 §9: an unreadable registry still lets doctor run — the
-		// unreadability is its first finding.
+		// unreadability is its first finding. (A database that cannot be
+		// opened at all is refused at wtd startup, not here.)
 		findings = append(findings, protocol.DoctorFinding{
 			Level:   "error",
 			Message: fmt.Sprintf("the registry is not readable: %v", err),
-			Remedy:  "restore the store file from a backup; an unparseable registry is never truncated and recreated — rebuilding it from descriptors is not possible, because the registry is the only source of repository locations and a rebuild from one repo's worktrees would silently drop every other repo's (and every other client's) entries",
+			Remedy:  "restore the store database (wt.db) from a backup; an unreadable registry is never truncated and recreated — rebuilding it from descriptors is not possible, because the registry is the only source of repository locations and a rebuild from one repo's worktrees would silently drop every other repo's (and every other client's) entries",
 		})
 		return &protocol.Response{Result: mustJSON(protocol.DoctorResult{Findings: findings})}
 	}
@@ -610,12 +611,11 @@ func (h *Handler) reconcile(s *Session, req *protocol.Request) *protocol.Respons
 		if ref.App == "" {
 			ref.App = args.App
 		}
-		reg, err := h.st.ReadRegistry()
+		e, ok, err := h.st.GetEntry(ref.App, ref.Slug)
 		if err != nil {
 			return h.storeErr("reading the registry", err)
 		}
-		e := registryEntry(reg, ref.App, ref.Slug)
-		if e == nil {
+		if !ok {
 			out = append(out, protocol.ReconcileOutcome{App: ref.App, Slug: ref.Slug, Action: "not-found"})
 			continue
 		}
@@ -773,8 +773,11 @@ func (h *Handler) ReclaimEphemeral(now time.Time) (int, error) {
 		candidates = append(candidates, candidate{reg.Entries[i].App, reg.Entries[i].Slug})
 	}
 	for _, c := range candidates {
-		e := registryEntry(reg, c.app, c.slug)
-		if e == nil {
+		e, ok, err := h.st.GetEntry(c.app, c.slug)
+		if err != nil {
+			return reclaimed, err
+		}
+		if !ok {
 			continue // gone since the snapshot
 		}
 		if !e.Ephemeral || !clientAgedOut(clients, e.Owner, e.OwnerKind, now, interval) {
@@ -800,12 +803,12 @@ func (h *Handler) ReclaimEphemeral(now time.Time) (int, error) {
 		reclaimed++
 		h.log.Info("reclaimed an aged-out ephemeral client's entry",
 			"app", e.App, "slug", e.Slug, "owner", e.Owner)
-		// teardownEntry wrote the registry with this entry gone; reload so
-		// the next entry's handle is fresh.
-		reg, err = h.st.ReadRegistry()
-		if err != nil {
-			return reclaimed, err
-		}
+	}
+	// The registry is read fresh for the prune: the teardowns above wrote
+	// it, and the owners the prune checks must be current.
+	reg, err = h.st.ReadRegistry()
+	if err != nil {
+		return reclaimed, err
 	}
 	if err := h.pruneClients(clients, reg, now, interval); err != nil {
 		return reclaimed, err
@@ -827,23 +830,31 @@ func (h *Handler) pruneClients(clients store.ClientsFile, reg store.RegistryFile
 		owners[[2]string{e.OwnerKind, e.Owner}] = true
 	}
 	kept := clients.Clients[:0]
-	dropped := 0
+	var dropped []store.ClientEntry
 	for _, c := range clients.Clients {
 		if c.Ephemeral && !owners[[2]string{c.Kind, c.Identity}] &&
 			clientAgedOut(clients, c.Identity, c.Kind, now, interval) {
-			dropped++
+			dropped = append(dropped, c)
 			continue
 		}
 		kept = append(kept, c)
 	}
-	if dropped == 0 {
+	if len(dropped) == 0 {
 		return nil
 	}
-	clients.Clients = kept
-	if err := h.st.WriteClients(clients); err != nil {
+	// One transaction: the prune is a sequence of row deletions that must
+	// land together, exactly like the reclamation it follows.
+	if err := h.st.WithTx(func(tx *store.Tx) error {
+		for _, c := range dropped {
+			if err := tx.DeleteClient(c.Identity, c.Kind); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
 		return err
 	}
-	h.log.Info("pruned aged-out ephemeral client rows that own no entries", "dropped", dropped)
+	h.log.Info("pruned aged-out ephemeral client rows that own no entries", "dropped", len(dropped))
 	return nil
 }
 
@@ -873,16 +884,7 @@ func (h *Handler) specForEntry(e *store.Entry, cache store.SpecsFile) *spec.Spec
 // send the spec). Best-effort: a cache write failure is logged, never a
 // refusal.
 func (h *Handler) cacheSpec(app string, sp *spec.Spec) {
-	specs, err := h.st.ReadSpecs()
-	if err != nil {
-		h.log.Warn("reading the spec cache", "err", err)
-		return
-	}
-	if specs.Specs == nil {
-		specs.Specs = map[string]spec.Spec{}
-	}
-	specs.Specs[app] = *sp
-	if err := h.st.WriteSpecs(specs); err != nil {
+	if err := h.st.UpsertSpec(app, *sp); err != nil {
 		h.log.Warn("writing the spec cache", "err", err)
 	}
 }
