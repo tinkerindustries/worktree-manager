@@ -37,6 +37,13 @@ usage:
                                      hosts where a socket cannot be shared
                                      into a container — every TCP
                                      connection must present the token
+  wt daemon uninstall [--prefix <dir>]  the reverse: stop wtd, deregister
+      [--force] [--json]             it from the platform's supervisor and
+                                     remove the registration. The store is
+                                     never removed; uninstall refuses while
+                                     registry entries are still allocated,
+                                     naming 'wt list' and 'wt rm' — --force
+                                     is the only way past the refusal
   wt bands list [--json]             the port band ledger: the bases each
                                      app holds, and the host-global
                                      reservations no app may allocate from
@@ -100,6 +107,9 @@ usage:
                                      and never touches an unverifiable
                                      entry; --dry-run previews exactly
                                      what the real run does
+  wt --version                      print the version and the commit, then
+                                     exit (what an installer reports when
+                                     it replaces an older wt)
   wt help                            this help
 
 every verb offers --json: exactly one JSON object on stdout, nothing else.
@@ -126,6 +136,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usageText)
+		return ExitOK
+	case "--version", "-version":
+		fmt.Fprintf(stdout, "wt %s (%s)\n", version, commit)
 		return ExitOK
 	case "spec":
 		return runSpec(args[1:], stdout, stderr)
