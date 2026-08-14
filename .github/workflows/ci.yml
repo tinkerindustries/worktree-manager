@@ -136,9 +136,7 @@ jobs:
   windows:
     # Phase 8b: the parts a hosted windows-latest runner can actually
     # prove (plan.md §5, phase 8's exit criteria) — the build, the unit
-    # and in-process layers, the named pipe carrying a full request
-    # (internal/platform/pipe_windows_test.go,
-    # internal/coord/pipe_integration_test.go), the store ACL set and its
+    # and in-process layers, the store ACL set and its
     # refusal path (private_dir_windows_test.go), the task XML shape and
     # status parsing (task_windows_test.go), and long-path and
     # mapped-drive path realisation (realpath_windows_test.go). The
@@ -148,7 +146,8 @@ jobs:
     # provable on a runner and are reported not_run.
     #
     # Advisory, not gating. Windows is supported with a weaker reaper and
-    # permission model, and PLAN-SCOPE.md has it reported unmet rather than
+    # permission model (and, since the move to HTTP on loopback, the same
+    # transport as every other platform), and PLAN-SCOPE.md has it reported unmet rather than
     # simulated — no Windows machine has ever run this code. The job exists
     # so the failures are visible and countable; it does not fail the run,
     # because a permanently red required job would hide the Linux signal
@@ -178,8 +177,9 @@ jobs:
       # foreground — no supervisor — on a Linux runner with docker, the
       # only arrangement a hosted runner offers (phase 6). Gate 2 builds
       # the client binary and runs it inside a golang:1.26-alpine
-      # container with the coordinator's socket bind-mounted, so the
-      # runner's docker daemon must be able to share the workspace path
-      # (true on ubuntu-latest).
+      # container with --network host, reaching the coordinator's loopback
+      # address over WT_ENDPOINT. Only the client binary needs sharing
+      # into the container now, so the runner's docker daemon must still
+      # be able to share the workspace path (true on ubuntu-latest).
       - name: go test -tags acceptance
         run: go test -tags acceptance ./...

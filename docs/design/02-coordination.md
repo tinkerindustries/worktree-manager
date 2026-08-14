@@ -1,5 +1,14 @@
 # M2 — Coordination Core
 
+> **Superseded in part.** Everything this document says about the wire and
+> about storage was replaced by the HTTP + SQLite rearchitecture: the
+> newline-delimited-JSON-over-unix-socket protocol is now HTTP on a loopback
+> port, and the four JSON store files are now one SQLite database. Read
+> `docs/ARCHITECTURE.md` and the root `ARCHITECTURE.md` for what is true
+> now. The allocation model this document describes — slots, entry states,
+> the one-writer rule, reclamation — survives unchanged, and is why the
+> document is kept rather than deleted.
+
 **Status:** draft, swept for consistency 2026-08-11.
 **Owns:** A4, A5, A6, A7, A14, B1.4, B1.5, B8.1, B8.3, B10.1 (storage only), B12.3, C5, C9, and overview §5 and §6.1 to §6.3.
 **Depends on:** M1 for slug rules and view identity. M8 for filesystem behaviour.

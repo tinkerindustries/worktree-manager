@@ -8,8 +8,15 @@ between the onboarding skill and the binaries.
 
 The repository holds the implementation plan (`plan.md`), the frozen scope
 (`PLAN-SCOPE.md`), the target architecture (`docs/ARCHITECTURE.md`, the
-design of record) and the nine module designs under `docs/design/`. Those
-documents are inputs and are never edited.
+design of record) and the nine module designs under `docs/design/`.
+
+`plan.md` and `PLAN-SCOPE.md` are frozen for the duration of the work they
+describe and are never edited by a phase. `docs/design/*.md` describe the
+system as built in phases 0–9; the transport and store halves were
+superseded by the HTTP + SQLite rearchitecture, and every superseded
+document says so in its first paragraph. `docs/design/03-drivers.md`
+remains authoritative for the spec schema, which the rearchitecture did not
+touch.
 
 ## Build and test
 
@@ -20,11 +27,17 @@ go vet ./...
 gofmt -l cmd internal        # must print nothing
 staticcheck ./...            # CI gates on this too; must print nothing
 go test -tags acceptance ./...   # the live gates, from phase 6 in CI; needs docker
+go run ./cmd/wtgen               # regenerate the OpenAPI doc and the client; CI fails on drift
+go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate   # regenerate the store queries; CI fails on drift
 ```
 
 The module is `github.com/mrgeoffrich/worktree-manager` and requires
-Go 1.26. The one third-party dependency is the YAML package the spec needs;
-everything else is the standard library. Cross-compilation is
+Go 1.26. There are two runtime dependencies — the YAML package the spec
+needs and `modernc.org/sqlite`, which is pure Go precisely so that
+`CGO_ENABLED=0` cross-compilation keeps working. Everything else is the
+standard library. sqlc is a build-time tool invoked by version and is
+deliberately absent from `go.mod`, so it contributes nothing to the
+module graph. Cross-compilation is
 `CGO_ENABLED=0 GOOS=<os> GOARCH=<arch> go build ./...` for macOS, Linux and
 Windows, exercised by the workflow in `.github/workflows/ci.yml`.
 
@@ -78,13 +91,16 @@ configuration; neither binary branches on repo identity.
   `reconcile`, `clients` and `cleanup` (gated on gh: missing or
   unauthenticated gh cleans nothing and exits 4; the full rm safety
   checks apply even when the PR is merged; unverifiable entries are never
-  touched). Since phase 8b `daemon status` reports the systemd lingering
-  caveat on Linux, and `daemon install` registers with launchd, systemd
-  (with its paired socket unit) or the Task Scheduler per platform. Phase
-  9: `daemon install --tcp <addr> --tcp-token <token>` (both together,
-  loopback-only, 16+ characters) writes the opt-in loopback TCP listener
-  into the registration; a registration that carries the token is 0600 on
-  unix and the token is never echoed.
+  touched). `daemon status` reports the systemd lingering caveat on Linux,
+  and `daemon install` registers with launchd, systemd (with its paired
+  socket unit, which now carries a TCP `ListenStream`) or the Task
+  Scheduler per platform. `daemon install --addr <host:port>` and
+  `--container-token <token>` are independent settings — a custom address
+  needs no token and a token needs no custom address. With no `--addr` the
+  install probes for a free port, pins it into the registration and says
+  which, so a second user on one machine needs no manual step. A
+  registration carrying the token is 0600 on unix and the token is never
+  echoed.
 - `internal/identity` — M1: classification, root resolution, containment,
   slug validation, descriptor location, the guard engine, and the
   per-session classification cache (`WT_GUARD_CACHE`) the generated guard
@@ -110,12 +126,17 @@ configuration; neither binary branches on repo identity.
   directory per process), the hook shell (`sh -c` on every platform,
   resolved from Git for Windows on Windows and refused by name where no
   POSIX shell exists, because hook commands are shell commands), the
-  socket path, the
-  named-pipe transport on Windows (owner-only ACL, pipe_windows.go), peer
-  credentials (the pipe's ACL is the whole of host identity on Windows),
+  listen-address and container-token rails (`ValidateListenAddr`,
+  `ValidateContainerToken` and the `ValidateCoordinatorConfig` that both
+  `wtd` and `wt daemon install` run, so the two cannot disagree about what
+  a valid configuration is), the free-port probe that pins an address into
+  a registration (`ChooseRegistrationAddr`, over the same `ProbeBind` the
+  port driver uses),
   the private store-dir permission model (0700 on unix; the current-user
   ACL, with the refusal to hold credentials where it cannot be set, on
-  Windows), the atomic-write helper (the directory-fsync step is unix-only
+  Windows), the file-mode helpers the store and the endpoint file share
+  (`WithPrivateUmask`, `VerifyPrivateFileModes`; unix-only), the
+  atomic-write helper (the directory-fsync step is unix-only
   and stated), the supervisor seam (launchd on macOS, the systemd user
   unit with its paired .socket unit and LISTEN_FDS socket activation on
   Linux, the logon scheduled task on Windows), and the machine runner seam
@@ -132,13 +153,39 @@ configuration; neither binary branches on repo identity.
   writes.
 - `internal/generate` — the generated Go descriptor reader, stdlib-only
   and gofmt-clean by construction.
-- `internal/protocol` — the wire between the two binaries: message types,
-  newline-delimited JSON framing, version negotiation.
-- `internal/store` — the coordinator's state directory: `WT_HOME`/`$HOME/.wt`
-  resolution, atomic writes, the `schema_version` envelope, `clients.json`,
-  `registry.json`, `bands.json` (with per-base spans) and `specs.json`
-  (the per-app spec cache reclamation falls back to).
-- `internal/coord` — the coordinator's request core, socket server and the
+- `internal/api` — the HTTP surface both binaries share: the `*Args` and
+  `*Result` types, the single `Routes` table mapping verb to method and
+  path (frozen — client and server both derive from it, so a route added
+  in one place is added in both), and the `endpoint.json` reader/writer
+  with `DefaultAddr`. Every RPC is `POST /v1/<verb>`; the exceptions are
+  `GET /version`, the unversioned range report that replaced hello
+  negotiation, and `GET /v1/ping`.
+- `internal/api/client` — the generated client. One method per route, the
+  transport pinned to `Proxy: nil` so the bearer token can never reach an
+  `HTTP_PROXY`, and no retries ever. `internal/cli` makes no HTTP call
+  except through it.
+- `internal/apigen`, `cmd/wtgen` — the generator. It reads `api.Routes` and
+  the `*Args`/`*Result` types and emits `api/openapi.yaml` (OpenAPI 3.1)
+  and the client. Stdlib-only, no third-party codegen, gofmt-clean by
+  construction, output committed, and CI fails on drift. Adding a route
+  without regenerating fails a test.
+- `internal/store` — the coordinator's state, one SQLite database at
+  `<WT_HOME|$HOME/.wt>/wt.db` (WAL, `busy_timeout=5000`,
+  `foreign_keys=on`, `synchronous=FULL`; the database and its `-wal`/`-shm`
+  sidecars are all 0600, because entry secrets live in them). Whole-
+  collection reads (`ReadRegistry`, `ReadBands`, `ReadClients`,
+  `ReadSpecs`) and row-level mutations (`UpsertEntry`, `DeleteEntry`,
+  `UpdateEntryState`, `TouchEntry`, `UpsertBand`, `AddReservation`,
+  `ReplaceReservationByNote`, `UpsertClient`, `DeleteClient`, `UpsertSpec`)
+  plus `WithTx`. `UNIQUE (app, slot)` makes distinct-slot allocation a
+  database constraint rather than something the mutex must guarantee.
+  Queries are sqlc-generated from `schema.sql` and `query.sql`; sqlc is a
+  build-time tool run as
+  `go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate`, deliberately
+  **not** a `go.mod` tool directive, so the runtime dependency list stays
+  at two. `meta.schema_version` versions the database and a newer one is
+  refused.
+- `internal/coord` — the coordinator's request core, HTTP server and the
   in-process harness; one writer serialises here. The mutex covers the
   store, not the drivers: materialise, teardown, the reaper and the sweep
   release it and hold a per-`(app, slug)` claim instead (`claim.go`), so
@@ -173,9 +220,12 @@ configuration; neither binary branches on repo identity.
   keys in `list`, `clients list` and every error are a short hash;
   `bands.reserve` is host-client-only; `release` refuses a
   `tearing-down` entry).
-- `cmd/wt`, `cmd/wtd` — the two entry points. `wtd` takes `--tcp` and
-  `--tcp-token` (both together, loopback-only, 16+ characters) for the
-  opt-in loopback TCP listener.
+- `cmd/wt`, `cmd/wtd`, `cmd/wtgen` — the two entry points and the
+  generator. `wtd` takes `--addr` (default `127.0.0.1:7833`),
+  `--allow-remote` (required for a non-loopback bind), `--container-token`
+  (16+ characters; absent, only host clients are admitted) and
+  `--activate` (consume the systemd-passed listener). `cmd/wtgen` emits
+  `api/openapi.yaml` and `internal/api/client`.
 - `dist/` — the phase-9 distribution: `build.sh` (one archive per
   platform with both binaries plus the installer, run by the release
   workflow on every `v*` tag), `install.sh`/`install.ps1` (install into a
@@ -199,19 +249,34 @@ configuration; neither binary branches on repo identity.
 
 ## Environment
 
-The six variables are `WT_SOCKET`, `WT_HOME` (read by `wtd` alone),
-`WT_STANDALONE`, `WT_CLIENT_EPHEMERAL` (=1), `WT_CLIENT_TOKEN` (phase 6:
-the named-container token; setting it together with the ephemeral
-declaration is refused as ambiguous) and — phase 7's answer to the scope
-question — `WT_GUARD_CACHE`, the per-session classification cache
-directory the generated guard hook sets. Phase 9's scope question — a TCP
-endpoint — was answered without a seventh variable: `WT_SOCKET`'s
-`tcp://host:port` form dials the opt-in loopback TCP listener (the
-endpoint names the coordinator's location, the same §12.3 test as a
-socket path) and the token is the existing `WT_CLIENT_TOKEN`.
-`WT_TCP_TOKEN` is read by `install.sh`/`install.ps1` alone, never by a
-binary, as the operator's way to script `--tcp` without the token in
-shell history.
+The six variables are `WT_ENDPOINT` (the coordinator's base URL, e.g.
+`http://127.0.0.1:7833`), `WT_HOME`, `WT_STANDALONE`,
+`WT_CLIENT_EPHEMERAL` (=1), `WT_CLIENT_TOKEN` (the container token) and
+`WT_GUARD_CACHE`, the per-session classification cache directory the
+generated guard hook sets.
+
+`WT_HOME` is read by **both** binaries, which is the one change the HTTP
+rearchitecture made to this contract. The client reads only
+`endpoint.json` from it — the base URL and the host token, 0600 — while
+the database stays coordinator-private. A container is still never given
+the store: it gets `WT_ENDPOINT` and `WT_CLIENT_TOKEN` explicitly.
+
+A client resolves its endpoint as `WT_ENDPOINT`, then `endpoint.json`,
+then the compiled default. A missing endpoint file leaves the client on
+the default and then exit 5; a malformed one is an error naming the field,
+never a silent fallback.
+
+`WT_CLIENT_TOKEN` and `WT_CLIENT_EPHEMERAL=1` now compose rather than
+conflicting: the token is the admission credential and the ephemeral flag
+a lifecycle declaration. An ephemeral client presents the container token
+to `POST /v1/session` once and uses the issued session id as its bearer
+thereafter; that session id is a row in `clients`, so it survives a
+coordinator restart mid-`init`, and reclamation deleting the row is what
+revokes it.
+
+`WT_CONTAINER_TOKEN` is read by `install.sh`/`install.ps1` alone, never by
+a binary, as the operator's way to script `--container-token` without the
+token in shell history.
 
 ## Reading order
 

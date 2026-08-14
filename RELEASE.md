@@ -13,19 +13,20 @@ never applies the part it understands.
 
 | Version | What it versions | Lives in | Bumps when | Current |
 |---|---|---|---|---|
-| Protocol | the wire between `wt` and `wtd` | `internal/protocol` | a message's shape or meaning changes | 1 |
-| Registry schema | the shape of every file in the store | `internal/store` | a store file's shape changes | 1 |
+| API | the HTTP surface between `wt` and `wtd` | `internal/api` | a route or a payload's shape or meaning changes | 1 |
+| Store schema | the shape of the coordinator's database | `internal/store` | a table's shape changes | 1 |
 | Spec | the `wt.yaml` schema | `internal/spec` | a spec field changes | 1 |
 
-The protocol is carried on the wire as a **range** (`min_version`,
-`max_version`), not a single number, so a mismatch names the upgrade in
+The API version is carried two ways. The path carries the major (`/v1`),
+and `GET /version` — unversioned, so it always answers — reports the
+**range** the coordinator supports, so a mismatch names the upgrade in
 both directions: a client ahead of the coordinator and a coordinator ahead
-of the client each get a usable message. The agreed version is the highest
-common one. The negotiation runs on connect, before any request
-(`internal/protocol.Agree`; `Handler.Begin`).
+of the client each get a usable message rather than a bare 404. The client
+checks it before its first RPC. This replaced the hello negotiation the
+socket protocol used.
 
-The registry schema is carried by every store file's `schema_version`
-field. A file written by a newer schema is refused on read with the upgrade
+The store schema is carried by `meta.schema_version` in the database. A
+database written by a newer schema is refused on read with the upgrade
 named (`store.VersionError`); writing it back is never attempted. Migration
 is phase 3's work.
 
@@ -106,38 +107,44 @@ cd wt-<version>-<os>-<arch>
   registration is written under the same prefix without loading anything —
   the `wt daemon install --prefix` rail, which is also how a temp-prefix
   install is verified.
-- `--tcp <addr> --tcp-token <token>` additionally enables the opt-in
-  loopback TCP listener (see below). The token is a secret: it is never
-  echoed by the installer, the registration file that carries it is
-  written 0600 on unix, and it should be generated with a strong random
-  source and kept out of shell history (`WT_TCP_TOKEN` exists for that).
+- `--addr <host:port>` pins the address the coordinator listens on. With
+  no `--addr` the installer probes for a free port and pins that, saying
+  which — the second user on a machine cannot bind the first's port, and a
+  registration naming a port it can never take is a coordinator that never
+  starts.
+- `--container-token <token>` admits container clients. The two flags are
+  independent: a custom address needs no token, and a token needs no
+  custom address. The token is a secret — never echoed by the installer,
+  the registration that carries it is written 0600 on unix, and it should
+  be generated with a strong random source and kept out of shell history
+  (`WT_CONTAINER_TOKEN` exists for that).
 
-### Loopback TCP (opt-in)
+### Container clients
 
-A unix socket cannot be shared into a container on every host — Docker
-Desktop on macOS shares the workspace through virtiofs, which cannot carry
-a live socket, so a container client on a Mac cannot reach the coordinator
-over the socket at all. For those hosts the coordinator can additionally
-listen on loopback TCP, **off by default**: a coordinator that was not
-asked to listen on TCP does not.
+The coordinator listens on loopback HTTP, so a container reaches it over
+the network rather than through a shared file. This is simpler than the
+unix socket it replaced: Docker Desktop on macOS shares the workspace
+through virtiofs, which cannot carry a live socket, so a container client
+on a Mac could not reach the coordinator at all without an opt-in TCP
+surface. There is no longer anything to opt into.
 
-- Enable: `install.sh --tcp 127.0.0.1:<port> --tcp-token <token>`, or
-  `wt daemon install --tcp ... --tcp-token ...`, or run `wtd --tcp ...` in
-  the foreground. The address must be a literal loopback address (the
-  surface never reaches the LAN) and the token at least 16 characters.
-  Both flags together, or neither: a listener without a token is refused.
-- Connect: `WT_SOCKET=tcp://<host>:<port>` plus `WT_CLIENT_TOKEN=<token>`.
-  The token is the whole of identity on a TCP connection, because peer
-  credentials do not exist there; it is compared in constant time, and a
-  missing token and a wrong one get the same refusal. TCP accepts named
-  clients only: host identity needs peer credentials, and ephemeral
-  clients cannot authenticate over TCP — a disposable container configures
-  the token (named) instead. `WT_SOCKET`'s `tcp://` form names the
-  coordinator's location exactly as a socket path does, so the token path
-  over TCP is the same `WT_CLIENT_TOKEN` machinery the socket uses — one
-  identity path, not a second one.
-- In a container, dial the host's loopback: on Docker Desktop,
-  `tcp://host.docker.internal:<port>`.
+Containers remain opt-in at the *identity* layer: absent
+`--container-token`, the coordinator admits host clients only.
+
+- Enable: `install.sh --container-token <token>`,
+  `wt daemon install --container-token ...`, or run
+  `wtd --container-token ...` in the foreground. At least 16 characters,
+  and no whitespace — it is carried in unit files and command lines.
+- Connect: `WT_ENDPOINT=http://<host>:<port>` plus
+  `WT_CLIENT_TOKEN=<token>`. The token is the whole of a container's
+  identity; it is compared in constant time, and a missing token and a
+  wrong one get the same refusal so the surface is not an oracle.
+- A disposable container adds `WT_CLIENT_EPHEMERAL=1`. The two now
+  compose: the token admits it and the flag marks its entries
+  reclaimable. It calls `POST /v1/session` once and uses the issued
+  session id as its bearer thereafter.
+- In a container, reach the host's loopback: `--network host` on Linux, or
+  `http://host.docker.internal:<port>` on Docker Desktop.
 
 ## Rollback
 
@@ -154,8 +161,8 @@ versioning policy above.
    as a first install: the new registration overwrites the old unit
    (`wt daemon install` writes the plist / service+socket units / task XML
    in place) and starts the previous coordinator binary.
-3. **The store is not touched by a rollback.** `registry.json`,
-   `bands.json`, `clients.json` and `specs.json` keep their schema version;
+3. **The store is not touched by a rollback.** `wt.db` keeps its
+   `meta.schema_version`;
    if the rolled-back release understands them, nothing else is needed.
    If a release between the two bumped the registry schema, the old binary
    refuses with the upgrade named rather than half-reading the store — the
@@ -205,8 +212,8 @@ is the only boundary.
 
 | Piece | Location |
 |---|---|
-| Store | `WT_HOME`, else `$HOME/.wt` — read by `wtd` alone, never by a client |
-| Socket | macOS `~/Library/Application Support/wt/sock`; Linux `$XDG_RUNTIME_DIR/wt/sock`; Windows `\\.\pipe\wt`. `WT_SOCKET` overrides everywhere, and its `tcp://host:port` form dials the opt-in loopback TCP listener. The socket sits outside the store so a container mounts the socket alone. |
+| Store | `WT_HOME`, else `$HOME/.wt`. The database `wt.db` is coordinator-only; `endpoint.json` in the same directory is the one file a host client reads, which is why `WT_HOME` is now read by both binaries. |
+| Endpoint | `127.0.0.1:7833` by default, `--addr` to change it, and whatever `endpoint.json` records. `WT_ENDPOINT` overrides for a client. A container is given the endpoint and a token and mounts nothing. |
 | Supervisor registration | macOS `~/Library/LaunchAgents/com.mrgeoffrich.wtd.plist` (launchd LaunchAgent; `RunAtLoad` + `KeepAlive` — not socket activation, which needs the C-only `launch_activate_socket`). Linux `~/.config/systemd/user/com.mrgeoffrich.wtd.{service,socket}` (systemd user unit with socket activation; lingering caveat: `loginctl enable-linger <user>`). Windows `%LOCALAPPDATA%\wt\com.mrgeoffrich.wtd.xml` (logon scheduled task, registered via `schtasks`). |
 
 ## How a release is cut
@@ -229,8 +236,8 @@ is the only boundary.
    `taskkill`'s escalation against a real desktop process, and the
    coordinator's reachability of Docker Desktop and WSL2 from the logon
    task — run by hand on an interactive Windows desktop; a hosted runner
-   proves the build, the unit and in-process layers and the named pipe
-   instead (`.github/workflows/ci.yml`, the `windows` job), and
+   proves the build and the unit and in-process layers instead
+   (`.github/workflows/ci.yml`, the `windows` job), and
    everything unverified is reported `not_run` rather than assumed.
 7. A clean machine installs from the release artefacts, adopts a fixture
    repo and passes both acceptance gates by hand; until that run happens,

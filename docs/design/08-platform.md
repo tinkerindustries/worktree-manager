@@ -1,5 +1,14 @@
 # M8 — Platform
 
+> **Superseded in part.** The transport half of this document — the unix
+> socket, the Windows named pipe, peer credentials as host identity — was
+> replaced by the HTTP + SQLite rearchitecture. Host identity is now the
+> bearer token in a 0600 `endpoint.json`, which is weaker than a
+> kernel-verified uid and is stated as such in `docs/ARCHITECTURE.md`.
+> Everything else here — path realisation, case sensitivity, the hook
+> shell, the private-directory permission model, the supervisor and
+> machine-runner seams — is current.
+
 **Status:** draft, swept for consistency 2026-08-11.
 **Owns:** T15, and every operation whose behaviour depends on the operating system or the filesystem underneath it.
 **Depended on by:** M1, M2, M3, M4, M6.
