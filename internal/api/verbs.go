@@ -504,3 +504,12 @@ type ClientsListResult struct {
 type SessionResult struct {
 	SessionID string `json:"session_id"`
 }
+
+// PingResult is the GET /v1/ping response: the wire's one plumbing verb
+// answers with a fixed success object — a full request round trip with
+// nothing behind it. Phase R2 gives it a real type so the described API
+// can derive its schema like every other result, instead of the raw
+// literal the transport used to emit.
+type PingResult struct {
+	OK bool `json:"ok"`
+}

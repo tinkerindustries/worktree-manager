@@ -65,6 +65,51 @@ jobs:
           go install honnef.co/go/tools/cmd/staticcheck@latest
           "$(go env GOPATH)/bin/staticcheck" ./...
 
+  api-drift:
+    name: the described API is current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+      # Phase R2: api/openapi.yaml and internal/api/client/client.go are
+      # generated from the route table and the api types, never
+      # hand-maintained beside them. Regenerating on a clean tree must
+      # produce no diff; a route, type or doc comment changed without
+      # regenerating fails here (plan.md §5, phase R2 exit criteria).
+      - name: regenerate the OpenAPI document and the client
+        run: |
+          go run ./cmd/wtgen
+          if ! git diff --exit-code; then
+            echo "the API artefacts are stale: run 'go run ./cmd/wtgen' and commit the result" >&2
+            exit 1
+          fi
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "the regeneration produced or removed files: $(git status --porcelain)" >&2
+            exit 1
+          fi
+
+  sqlc-drift:
+    name: the store queries are current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+      # R0 deferred, due at R2: the sqlc output is committed and sqlc is
+      # a build-time tool pinned by version at the point of invocation —
+      # deliberately not a go.mod tool directive — so CI regenerates and
+      # diffs it (PLAN-SCOPE.md, "In scope"; sqlc.yaml's header).
+      - name: regenerate the store queries
+        run: |
+          go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate
+          if ! git diff --exit-code; then
+            echo "the sqlc output is stale: run 'go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate' and commit the result" >&2
+            exit 1
+          fi
+
   cross-build:
     name: build ${{ matrix.goos }}/${{ matrix.goarch }}
     runs-on: ubuntu-latest

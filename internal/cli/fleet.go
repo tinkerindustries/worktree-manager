@@ -9,7 +9,6 @@ package cli
 
 import (
 	"bytes"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -20,16 +19,19 @@ import (
 	"text/tabwriter"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/api"
+	apiclient "github.com/mrgeoffrich/worktree-manager/internal/api/client"
 )
 
 // runList implements `wt list [--json] [--wide]`: the whole registry
 // across every repo, with the stale / unverifiable / reclaimable / foreign
 // markers, secrets redacted unless --wide is given to the owning client.
 func runList(args []string, stdout, stderr io.Writer) int {
-	return coordVerb("list", args, stdout, stderr, "list",
-		func(fs *flag.FlagSet) func() any {
+	return coordVerb("list", args, stdout, stderr, api.VerbList,
+		func(fs *flag.FlagSet) func(*coordClient) (*api.ListResult, *apiclient.Error) {
 			wide := fs.Bool("wide", false, "show seed credentials (served to the owning client alone)")
-			return func() any { return &api.ListArgs{Wide: *wide} }
+			return func(sess *coordClient) (*api.ListResult, *apiclient.Error) {
+				return sess.client.List(&api.ListArgs{Wide: *wide})
+			}
 		}, writeListTable)
 }
 
@@ -71,7 +73,12 @@ func writeListTable(stdout, stderr io.Writer, res *api.ListResult) int {
 // diagnostics (stderr). Exit 0 when doctor ran, whatever it found —
 // findings are data, and a scheduled caller can branch on the JSON.
 func runDoctor(args []string, stdout, stderr io.Writer) int {
-	return coordVerb("doctor", args, stdout, stderr, "doctor", nil, writeDoctorReport)
+	return coordVerb("doctor", args, stdout, stderr, api.VerbDoctor,
+		func(*flag.FlagSet) func(*coordClient) (*api.DoctorResult, *apiclient.Error) {
+			return func(sess *coordClient) (*api.DoctorResult, *apiclient.Error) {
+				return sess.client.Doctor()
+			}
+		}, writeDoctorReport)
 }
 
 // writeDoctorReport prints the findings on stdout, each with the command
@@ -97,7 +104,12 @@ func writeDoctorReport(stdout, stderr io.Writer, res *api.DoctorResult) int {
 // kind, last seen, how many entries each owns, and which ephemeral clients
 // have aged out.
 func runClients(args []string, stdout, stderr io.Writer) int {
-	return coordVerb("clients", args, stdout, stderr, "clients.list", nil, writeClientsTable)
+	return coordVerb("clients", args, stdout, stderr, api.VerbClientsList,
+		func(*flag.FlagSet) func(*coordClient) (*api.ClientsListResult, *apiclient.Error) {
+			return func(sess *coordClient) (*api.ClientsListResult, *apiclient.Error) {
+				return sess.client.ClientsList()
+			}
+		}, writeClientsTable)
 }
 
 // writeClientsTable prints one line per known client.
@@ -176,15 +188,10 @@ func runReconcile(args []string, stdout, stderr io.Writer) int {
 	}
 	defer sess.Close()
 
-	raw, lerr := sess.request("list", &api.ListArgs{})
+	list, lerr := sess.client.List(&api.ListArgs{})
 	if lerr != nil {
-		WriteError(stderr, lerr)
+		WriteError(stderr, requestErr(sess.endpoint, api.VerbList, lerr))
 		return lerr.Code
-	}
-	var list api.ListResult
-	if err := json.Unmarshal(raw, &list); err != nil {
-		WriteError(stderr, New(ExitFailure, fmt.Sprintf("decoding the list response: %v", err), ""))
-		return ExitFailure
 	}
 
 	// The plan: one repair per eligible entry of this app. Eligibility is
@@ -262,15 +269,10 @@ func runReconcile(args []string, stdout, stderr io.Writer) int {
 			rows = append(rows, reconcileRow{Slug: p.slug, Action: "repaired", Detail: detail})
 		}
 		if len(coordinatorRefs) > 0 {
-			raw, rerr := sess.request("reconcile", &api.ReconcileArgs{App: sp.App, Spec: *sp, Refs: coordinatorRefs})
+			res, rerr := sess.client.Reconcile(&api.ReconcileArgs{App: sp.App, Spec: *sp, Refs: coordinatorRefs})
 			if rerr != nil {
-				WriteError(stderr, rerr)
+				WriteError(stderr, requestErr(sess.endpoint, api.VerbReconcile, rerr))
 				return rerr.Code
-			}
-			var res api.ReconcileResult
-			if err := json.Unmarshal(raw, &res); err != nil {
-				WriteError(stderr, New(ExitFailure, fmt.Sprintf("decoding the reconcile response: %v", err), ""))
-				return ExitFailure
 			}
 			for _, oc := range res.Outcomes {
 				rows = append(rows, reconcileRow{Slug: oc.Slug, Action: oc.Action, Detail: oc.Note})
