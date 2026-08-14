@@ -46,6 +46,15 @@ func (q *Queries) AddReservationPort(ctx context.Context, arg AddReservationPort
 	return err
 }
 
+const deleteBandApp = `-- name: DeleteBandApp :exec
+DELETE FROM bands WHERE app = ?
+`
+
+func (q *Queries) DeleteBandApp(ctx context.Context, app string) error {
+	_, err := q.db.ExecContext(ctx, deleteBandApp, app)
+	return err
+}
+
 const deleteClient = `-- name: DeleteClient :exec
 DELETE FROM clients WHERE identity = ? AND kind = ?
 `
@@ -334,16 +343,16 @@ const listSpecs = `-- name: ListSpecs :many
 SELECT app, spec FROM specs ORDER BY app
 `
 
-func (q *Queries) ListSpecs(ctx context.Context) ([]SpecRow, error) {
+func (q *Queries) ListSpecs(ctx context.Context) ([]Spec, error) {
 	rows, err := q.db.QueryContext(ctx, listSpecs)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []SpecRow{}
+	items := []Spec{}
 	for rows.Next() {
-		var i SpecRow
-		if err := rows.Scan(&i.App, &i.SpecRow); err != nil {
+		var i Spec
+		if err := rows.Scan(&i.App, &i.Spec); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -521,11 +530,11 @@ ON CONFLICT(app) DO UPDATE SET spec = excluded.spec
 `
 
 type UpsertSpecParams struct {
-	App     string
-	SpecRow string
+	App  string
+	Spec string
 }
 
 func (q *Queries) UpsertSpec(ctx context.Context, arg UpsertSpecParams) error {
-	_, err := q.db.ExecContext(ctx, upsertSpec, arg.App, arg.SpecRow)
+	_, err := q.db.ExecContext(ctx, upsertSpec, arg.App, arg.Spec)
 	return err
 }

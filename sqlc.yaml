@@ -11,12 +11,13 @@ overrides:
       # The model structs are named Row* so they cannot collide with the
       # public store types (Entry, Band, ClientEntry, ...) the wrappers
       # convert them to. Keys are the singular table names, the form sqlc
-      # applies the rename to.
+      # applies the rename to. The specs table is NOT renamed: its struct
+      # name would collide with its own spec column through the same key,
+      # and the plain `Spec` model collides with nothing here.
       entry: "EntryRow"
       band: "BandRow"
       reservation: "ReservationRow"
       client: "ClientRow"
-      spec: "SpecRow"
       reservation_port: "ReservationPortRow"
       reservation_name: "ReservationNameRow"
       meta: "MetaRow"

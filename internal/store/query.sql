@@ -62,6 +62,9 @@ SELECT app, resource, base, span FROM bands ORDER BY app, resource;
 INSERT INTO bands (app, resource, base, span) VALUES (?, ?, ?, ?)
 ON CONFLICT(app, resource) DO UPDATE SET base = excluded.base, span = excluded.span;
 
+-- name: DeleteBandApp :exec
+DELETE FROM bands WHERE app = ?;
+
 -- name: ListReservations :many
 SELECT id, note FROM reservations ORDER BY id;
 

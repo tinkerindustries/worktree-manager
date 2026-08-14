@@ -61,7 +61,7 @@ type ReservationRow struct {
 	Note string
 }
 
-type SpecRow struct {
-	App     string
-	SpecRow string
+type Spec struct {
+	App  string
+	Spec string
 }
