@@ -276,6 +276,8 @@ configuration; neither binary branches on repo identity.
 - `testdata/specs/` — invalid specs, one per required validation refusal.
 - `ARCHITECTURE.md` (root) — the as-built codemap; read it before touching
   package boundaries. `TESTING.md` — how the test layers work.
+  `RELEASE.md` — how a version is cut and installed, on a host and in a
+  container. `HOSTING.md` — why nothing here is deployed.
 
 ## Environment
 

@@ -937,6 +937,29 @@ changed:
 - Hooks never run in the coordinator. The semantics of hooks and emission
   land in phases 4 and 5; only the field set is frozen.
 
+## Two users on one machine (R12)
+
+The coordinator is per-user: one store (`WT_HOME`, else `~/.wt`), one band
+ledger, one registry, one listening port. Two developers on one host hold
+two of each, and neither coordinator can see the other's allocations — so
+both can hand out the same port, the same compose project name or the same
+state path. Nothing on the machine arbitrates between them; separate
+stores and home directories are the only boundary. Multi-user support is a
+named non-goal (PLAN-SCOPE.md), so this is documented rather than built.
+
+What follows from it:
+
+- `wt list` and `wt doctor` see only the calling user's registry, so
+  neither can tell you the other user is on a port. `wt ports scan` reads
+  every listener on the machine, which is the one place to look when a
+  port behaves as though it is held.
+- `wt bands reserve --host` is per-user too. Two developers sharing a
+  machine have to agree the reservations and each record them, or the
+  second user's allocations still land on the first user's ports.
+- The practical convention for a shared machine is to divide the port
+  space — one user's bands below an agreed boundary, the other's above —
+  with `wt bands reserve --base`.
+
 ## Gotchas
 
 - Unix socket paths are length-limited (104 bytes on macOS), so socket
