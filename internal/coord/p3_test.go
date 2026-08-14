@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -405,12 +404,29 @@ func TestReservedPortsNeverAllocated(t *testing.T) {
 // written by a newer schema version lists but does not write.
 func TestNewerRegistryListsButDoesNotWrite(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	newer := `{"schema_version":2,"entries":[{"app":"future-app","slug":"x","slot":1,"owner":"1","owner_kind":"host","state":"active","created_at":"2026-01-01T00:00:00Z","last_seen":"2026-01-01T00:00:00Z"}]}`
-	if err := h.Store.WriteFile(store.RegistryFileName, []byte(newer)); err != nil {
+	// The session and the band are set up first: against a newer-schema
+	// database every strict read and mutation is refused, so the setup
+	// itself would fail after the stamp.
+	sess, _ := h.Connect(protocol.KindHost, "")
+	sp := testSpec(t, "compose-app", 8)
+	registerBand(t, h, sess, sp, 4200)
+	// The future entry, written through the store as today's build would.
+	now := "2026-01-01T00:00:00Z"
+	if err := h.Store.UpsertEntry(store.Entry{
+		App: "future-app", Slug: "x", Slot: 1,
+		Owner: "1", OwnerKind: "host",
+		Path: "/tmp/future-app/x", PathVisible: true,
+		State:     store.StateActive,
+		Resources: map[string]spec.Resolved{},
+		CreatedAt: now, LastSeen: now,
+	}); err != nil {
 		t.Fatal(err)
 	}
+	// The database is stamped as written by a newer schema.
+	bumpSchemaVersion(t, h, 2)
 
-	// Lists: the lenient read decodes the future entry.
+	// Lists: the lenient read decodes the future entry and reports the
+	// database's own version.
 	f, err := h.Store.ReadRegistryList()
 	if err != nil {
 		t.Fatalf("ReadRegistryList: %v", err)
@@ -420,14 +436,11 @@ func TestNewerRegistryListsButDoesNotWrite(t *testing.T) {
 	}
 
 	// Does not write: a mutating call refuses, naming the upgrade.
-	sess, _ := h.Connect(protocol.KindHost, "")
-	sp := testSpec(t, "compose-app", 8)
-	registerBand(t, h, sess, sp, 4200)
 	resp := h.Request(context.Background(), sess, verbAllocate, &protocol.AllocateArgs{
 		Spec: *sp, Slug: "alpha", Path: "/tmp/wt/alpha",
 	})
 	if resp.Error == nil {
-		t.Fatal("allocation against a newer registry succeeded, want a refusal")
+		t.Fatal("allocation against a newer database succeeded, want a refusal")
 	}
 	if resp.Error.Code != 3 {
 		t.Errorf("refusal code = %d, want 3", resp.Error.Code)
@@ -436,13 +449,14 @@ func TestNewerRegistryListsButDoesNotWrite(t *testing.T) {
 		t.Errorf("refusal does not name the upgrade: %s", resp.Error.Msg)
 	}
 
-	// And the file on disk is untouched.
-	raw, err := os.ReadFile(filepath.Join(h.Store.Root(), store.RegistryFileName))
+	// And the database is untouched: it still reports the newer version and
+	// the entry it held.
+	after, err := h.Store.ReadRegistryList()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(raw) != newer {
-		t.Error("the newer registry was written back; it must list but never write")
+	if after.SchemaVersion != 2 || len(after.Entries) != 1 || after.Entries[0].App != "future-app" {
+		t.Error("the newer database was written back; it must list but never write")
 	}
 }
 
@@ -641,8 +655,15 @@ func TestPathVisibleIsTheCoordinatorStat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := reg.Entries[1]
-	if e.PathVisible || e.Path != filepath.Join(real, "inside-a-container") {
+	// The registry is read back sorted by (app, slug), so the container-only
+	// entry is found by slug, not by position.
+	var e *store.Entry
+	for i := range reg.Entries {
+		if reg.Entries[i].Slug == "container-only" {
+			e = &reg.Entries[i]
+		}
+	}
+	if e == nil || e.PathVisible || e.Path != filepath.Join(real, "inside-a-container") {
 		t.Errorf("container-only entry = %+v; the path is recorded but never checked", e)
 	}
 }
@@ -1042,8 +1063,8 @@ func TestAllocationEntryIsDenormalised(t *testing.T) {
 	}
 }
 
-// TestVersionedStoreFiles: bands.json carries the schema_version envelope
-// through the coordinator's writes.
+// TestVersionedStoreFiles: the whole-collection reads carry the database's
+// schema_version envelope through the coordinator's writes.
 func TestVersionedStoreFiles(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
 	sess, _ := h.Connect(protocol.KindHost, "")
@@ -1055,29 +1076,5 @@ func TestVersionedStoreFiles(t *testing.T) {
 	}
 	if bands.SchemaVersion != store.SchemaVersion {
 		t.Errorf("bands schema_version = %d, want %d", bands.SchemaVersion, store.SchemaVersion)
-	}
-}
-
-// TestStoreErrUnparseableRegistry: an unparseable registry is reported with
-// the never-truncate remedy, and the file survives.
-func TestStoreErrUnparseableRegistry(t *testing.T) {
-	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	if err := h.Store.WriteFile(store.RegistryFileName, []byte("{not json")); err != nil {
-		t.Fatal(err)
-	}
-	sess, _ := h.Connect(protocol.KindHost, "")
-	sp := testSpec(t, "compose-app", 8)
-	registerBand(t, h, sess, sp, 4200)
-	resp := h.Request(context.Background(), sess, verbAllocate, &protocol.AllocateArgs{
-		Spec: *sp, Slug: "alpha", Path: "/tmp/wt/alpha",
-	})
-	if resp.Error == nil {
-		t.Fatal("allocation over an unparseable registry succeeded")
-	}
-	if !strings.Contains(resp.Error.Remedy, "never truncated") {
-		t.Errorf("remedy does not state the never-truncate rule: %s", resp.Error.Remedy)
-	}
-	if _, err := os.Stat(filepath.Join(h.Store.Root(), store.RegistryFileName)); err != nil {
-		t.Errorf("the registry file vanished: %v", err)
 	}
 }

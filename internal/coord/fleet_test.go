@@ -10,11 +10,11 @@ package coord
 
 import (
 	"context"
-	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +27,7 @@ import (
 	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
+	_ "modernc.org/sqlite"
 )
 
 // fleetSpec is the allocation spec the fleet tests run against: a port and
@@ -80,16 +81,71 @@ func fleetHarness(t *testing.T) *Harness {
 }
 
 // fleetEntry writes one entry straight into the registry, bypassing
-// allocation, for the marker and doctor fixtures.
+// allocation, for the marker and doctor fixtures. The shared fixture
+// shape carries slot 1, and the database's UNIQUE (app, slot) index
+// enforces what the file store never did, so a colliding entry is moved
+// to the next free slot — fixture slot values are arbitrary.
 func fleetEntry(t *testing.T, h *Harness, e *store.Entry) {
 	t.Helper()
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	err := h.Store.UpsertEntry(*e)
+	if err == nil {
+		return
 	}
-	reg.Entries = append(reg.Entries, *e)
-	if err := h.Store.WriteRegistry(reg); err != nil {
+	if !strings.Contains(err.Error(), "UNIQUE constraint failed: entries.app, entries.slot") {
 		t.Fatalf("writing the registry: %v", err)
+	}
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("writing the registry: %v", rerr)
+	}
+	used := map[int]bool{}
+	for _, other := range reg.Entries {
+		if other.App == e.App {
+			used[other.Slot] = true
+		}
+	}
+	for used[e.Slot] {
+		e.Slot++
+	}
+	if err := h.Store.UpsertEntry(*e); err != nil {
+		t.Fatalf("writing the registry: %v", err)
+	}
+}
+
+// ageOutEphemeralClients backdates every ephemeral client's last-seen to
+// two reclamation intervals ago — the fixture that makes reclamation and
+// the reclaimable marker fire.
+func ageOutEphemeralClients(t *testing.T, h *Harness) {
+	t.Helper()
+	clients, err := h.Store.ReadClients()
+	if err != nil {
+		t.Fatalf("reading clients: %v", err)
+	}
+	for _, c := range clients.Clients {
+		if c.Kind != protocol.KindEphemeral {
+			continue
+		}
+		c.LastSeen = time.Now().UTC().Add(-2 * h.H.ReclaimInterval).Format(time.RFC3339Nano)
+		if err := h.Store.UpsertClient(c); err != nil {
+			t.Fatalf("writing clients: %v", err)
+		}
+	}
+}
+
+// bumpSchemaVersion stamps the harness's database meta.schema_version,
+// the database-world equivalent of writing a newer-schema registry file.
+// The DSN mirrors store.dsn; the connection is short-lived, so the
+// coordinator's own connection is unaffected.
+func bumpSchemaVersion(t *testing.T, h *Harness, v int) {
+	t.Helper()
+	path := filepath.Join(h.Store.Root(), store.DBFileName)
+	db, err := sql.Open("sqlite", "file:"+url.PathEscape(filepath.ToSlash(path))+"?_pragma=foreign_keys(1)")
+	if err != nil {
+		t.Fatalf("opening the store database for the version stamp: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("UPDATE meta SET value = ? WHERE key = 'schema_version'", v); err != nil {
+		t.Fatalf("stamping schema_version: %v", err)
 	}
 }
 
@@ -189,19 +245,7 @@ func TestListForeignAndReclaimableMarkers(t *testing.T) {
 	ephEntry.Owner, ephEntry.OwnerKind = eph.Identity.Key, protocol.KindEphemeral
 	ephEntry.Ephemeral = true
 	fleetEntry(t, h, ephEntry)
-	// Age the ephemeral client out: its last-seen becomes two intervals ago.
-	clients, err := h.Store.ReadClients()
-	if err != nil {
-		t.Fatalf("reading clients: %v", err)
-	}
-	for i := range clients.Clients {
-		if clients.Clients[i].Kind == protocol.KindEphemeral {
-			clients.Clients[i].LastSeen = time.Now().UTC().Add(-2 * h.H.ReclaimInterval).Format(time.RFC3339Nano)
-		}
-	}
-	if err := h.Store.WriteClients(clients); err != nil {
-		t.Fatalf("writing clients: %v", err)
-	}
+	ageOutEphemeralClients(t, h)
 
 	res := listEntries(t, h, host, false)
 	bySlug := map[string][]string{}
@@ -282,28 +326,18 @@ func TestClientsListShowsEntriesAndAgedOut(t *testing.T) {
 	if reply.Error != nil {
 		t.Fatalf("ephemeral hello refused: %+v", reply.Error)
 	}
-	// One entry each.
+	// One entry each — distinct slugs, since an entry is keyed (app, slug).
 	e1 := baseFleetEntry(tempRoot(t), true)
+	e1.Slug = "wt-host"
 	e1.Owner, e1.OwnerKind = host.Identity.Key, protocol.KindHost
 	fleetEntry(t, h, e1)
 	e2 := baseFleetEntry(filepath.Join("/container", "wt-eph"), false)
+	e2.Slug = "wt-eph"
 	e2.Owner, e2.OwnerKind = eph.Identity.Key, protocol.KindEphemeral
 	e2.Ephemeral = true
 	fleetEntry(t, h, e2)
 
-	// Age the ephemeral client out.
-	clients, err := h.Store.ReadClients()
-	if err != nil {
-		t.Fatalf("reading clients: %v", err)
-	}
-	for i := range clients.Clients {
-		if clients.Clients[i].Kind == protocol.KindEphemeral {
-			clients.Clients[i].LastSeen = time.Now().UTC().Add(-2 * h.H.ReclaimInterval).Format(time.RFC3339Nano)
-		}
-	}
-	if err := h.Store.WriteClients(clients); err != nil {
-		t.Fatalf("writing clients: %v", err)
-	}
+	ageOutEphemeralClients(t, h)
 
 	resp := h.Request(context.Background(), host, verbClients, nil)
 	if resp.Error != nil {
@@ -370,19 +404,7 @@ func TestReclaimEphemeralReclaimsAgedOutOnly(t *testing.T) {
 		t.Fatal("allocate did not record the spec in the cache")
 	}
 
-	// Age the ephemeral client out by two intervals.
-	clients, err := h.Store.ReadClients()
-	if err != nil {
-		t.Fatalf("reading clients: %v", err)
-	}
-	for i := range clients.Clients {
-		if clients.Clients[i].Kind == protocol.KindEphemeral {
-			clients.Clients[i].LastSeen = time.Now().UTC().Add(-2 * h.H.ReclaimInterval).Format(time.RFC3339Nano)
-		}
-	}
-	if err := h.Store.WriteClients(clients); err != nil {
-		t.Fatalf("writing clients: %v", err)
-	}
+	ageOutEphemeralClients(t, h)
 
 	reclaimed, err := h.H.ReclaimEphemeral(time.Now())
 	if err != nil {
@@ -410,7 +432,7 @@ func TestReclaimEphemeralReclaimsAgedOutOnly(t *testing.T) {
 	// The aged-out ephemeral client owns nothing now, so its row goes with
 	// its entries: an ephemeral identity is a fresh session id per
 	// connection, and the table would otherwise grow by a row per wt run.
-	clients, err = h.Store.ReadClients()
+	clients, err := h.Store.ReadClients()
 	if err != nil {
 		t.Fatalf("reading clients: %v", err)
 	}
@@ -439,28 +461,30 @@ func TestPruneKeepsAnEphemeralClientThatStillOwnsEntries(t *testing.T) {
 	}
 	// No spec cache entry and no visible path: reclamation skips the entry,
 	// so the client still owns it.
-	if err := h.Store.WriteSpecs(store.SpecsFile{}); err != nil {
+	if err := h.Store.DeleteSpec("fleet-app"); err != nil {
 		t.Fatalf("clearing the spec cache: %v", err)
 	}
 	reg, err := h.Store.ReadRegistry()
 	if err != nil {
 		t.Fatalf("reading the registry: %v", err)
 	}
-	for i := range reg.Entries {
-		reg.Entries[i].PathVisible = false
+	for _, e := range reg.Entries {
+		e.PathVisible = false
+		if err := h.Store.UpsertEntry(e); err != nil {
+			t.Fatalf("writing the registry: %v", err)
+		}
 	}
-	if err := h.Store.WriteRegistry(reg); err != nil {
-		t.Fatalf("writing the registry: %v", err)
-	}
+	// Age every client out: this fixture has only the ephemeral one, and
+	// the row must survive because its entry was skipped.
 	clients, err := h.Store.ReadClients()
 	if err != nil {
 		t.Fatalf("reading clients: %v", err)
 	}
-	for i := range clients.Clients {
-		clients.Clients[i].LastSeen = time.Now().UTC().Add(-2 * h.H.ReclaimInterval).Format(time.RFC3339Nano)
-	}
-	if err := h.Store.WriteClients(clients); err != nil {
-		t.Fatalf("writing clients: %v", err)
+	for _, c := range clients.Clients {
+		c.LastSeen = time.Now().UTC().Add(-2 * h.H.ReclaimInterval).Format(time.RFC3339Nano)
+		if err := h.Store.UpsertClient(c); err != nil {
+			t.Fatalf("writing clients: %v", err)
+		}
 	}
 
 	if _, err := h.H.ReclaimEphemeral(time.Now()); err != nil {
@@ -493,18 +517,7 @@ func TestReclaimEphemeralSkipsWithoutSpec(t *testing.T) {
 		Resources: map[string]spec.Resolved{"api": {Type: "port", Value: 7001}},
 		CreatedAt: now, LastSeen: now,
 	})
-	clients, err := h.Store.ReadClients()
-	if err != nil {
-		t.Fatalf("reading clients: %v", err)
-	}
-	for i := range clients.Clients {
-		if clients.Clients[i].Kind == protocol.KindEphemeral {
-			clients.Clients[i].LastSeen = time.Now().UTC().Add(-2 * h.H.ReclaimInterval).Format(time.RFC3339Nano)
-		}
-	}
-	if err := h.Store.WriteClients(clients); err != nil {
-		t.Fatalf("writing clients: %v", err)
-	}
+	ageOutEphemeralClients(t, h)
 	reclaimed, err := h.H.ReclaimEphemeral(time.Now())
 	if err != nil {
 		t.Fatalf("reclaiming: %v", err)
@@ -610,18 +623,7 @@ func TestReconcileEligibility(t *testing.T) {
 	if perr != nil {
 		t.Fatalf("allocation refused: %+v", perr)
 	}
-	clients, err := h.Store.ReadClients()
-	if err != nil {
-		t.Fatalf("reading clients: %v", err)
-	}
-	for i := range clients.Clients {
-		if clients.Clients[i].Kind == protocol.KindEphemeral {
-			clients.Clients[i].LastSeen = time.Now().UTC().Add(-2 * h.H.ReclaimInterval).Format(time.RFC3339Nano)
-		}
-	}
-	if err := h.Store.WriteClients(clients); err != nil {
-		t.Fatalf("writing clients: %v", err)
-	}
+	ageOutEphemeralClients(t, h)
 
 	resp := h.Request(ctx, owner, verbReconcile, &protocol.ReconcileArgs{
 		App: sp.App, Spec: *sp, Refs: []protocol.EntryRef{
@@ -653,13 +655,12 @@ func TestReconcileEligibility(t *testing.T) {
 
 	// Backdate the owner's reserving entry past its timeout: reconcile then
 	// rolls the allocation back.
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	e, ok, err := h.Store.GetEntry(sp.App, resOwn.Slug)
+	if err != nil || !ok {
+		t.Fatalf("reading the entry: %v (found %v)", err, ok)
 	}
-	e := registryEntry(reg, sp.App, resOwn.Slug)
 	e.CreatedAt = time.Now().UTC().Add(-2 * ReservingTimeout).Format(time.RFC3339Nano)
-	if err := h.Store.WriteRegistry(reg); err != nil {
+	if err := h.Store.UpsertEntry(*e); err != nil {
 		t.Fatalf("writing the registry: %v", err)
 	}
 	resp = h.Request(ctx, owner, verbReconcile, &protocol.ReconcileArgs{
@@ -674,7 +675,7 @@ func TestReconcileEligibility(t *testing.T) {
 	if len(out.Outcomes) != 1 || out.Outcomes[0].Action != "rolled-back" {
 		t.Errorf("backdated reserving outcome = %+v, want rolled-back", out.Outcomes)
 	}
-	reg, err = h.Store.ReadRegistry()
+	reg, err := h.Store.ReadRegistry()
 	if err != nil {
 		t.Fatalf("reading the registry: %v", err)
 	}
@@ -698,7 +699,7 @@ func TestDoctorWritesNothing(t *testing.T) {
 	// Something to find: delete the worktree directory.
 	os.RemoveAll(filepath.Join("/tmp/wt", "wt-1"))
 
-	snapshot := storeSnapshot(t, h.Store.Root())
+	before := storeState(t, h)
 	resp := h.Request(context.Background(), sess, verbDoctor, nil)
 	if resp.Error != nil {
 		t.Fatalf("doctor refused: %+v", resp.Error)
@@ -710,44 +711,39 @@ func TestDoctorWritesNothing(t *testing.T) {
 	if len(res.Findings) == 0 {
 		t.Fatal("doctor found nothing in a fixture that should produce findings")
 	}
-	after := storeSnapshot(t, h.Store.Root())
-	for path, h1 := range snapshot {
-		h2, ok := after[path]
-		if !ok {
-			t.Errorf("%s disappeared during doctor", path)
-			continue
-		}
-		if h1 != h2 {
-			t.Errorf("%s changed during doctor: doctor wrote", path)
-		}
-	}
-	if len(after) != len(snapshot) {
-		t.Errorf("doctor created store files")
+	after := storeState(t, h)
+	if before != after {
+		t.Errorf("doctor wrote: the registry, band ledger, client table or spec cache changed")
 	}
 }
 
-// storeSnapshot hashes every store file, keyed by path.
-func storeSnapshot(t *testing.T, root string) map[string][32]byte {
+// storeState renders the store's four collections for a comparison —
+// "doctor writes nothing" is asserted over what the collections contain,
+// not over the database files, because SQLite's WAL and SHM sidecars move
+// on reads. Every collection is read back in a deterministic order.
+func storeState(t *testing.T, h *Harness) string {
 	t.Helper()
-	out := map[string][32]byte{}
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		out[path] = sha256.Sum256(data)
-		return nil
-	})
+	reg, err := h.Store.ReadRegistry()
 	if err != nil {
-		t.Fatalf("snapshotting %s: %v", root, err)
+		t.Fatalf("reading the registry: %v", err)
 	}
-	return out
+	bands, err := h.Store.ReadBands()
+	if err != nil {
+		t.Fatalf("reading the band ledger: %v", err)
+	}
+	clients, err := h.Store.ReadClients()
+	if err != nil {
+		t.Fatalf("reading the client table: %v", err)
+	}
+	specs, err := h.Store.ReadSpecs()
+	if err != nil {
+		t.Fatalf("reading the spec cache: %v", err)
+	}
+	raw, err := json.Marshal([]any{reg, bands, clients, specs})
+	if err != nil {
+		t.Fatalf("rendering the store state: %v", err)
+	}
+	return string(raw)
 }
 
 // fleetGit runs one git command for the doctor fixtures.
@@ -1057,29 +1053,22 @@ func TestDoctorUnverifiableIsObservationNotFinding(t *testing.T) {
 	t.Errorf("no unverifiable observation: %s", findingsDump(res))
 }
 
-// TestDoctorReportsNewerRegistry: a registry written by a newer schema
-// version is listed, reported with the upgrade remedy, and never written
-// back.
+// TestDoctorReportsNewerRegistry: a database written by a newer schema
+// version is refused with the upgrade remedy — the schema version is one
+// database-wide value now, so every strict read (doctor's included)
+// refuses it, and nothing is written back.
 func TestDoctorReportsNewerRegistry(t *testing.T) {
 	h, sess, _, _, _ := doctorHarness(t)
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	bumpSchemaVersion(t, h, store.SchemaVersion+1)
+	resp := h.Request(context.Background(), sess, verbDoctor, nil)
+	if resp.Error == nil {
+		t.Fatal("doctor against a newer-schema database succeeded, want the upgrade refusal")
 	}
-	reg.SchemaVersion = store.SchemaVersion + 1
-	if err := h.Store.Save(store.RegistryFileName, &reg); err != nil {
-		t.Fatalf("writing a newer registry: %v", err)
+	if resp.Error.Code != 3 || !strings.Contains(resp.Error.Msg, "upgrade wtd") {
+		t.Errorf("doctor refusal = %+v, want code 3 naming the upgrade", resp.Error)
 	}
-	res := runDoctor(t, h, sess)
-	found := false
-	for _, f := range res.Findings {
-		if strings.Contains(f.Message, "schema version") && strings.Contains(f.Remedy, "upgrade wtd") {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("no newer-registry finding naming the upgrade: %s", findingsDump(res))
-	}
+	// Nothing was written back: the lenient read still reports the
+	// database's own newer version.
 	after, err := h.Store.ReadRegistryList()
 	if err != nil {
 		t.Fatalf("reading the registry: %v", err)
