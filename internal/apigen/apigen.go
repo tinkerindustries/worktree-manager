@@ -27,10 +27,12 @@ package apigen
 import (
 	"fmt"
 	"go/ast"
+	"go/build"
 	"go/doc"
 	"go/parser"
 	"go/token"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 
@@ -124,33 +126,56 @@ func loadDocs() (*docIndex, error) {
 		types:  map[string]string{},
 		fields: map[string]map[string]string{},
 	}
-	for _, p := range []struct{ dir, pkg string }{
-		{"internal/api", "api"},
-		{"internal/spec", "spec"},
+	for _, p := range []struct{ importPath, pkg string }{
+		{"github.com/mrgeoffrich/worktree-manager/internal/api", "api"},
+		{"github.com/mrgeoffrich/worktree-manager/internal/spec", "spec"},
 	} {
-		if err := idx.load(p.dir, p.pkg); err != nil {
+		dir, err := pkgDir(p.importPath)
+		if err != nil {
+			return nil, err
+		}
+		if err := idx.load(dir, p.pkg); err != nil {
 			return nil, err
 		}
 	}
 	return idx, nil
 }
 
+// pkgDir locates a package's source directory through go/build, so the
+// generator works from the repository root (cmd/wtgen, CI) and from
+// inside the generator's own package (the tests) alike.
+func pkgDir(importPath string) (string, error) {
+	pkg, err := build.Import(importPath, "", build.FindOnly)
+	if err != nil {
+		return "", fmt.Errorf("apigen: locating %s: %w", importPath, err)
+	}
+	return pkg.Dir, nil
+}
+
 func (idx *docIndex) load(dir, pkg string) error {
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, dir, func(fi os.FileInfo) bool {
-		return !strings.HasSuffix(fi.Name(), "_test.go")
-	}, parser.ParseComments)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return fmt.Errorf("apigen: parsing %s for doc comments: %w", dir, err)
+		return fmt.Errorf("apigen: reading %s for doc comments: %w", dir, err)
 	}
-	var astPkg *ast.Package
-	for _, p := range pkgs {
-		astPkg = p
+	var files []*ast.File
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, filepath.Join(dir, e.Name()), nil, parser.ParseComments)
+		if err != nil {
+			return fmt.Errorf("apigen: parsing %s: %w", filepath.Join(dir, e.Name()), err)
+		}
+		files = append(files, f)
 	}
-	if astPkg == nil {
-		return fmt.Errorf("apigen: no package found in %s", dir)
+	if len(files) == 0 {
+		return fmt.Errorf("apigen: no Go files found in %s", dir)
 	}
-	dpkg := doc.New(astPkg, pkg, 0)
+	dpkg, err := doc.NewFromFiles(fset, files, pkg)
+	if err != nil {
+		return fmt.Errorf("apigen: indexing %s doc comments: %w", dir, err)
+	}
 	for _, t := range dpkg.Types {
 		key := pkg + "." + t.Name
 		idx.types[key] = firstParagraph(t.Doc)
