@@ -22,9 +22,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/descriptor"
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 	_ "modernc.org/sqlite"
@@ -58,12 +58,12 @@ func fleetSpec(t *testing.T) *spec.Spec {
 // registerFleetBand registers an app's band through the handler.
 func registerFleetBand(t *testing.T, h *Harness, sp *spec.Spec, base int) {
 	t.Helper()
-	sess, reply := h.ConnectPeer(Peer{UID: 4242, Known: true}, protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	sess, err := h.ConnectPeer(4242, api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
 	resp := h.Request(context.Background(), sess, verbBandsReserve,
-		&protocol.ReserveBandArgs{Spec: *sp, Bases: map[string]int{"api": base}})
+		&api.ReserveBandArgs{Spec: *sp, Bases: map[string]int{"api": base}})
 	if resp.Error != nil {
 		t.Fatalf("bands.reserve refused: %+v", resp.Error)
 	}
@@ -117,12 +117,12 @@ func fleetEntry(t *testing.T, h *Harness, e *store.Entry) {
 // the reclaimable marker fire.
 func ageOutEphemeralClients(t *testing.T, h *Harness) {
 	t.Helper()
-	clients, err := h.Store.ReadClients()
-	if err != nil {
-		t.Fatalf("reading clients: %v", err)
+	clients, rerr := h.Store.ReadClients()
+	if rerr != nil {
+		t.Fatalf("reading clients: %v", rerr)
 	}
 	for _, c := range clients.Clients {
-		if c.Kind != protocol.KindEphemeral {
+		if c.Kind != api.KindEphemeral {
 			continue
 		}
 		c.LastSeen = time.Now().UTC().Add(-2 * h.H.ReclaimInterval).Format(time.RFC3339Nano)
@@ -158,20 +158,20 @@ func baseFleetEntry(path string, visible bool) *store.Entry {
 	}
 	return &store.Entry{
 		App: "fleet-app", Slug: "wt-1", Slot: 1,
-		Owner: "4242", OwnerKind: protocol.KindHost,
+		Owner: "4242", OwnerKind: api.KindHost,
 		Path: path, PathVisible: visible, State: store.StateActive,
 		Resources: resources, CreatedAt: now, LastSeen: now,
 	}
 }
 
 // listEntries runs the list verb and returns the decoded result.
-func listEntries(t *testing.T, h *Harness, sess *Session, wide bool) protocol.ListResult {
+func listEntries(t *testing.T, h *Harness, sess *Session, wide bool) api.ListResult {
 	t.Helper()
-	resp := h.Request(context.Background(), sess, verbList, &protocol.ListArgs{Wide: wide})
+	resp := h.Request(context.Background(), sess, verbList, &api.ListArgs{Wide: wide})
 	if resp.Error != nil {
 		t.Fatalf("list refused: %+v", resp.Error)
 	}
-	var res protocol.ListResult
+	var res api.ListResult
 	if err := json.Unmarshal(resp.Result, &res); err != nil {
 		t.Fatalf("decoding the list result: %v", err)
 	}
@@ -184,9 +184,9 @@ func listEntries(t *testing.T, h *Harness, sess *Session, wide bool) protocol.Li
 // never unverifiable.
 func TestListStaleAndUnverifiableStayDistinct(t *testing.T) {
 	h := fleetHarness(t)
-	sess, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	sess, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
 	gone := filepath.Join(tempRoot(t), "gone")
 	containerPath := filepath.Join("/container", "worktrees", "wt-2")
@@ -224,25 +224,25 @@ func TestListStaleAndUnverifiableStayDistinct(t *testing.T) {
 // interval is reclaimable.
 func TestListForeignAndReclaimableMarkers(t *testing.T) {
 	h := fleetHarness(t)
-	host, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	host, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
-	h.ConnectPeer(Peer{UID: 5000, Known: true}, protocol.KindHost, "")
+	h.ConnectPeer(5000, api.KindHost, "")
 
 	// The other host client's entry: foreign to the first host.
 	foreign := baseFleetEntry(tempRoot(t), true)
-	foreign.Owner, foreign.OwnerKind = "5000", protocol.KindHost
+	foreign.Owner, foreign.OwnerKind = "5000", api.KindHost
 	fleetEntry(t, h, foreign)
 
 	// An ephemeral client's entry, aged out: reclaimable (and foreign).
-	eph, reply := h.Connect(protocol.KindEphemeral, "")
-	if reply.Error != nil {
-		t.Fatalf("ephemeral hello refused: %+v", reply.Error)
+	eph, err := h.Connect(api.KindEphemeral, "")
+	if err != nil {
+		t.Fatalf("ephemeral hello refused: %+v", err)
 	}
 	ephEntry := baseFleetEntry(filepath.Join("/container", "wt-eph"), false)
 	ephEntry.Slug = "wt-eph"
-	ephEntry.Owner, ephEntry.OwnerKind = eph.Identity.Key, protocol.KindEphemeral
+	ephEntry.Owner, ephEntry.OwnerKind = eph.Identity.Key, api.KindEphemeral
 	ephEntry.Ephemeral = true
 	fleetEntry(t, h, ephEntry)
 	ageOutEphemeralClients(t, h)
@@ -276,13 +276,13 @@ func TestListForeignAndReclaimableMarkers(t *testing.T) {
 // read them.
 func TestListSecretsRedactedExceptOwnerWide(t *testing.T) {
 	h := fleetHarness(t)
-	owner, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	owner, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
-	other, reply := h.ConnectPeer(Peer{UID: 5000, Known: true}, protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("second hello refused: %+v", reply.Error)
+	other, err := h.ConnectPeer(5000, api.KindHost, "")
+	if err != nil {
+		t.Fatalf("second hello refused: %+v", err)
 	}
 	e := baseFleetEntry(tempRoot(t), true)
 	e.Secrets = map[string]string{"admin_password": "hunter2", "token": "s3cret"}
@@ -318,22 +318,22 @@ func TestListSecretsRedactedExceptOwnerWide(t *testing.T) {
 // out.
 func TestClientsListShowsEntriesAndAgedOut(t *testing.T) {
 	h := fleetHarness(t)
-	host, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	host, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
-	eph, reply := h.Connect(protocol.KindEphemeral, "")
-	if reply.Error != nil {
-		t.Fatalf("ephemeral hello refused: %+v", reply.Error)
+	eph, err := h.Connect(api.KindEphemeral, "")
+	if err != nil {
+		t.Fatalf("ephemeral hello refused: %+v", err)
 	}
 	// One entry each — distinct slugs, since an entry is keyed (app, slug).
 	e1 := baseFleetEntry(tempRoot(t), true)
 	e1.Slug = "wt-host"
-	e1.Owner, e1.OwnerKind = host.Identity.Key, protocol.KindHost
+	e1.Owner, e1.OwnerKind = host.Identity.Key, api.KindHost
 	fleetEntry(t, h, e1)
 	e2 := baseFleetEntry(filepath.Join("/container", "wt-eph"), false)
 	e2.Slug = "wt-eph"
-	e2.Owner, e2.OwnerKind = eph.Identity.Key, protocol.KindEphemeral
+	e2.Owner, e2.OwnerKind = eph.Identity.Key, api.KindEphemeral
 	e2.Ephemeral = true
 	fleetEntry(t, h, e2)
 
@@ -343,19 +343,19 @@ func TestClientsListShowsEntriesAndAgedOut(t *testing.T) {
 	if resp.Error != nil {
 		t.Fatalf("clients.list refused: %+v", resp.Error)
 	}
-	var res protocol.ClientsListResult
+	var res api.ClientsListResult
 	if err := json.Unmarshal(resp.Result, &res); err != nil {
 		t.Fatalf("decoding: %v", err)
 	}
 	if len(res.Clients) != 2 {
 		t.Fatalf("clients = %d, want 2", len(res.Clients))
 	}
-	var hostRow, ephRow *protocol.ClientInfo
+	var hostRow, ephRow *api.ClientInfo
 	for i := range res.Clients {
 		switch res.Clients[i].Kind {
-		case protocol.KindHost:
+		case api.KindHost:
 			hostRow = &res.Clients[i]
-		case protocol.KindEphemeral:
+		case api.KindEphemeral:
 			ephRow = &res.Clients[i]
 		}
 	}
@@ -374,13 +374,13 @@ func TestClientsListShowsEntriesAndAgedOut(t *testing.T) {
 func TestReclaimEphemeralReclaimsAgedOutOnly(t *testing.T) {
 	h := fleetHarness(t)
 	sp := fleetSpec(t)
-	host, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	host, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
-	eph, reply := h.Connect(protocol.KindEphemeral, "")
-	if reply.Error != nil {
-		t.Fatalf("ephemeral hello refused: %+v", reply.Error)
+	eph, err := h.Connect(api.KindEphemeral, "")
+	if err != nil {
+		t.Fatalf("ephemeral hello refused: %+v", err)
 	}
 
 	// Allocate through the verb, so the spec cache is written (the cache is
@@ -396,9 +396,9 @@ func TestReclaimEphemeralReclaimsAgedOutOnly(t *testing.T) {
 	}
 
 	// The spec cache was written by the allocations.
-	specs, err := h.Store.ReadSpecs()
-	if err != nil {
-		t.Fatalf("reading the spec cache: %v", err)
+	specs, rerr := h.Store.ReadSpecs()
+	if rerr != nil {
+		t.Fatalf("reading the spec cache: %v", rerr)
 	}
 	if _, ok := specs.Specs["fleet-app"]; !ok {
 		t.Fatal("allocate did not record the spec in the cache")
@@ -406,16 +406,16 @@ func TestReclaimEphemeralReclaimsAgedOutOnly(t *testing.T) {
 
 	ageOutEphemeralClients(t, h)
 
-	reclaimed, err := h.H.ReclaimEphemeral(time.Now())
-	if err != nil {
-		t.Fatalf("reclaiming: %v", err)
+	reclaimed, rerr := h.H.ReclaimEphemeral(time.Now())
+	if rerr != nil {
+		t.Fatalf("reclaiming: %v", rerr)
 	}
 	if reclaimed != 1 {
 		t.Errorf("reclaimed = %d, want the one aged-out ephemeral entry", reclaimed)
 	}
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	for _, e := range reg.Entries {
 		if e.Slug == ephSlug {
@@ -432,16 +432,16 @@ func TestReclaimEphemeralReclaimsAgedOutOnly(t *testing.T) {
 	// The aged-out ephemeral client owns nothing now, so its row goes with
 	// its entries: an ephemeral identity is a fresh session id per
 	// connection, and the table would otherwise grow by a row per wt run.
-	clients, err := h.Store.ReadClients()
-	if err != nil {
-		t.Fatalf("reading clients: %v", err)
+	clients, rerr := h.Store.ReadClients()
+	if rerr != nil {
+		t.Fatalf("reading clients: %v", rerr)
 	}
 	for _, c := range clients.Clients {
-		if c.Kind == protocol.KindEphemeral {
+		if c.Kind == api.KindEphemeral {
 			t.Errorf("the aged-out ephemeral client's row survived with no entries left: %+v", c)
 		}
 	}
-	if findClient(clients, protocol.KindHost, host.Identity.Key) == nil {
+	if findClient(clients, api.KindHost, host.Identity.Key) == nil {
 		t.Error("the host client's row was pruned; a stable identity is a client that will be back")
 	}
 }
@@ -452,9 +452,9 @@ func TestReclaimEphemeralReclaimsAgedOutOnly(t *testing.T) {
 func TestPruneKeepsAnEphemeralClientThatStillOwnsEntries(t *testing.T) {
 	h := fleetHarness(t)
 	sp := fleetSpec(t)
-	eph, reply := h.Connect(protocol.KindEphemeral, "")
-	if reply.Error != nil {
-		t.Fatalf("ephemeral hello refused: %+v", reply.Error)
+	eph, err := h.Connect(api.KindEphemeral, "")
+	if err != nil {
+		t.Fatalf("ephemeral hello refused: %+v", err)
 	}
 	if _, perr := allocate(t, h, eph, sp, "wt-eph"); perr != nil {
 		t.Fatalf("ephemeral allocation refused: %+v", perr)
@@ -464,9 +464,9 @@ func TestPruneKeepsAnEphemeralClientThatStillOwnsEntries(t *testing.T) {
 	if err := h.Store.DeleteSpec("fleet-app"); err != nil {
 		t.Fatalf("clearing the spec cache: %v", err)
 	}
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	for _, e := range reg.Entries {
 		e.PathVisible = false
@@ -476,9 +476,9 @@ func TestPruneKeepsAnEphemeralClientThatStillOwnsEntries(t *testing.T) {
 	}
 	// Age every client out: this fixture has only the ephemeral one, and
 	// the row must survive because its entry was skipped.
-	clients, err := h.Store.ReadClients()
-	if err != nil {
-		t.Fatalf("reading clients: %v", err)
+	clients, rerr := h.Store.ReadClients()
+	if rerr != nil {
+		t.Fatalf("reading clients: %v", rerr)
 	}
 	for _, c := range clients.Clients {
 		c.LastSeen = time.Now().UTC().Add(-2 * h.H.ReclaimInterval).Format(time.RFC3339Nano)
@@ -487,14 +487,14 @@ func TestPruneKeepsAnEphemeralClientThatStillOwnsEntries(t *testing.T) {
 		}
 	}
 
-	if _, err := h.H.ReclaimEphemeral(time.Now()); err != nil {
-		t.Fatalf("reclaiming: %v", err)
+	if _, rerr := h.H.ReclaimEphemeral(time.Now()); rerr != nil {
+		t.Fatalf("reclaiming: %v", rerr)
 	}
-	clients, err = h.Store.ReadClients()
-	if err != nil {
-		t.Fatalf("reading clients: %v", err)
+	clients, rerr = h.Store.ReadClients()
+	if rerr != nil {
+		t.Fatalf("reading clients: %v", rerr)
 	}
-	if findClient(clients, protocol.KindEphemeral, eph.Identity.Key) == nil {
+	if findClient(clients, api.KindEphemeral, eph.Identity.Key) == nil {
 		t.Error("the client row was pruned while it still owned an entry; the entry's owner is now unresolvable")
 	}
 }
@@ -504,30 +504,30 @@ func TestPruneKeepsAnEphemeralClientThatStillOwnsEntries(t *testing.T) {
 // stated, never torn down blind.
 func TestReclaimEphemeralSkipsWithoutSpec(t *testing.T) {
 	h := fleetHarness(t)
-	eph, reply := h.Connect(protocol.KindEphemeral, "")
-	if reply.Error != nil {
-		t.Fatalf("ephemeral hello refused: %+v", reply.Error)
+	eph, err := h.Connect(api.KindEphemeral, "")
+	if err != nil {
+		t.Fatalf("ephemeral hello refused: %+v", err)
 	}
 	// Write the entry directly, bypassing allocate, so no spec is cached.
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	fleetEntry(t, h, &store.Entry{
 		App: "fleet-app", Slug: "wt-orphan", Slot: 1,
-		Owner: eph.Identity.Key, OwnerKind: protocol.KindEphemeral, Ephemeral: true,
+		Owner: eph.Identity.Key, OwnerKind: api.KindEphemeral, Ephemeral: true,
 		Path: "/container/gone", PathVisible: false, State: store.StateActive,
 		Resources: map[string]spec.Resolved{"api": {Type: "port", Value: 7001}},
 		CreatedAt: now, LastSeen: now,
 	})
 	ageOutEphemeralClients(t, h)
-	reclaimed, err := h.H.ReclaimEphemeral(time.Now())
-	if err != nil {
-		t.Fatalf("reclaiming: %v", err)
+	reclaimed, rerr := h.H.ReclaimEphemeral(time.Now())
+	if rerr != nil {
+		t.Fatalf("reclaiming: %v", rerr)
 	}
 	if reclaimed != 0 {
 		t.Errorf("reclaimed = %d, want 0 (no spec: the skip is stated, not a blind teardown)", reclaimed)
 	}
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	if len(reg.Entries) != 1 {
 		t.Errorf("entries = %d, want the skipped orphan to stay", len(reg.Entries))
@@ -537,7 +537,7 @@ func TestReclaimEphemeralSkipsWithoutSpec(t *testing.T) {
 // activateEntry flips an allocated entry to active, as init's step 6 does.
 func activateEntry(t *testing.T, h *Harness, sess *Session, app, slug string) {
 	t.Helper()
-	resp := h.Request(context.Background(), sess, verbActivate, &protocol.EntryRef{App: app, Slug: slug})
+	resp := h.Request(context.Background(), sess, verbActivate, &api.EntryRef{App: app, Slug: slug})
 	if resp.Error != nil {
 		t.Fatalf("activate refused: %+v", resp.Error)
 	}
@@ -551,9 +551,9 @@ func TestReconcileTearsDownStaleEntryAndDropsIt(t *testing.T) {
 	stub := &stubDriver{}
 	h := fleetHarness(t)
 	h.H.InstallDrivers(driver.NewRegistry(stub))
-	sess, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	sess, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
 	sp := fleetSpec(t)
 	res, perr := allocate(t, h, sess, sp, "wt-1")
@@ -562,22 +562,22 @@ func TestReconcileTearsDownStaleEntryAndDropsIt(t *testing.T) {
 	}
 	activateEntry(t, h, sess, sp.App, res.Slug)
 
-	resp := h.Request(context.Background(), sess, verbReconcile, &protocol.ReconcileArgs{
-		App: sp.App, Spec: *sp, Refs: []protocol.EntryRef{{App: sp.App, Slug: res.Slug}},
+	resp := h.Request(context.Background(), sess, verbReconcile, &api.ReconcileArgs{
+		App: sp.App, Spec: *sp, Refs: []api.EntryRef{{App: sp.App, Slug: res.Slug}},
 	})
 	if resp.Error != nil {
 		t.Fatalf("reconcile refused: %+v", resp.Error)
 	}
-	var out protocol.ReconcileResult
+	var out api.ReconcileResult
 	if err := json.Unmarshal(resp.Result, &out); err != nil {
 		t.Fatalf("decoding: %v", err)
 	}
 	if len(out.Outcomes) != 1 || out.Outcomes[0].Action != "torn-down" {
 		t.Fatalf("outcomes = %+v, want one torn-down", out.Outcomes)
 	}
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	if registryEntry(reg, sp.App, res.Slug) != nil {
 		t.Error("the entry survived reconcile; the slot is not freed")
@@ -592,17 +592,17 @@ func TestReconcileEligibility(t *testing.T) {
 	h := fleetHarness(t)
 	h.H.InstallDrivers(driver.NewRegistry(stub))
 	sp := fleetSpec(t)
-	owner, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	owner, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
-	other, reply := h.ConnectPeer(Peer{UID: 5000, Known: true}, protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("second hello refused: %+v", reply.Error)
+	other, err := h.ConnectPeer(5000, api.KindHost, "")
+	if err != nil {
+		t.Fatalf("second hello refused: %+v", err)
 	}
-	eph, reply := h.Connect(protocol.KindEphemeral, "")
-	if reply.Error != nil {
-		t.Fatalf("ephemeral hello refused: %+v", reply.Error)
+	eph, err := h.Connect(api.KindEphemeral, "")
+	if err != nil {
+		t.Fatalf("ephemeral hello refused: %+v", err)
 	}
 	ctx := context.Background()
 
@@ -625,8 +625,8 @@ func TestReconcileEligibility(t *testing.T) {
 	}
 	ageOutEphemeralClients(t, h)
 
-	resp := h.Request(ctx, owner, verbReconcile, &protocol.ReconcileArgs{
-		App: sp.App, Spec: *sp, Refs: []protocol.EntryRef{
+	resp := h.Request(ctx, owner, verbReconcile, &api.ReconcileArgs{
+		App: sp.App, Spec: *sp, Refs: []api.EntryRef{
 			{App: sp.App, Slug: resForeign.Slug},
 			{App: sp.App, Slug: resEph.Slug},
 			{App: sp.App, Slug: resOwn.Slug},
@@ -635,11 +635,11 @@ func TestReconcileEligibility(t *testing.T) {
 	if resp.Error != nil {
 		t.Fatalf("reconcile refused: %+v", resp.Error)
 	}
-	var out protocol.ReconcileResult
+	var out api.ReconcileResult
 	if err := json.Unmarshal(resp.Result, &out); err != nil {
 		t.Fatalf("decoding: %v", err)
 	}
-	bySlug := map[string]protocol.ReconcileOutcome{}
+	bySlug := map[string]api.ReconcileOutcome{}
 	for _, oc := range out.Outcomes {
 		bySlug[oc.Slug] = oc
 	}
@@ -655,16 +655,16 @@ func TestReconcileEligibility(t *testing.T) {
 
 	// Backdate the owner's reserving entry past its timeout: reconcile then
 	// rolls the allocation back.
-	e, ok, err := h.Store.GetEntry(sp.App, resOwn.Slug)
-	if err != nil || !ok {
-		t.Fatalf("reading the entry: %v (found %v)", err, ok)
+	e, ok, rerr := h.Store.GetEntry(sp.App, resOwn.Slug)
+	if rerr != nil || !ok {
+		t.Fatalf("reading the entry: %v (found %v)", rerr, ok)
 	}
 	e.CreatedAt = time.Now().UTC().Add(-2 * ReservingTimeout).Format(time.RFC3339Nano)
 	if err := h.Store.UpsertEntry(*e); err != nil {
 		t.Fatalf("writing the registry: %v", err)
 	}
-	resp = h.Request(ctx, owner, verbReconcile, &protocol.ReconcileArgs{
-		App: sp.App, Spec: *sp, Refs: []protocol.EntryRef{{App: sp.App, Slug: resOwn.Slug}},
+	resp = h.Request(ctx, owner, verbReconcile, &api.ReconcileArgs{
+		App: sp.App, Spec: *sp, Refs: []api.EntryRef{{App: sp.App, Slug: resOwn.Slug}},
 	})
 	if resp.Error != nil {
 		t.Fatalf("reconcile refused: %+v", resp.Error)
@@ -675,9 +675,9 @@ func TestReconcileEligibility(t *testing.T) {
 	if len(out.Outcomes) != 1 || out.Outcomes[0].Action != "rolled-back" {
 		t.Errorf("backdated reserving outcome = %+v, want rolled-back", out.Outcomes)
 	}
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	if registryEntry(reg, sp.App, resOwn.Slug) != nil {
 		t.Error("the rolled-back entry survived")
@@ -688,9 +688,9 @@ func TestReconcileEligibility(t *testing.T) {
 // are byte-identical before and after a doctor run that produced findings.
 func TestDoctorWritesNothing(t *testing.T) {
 	h := fleetHarness(t)
-	sess, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	sess, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
 	sp := fleetSpec(t)
 	if _, perr := allocate(t, h, sess, sp, "wt-1"); perr != nil {
@@ -704,7 +704,7 @@ func TestDoctorWritesNothing(t *testing.T) {
 	if resp.Error != nil {
 		t.Fatalf("doctor refused: %+v", resp.Error)
 	}
-	var res protocol.DoctorResult
+	var res api.DoctorResult
 	if err := json.Unmarshal(resp.Result, &res); err != nil {
 		t.Fatalf("decoding: %v", err)
 	}
@@ -723,21 +723,21 @@ func TestDoctorWritesNothing(t *testing.T) {
 // on reads. Every collection is read back in a deterministic order.
 func storeState(t *testing.T, h *Harness) string {
 	t.Helper()
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
-	bands, err := h.Store.ReadBands()
-	if err != nil {
-		t.Fatalf("reading the band ledger: %v", err)
+	bands, rerr := h.Store.ReadBands()
+	if rerr != nil {
+		t.Fatalf("reading the band ledger: %v", rerr)
 	}
-	clients, err := h.Store.ReadClients()
-	if err != nil {
-		t.Fatalf("reading the client table: %v", err)
+	clients, rerr := h.Store.ReadClients()
+	if rerr != nil {
+		t.Fatalf("reading the client table: %v", rerr)
 	}
-	specs, err := h.Store.ReadSpecs()
-	if err != nil {
-		t.Fatalf("reading the spec cache: %v", err)
+	specs, rerr := h.Store.ReadSpecs()
+	if rerr != nil {
+		t.Fatalf("reading the spec cache: %v", rerr)
 	}
 	raw, err := json.Marshal([]any{reg, bands, clients, specs})
 	if err != nil {
@@ -790,14 +790,14 @@ func doctorHarness(t *testing.T) (*Harness, *Session, *spec.Spec, string, string
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
 	h.H.InstallDrivers(driver.NewRegistry(&driver.Port{}, &driver.Namespace{}, &driver.StatePath{}))
 	registerFleetBand(t, h, sp, 7000)
-	sess, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	sess, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	fleetEntry(t, h, &store.Entry{
 		App: sp.App, Slug: "wt-1", Slot: 1,
-		Owner: "4242", OwnerKind: protocol.KindHost,
+		Owner: "4242", OwnerKind: api.KindHost,
 		Path: worktree, PathVisible: true, State: store.StateActive,
 		DescriptorPath: filepath.Join(worktree, "wt-env.yaml"),
 		Resources: map[string]spec.Resolved{
@@ -825,13 +825,13 @@ func doctorHarness(t *testing.T) (*Harness, *Session, *spec.Spec, string, string
 }
 
 // runDoctor runs the doctor verb and returns the findings.
-func runDoctor(t *testing.T, h *Harness, sess *Session) protocol.DoctorResult {
+func runDoctor(t *testing.T, h *Harness, sess *Session) api.DoctorResult {
 	t.Helper()
 	resp := h.Request(context.Background(), sess, verbDoctor, nil)
 	if resp.Error != nil {
 		t.Fatalf("doctor refused: %+v", resp.Error)
 	}
-	var res protocol.DoctorResult
+	var res api.DoctorResult
 	if err := json.Unmarshal(resp.Result, &res); err != nil {
 		t.Fatalf("decoding: %v", err)
 	}
@@ -885,7 +885,7 @@ func TestDoctorFindingsEachNameACommand(t *testing.T) {
 		now := time.Now().UTC().Format(time.RFC3339Nano)
 		fleetEntry(t, h, &store.Entry{
 			App: sp.App, Slug: fmt.Sprintf("wt-%d", i), Slot: i,
-			Owner: "4242", OwnerKind: protocol.KindHost,
+			Owner: "4242", OwnerKind: api.KindHost,
 			Path: worktree, PathVisible: true, State: store.StateActive,
 			Resources: map[string]spec.Resolved{
 				"api": {Type: "port", Value: 7000 + i},
@@ -932,7 +932,7 @@ func TestDoctorFindingsEachNameACommand(t *testing.T) {
 }
 
 // findingsDump renders findings for a failure message.
-func findingsDump(res protocol.DoctorResult) string {
+func findingsDump(res api.DoctorResult) string {
 	var b strings.Builder
 	for _, f := range res.Findings {
 		fmt.Fprintf(&b, "  [%s] %s (fix: %s)\n", f.Level, f.Message, f.Remedy)
@@ -1069,9 +1069,9 @@ func TestDoctorReportsNewerRegistry(t *testing.T) {
 	}
 	// Nothing was written back: the lenient read still reports the
 	// database's own newer version.
-	after, err := h.Store.ReadRegistryList()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	after, rerr := h.Store.ReadRegistryList()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	if after.SchemaVersion != store.SchemaVersion+1 {
 		t.Errorf("registry schema version = %d, want the newer %d (doctor wrote)", after.SchemaVersion, store.SchemaVersion+1)
@@ -1099,16 +1099,16 @@ func TestReapBinariesDefaultsToSpecField(t *testing.T) {
 func TestSpecCacheRoundTrip(t *testing.T) {
 	h := fleetHarness(t)
 	sp := fleetSpec(t)
-	sess, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	sess, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
 	if _, perr := allocate(t, h, sess, sp, "wt-1"); perr != nil {
 		t.Fatalf("allocation refused: %+v", perr)
 	}
-	specs, err := h.Store.ReadSpecs()
-	if err != nil {
-		t.Fatalf("reading the cache: %v", err)
+	specs, rerr := h.Store.ReadSpecs()
+	if rerr != nil {
+		t.Fatalf("reading the cache: %v", rerr)
 	}
 	cached, ok := specs.Specs["fleet-app"]
 	if !ok {
@@ -1150,14 +1150,14 @@ func TestDoctorPinnedNameFinding(t *testing.T) {
 	_, worktree := gitFleetRepo(t, sp)
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
 	h.H.InstallDrivers(driver.NewRegistry(&driver.Port{}, &driver.Namespace{}, &driver.StatePath{}))
-	sess, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	sess, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	fleetEntry(t, h, &store.Entry{
 		App: sp.App, Slug: "wt-1", Slot: 1,
-		Owner: "4242", OwnerKind: protocol.KindHost,
+		Owner: "4242", OwnerKind: api.KindHost,
 		Path: worktree, PathVisible: true, State: store.StateActive,
 		DescriptorPath: filepath.Join(worktree, "wt-env.yaml"),
 		Resources:      map[string]spec.Resolved{"compose": {Type: "namespace", Value: "pins-app-wt-1-1"}},

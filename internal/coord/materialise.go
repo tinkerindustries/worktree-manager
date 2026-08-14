@@ -15,8 +15,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
@@ -28,8 +28,8 @@ const verbMaterialise = "materialise"
 // apply in dependency order over the entry's resources. The entry must
 // exist and belong to the caller; it stays reserving until the client
 // activates it.
-func (h *Handler) materialise(s *Session, req *protocol.Request) *protocol.Response {
-	var args protocol.MaterialiseArgs
+func (h *Handler) materialise(s *Session, req *api.Request) *api.Response {
+	var args api.MaterialiseArgs
 	if err := json.Unmarshal(req.Args, &args); err != nil {
 		return respErr(1, fmt.Sprintf("malformed materialise request: %v", err), "upgrade wt: this coordinator expects an app, slug and spec")
 	}
@@ -54,12 +54,12 @@ func (h *Handler) materialise(s *Session, req *protocol.Request) *protocol.Respo
 			"allocate the worktree first, then re-run")
 	}
 	if perr := h.checkOwner(s, e); perr != nil {
-		return &protocol.Response{Error: perr}
+		return &api.Response{Error: perr}
 	}
 
 	env, perr := h.entryEnv(e, &args.Spec)
 	if perr != nil {
-		return &protocol.Response{Error: perr}
+		return &api.Response{Error: perr}
 	}
 	env.SeedModes = args.SeedModes
 
@@ -71,10 +71,10 @@ func (h *Handler) materialise(s *Session, req *protocol.Request) *protocol.Respo
 	if cerr := h.runUnlocked(args.App, args.Slug, func() {
 		rep = h.Drivers.ApplyAll(&args.Spec, e.Resources, env)
 	}); cerr != nil {
-		return &protocol.Response{Error: cerr}
+		return &api.Response{Error: cerr}
 	}
 
-	out := &protocol.MaterialiseResult{
+	out := &api.MaterialiseResult{
 		App: args.App, Slug: args.Slug,
 		State:      store.StateReserving,
 		Failed:     rep.Failed,
@@ -82,13 +82,13 @@ func (h *Handler) materialise(s *Session, req *protocol.Request) *protocol.Respo
 		RolledBack: rep.RolledBack,
 	}
 	for _, oc := range rep.Outcomes {
-		out.Outcomes = append(out.Outcomes, protocol.MaterialiseOutcome{Resource: oc.Resource, Notes: oc.Notes})
+		out.Outcomes = append(out.Outcomes, api.MaterialiseOutcome{Resource: oc.Resource, Notes: oc.Notes})
 	}
 
 	if rep.Failed == "" {
 		// Applied in full; the entry stays reserving and the client
 		// activates it (step 6). Nothing to write: the entry is untouched.
-		return &protocol.Response{Result: mustJSON(out)}
+		return &api.Response{Result: mustJSON(out)}
 	}
 
 	// A refusal or an unavailability is a protocol-level error with the
@@ -102,14 +102,14 @@ func (h *Handler) materialise(s *Session, req *protocol.Request) *protocol.Respo
 	var refusal *driver.RefusalError
 	var unavailable *driver.ErrUnavailable
 	if errors.As(rep.Err, &refusal) {
-		return &protocol.Response{Error: &protocol.Error{
+		return &api.Response{Error: &api.Error{
 			Code:   3,
 			Msg:    fmt.Sprintf("materialising %s failed: %s", rep.Failed, rep.Err),
 			Remedy: "the refusal above names what is running and how to tear one down; fix it, then re-run wt init",
 		}}
 	}
 	if errors.As(rep.Err, &unavailable) {
-		return &protocol.Response{Error: &protocol.Error{
+		return &api.Response{Error: &api.Error{
 			Code:   4,
 			Msg:    fmt.Sprintf("materialising %s failed: %s", rep.Failed, rep.Err),
 			Remedy: "the error above names the missing context; install it (or move to the platform that has it), then re-run wt init",
@@ -147,13 +147,13 @@ func (h *Handler) materialise(s *Session, req *protocol.Request) *protocol.Respo
 		}); err != nil {
 			return h.storeErr("writing the registry", err)
 		}
-		return &protocol.Response{Result: mustJSON(out)}
+		return &api.Response{Result: mustJSON(out)}
 	}
 
 	// Clean rollback: the entry stays reserving and the client drops it
 	// with release — the rollback that covers init's steps up to
 	// activation.
-	return &protocol.Response{Result: mustJSON(out)}
+	return &api.Response{Result: mustJSON(out)}
 }
 
 // errString renders an error for the wire, "" when nil.

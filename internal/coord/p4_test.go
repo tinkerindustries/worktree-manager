@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
@@ -75,12 +75,12 @@ func teardownSpec(t *testing.T) *spec.Spec {
 
 // setupTeardown allocates an entry and installs the given driver registry,
 // returning the harness, session, spec and entry ref.
-func setupTeardown(t *testing.T, reg driver.Registry) (*Harness, *Session, *spec.Spec, protocol.EntryRef) {
+func setupTeardown(t *testing.T, reg driver.Registry) (*Harness, *Session, *spec.Spec, api.EntryRef) {
 	t.Helper()
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	sess, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	sess, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
 	h.H.InstallDrivers(reg)
 	sp := teardownSpec(t)
@@ -88,7 +88,7 @@ func setupTeardown(t *testing.T, reg driver.Registry) (*Harness, *Session, *spec
 	if perr != nil {
 		t.Fatalf("allocation refused: %+v", perr)
 	}
-	return h, sess, sp, protocol.EntryRef{App: res.App, Slug: res.Slug}
+	return h, sess, sp, api.EntryRef{App: res.App, Slug: res.Slug}
 }
 
 // TestCoordTeardownLeavesTearingDownAndHoldsTheSlot is exit criterion 3: a
@@ -114,9 +114,9 @@ func TestCoordTeardownLeavesTearingDownAndHoldsTheSlot(t *testing.T) {
 		t.Error("the error must carry a remedy")
 	}
 
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	e := registryEntry(reg, ref.App, ref.Slug)
 	if e == nil {
@@ -144,9 +144,9 @@ func TestCoordTeardownLeavesTearingDownAndHoldsTheSlot(t *testing.T) {
 	if resp.Error != nil {
 		t.Fatalf("re-run teardown refused: %+v", resp.Error)
 	}
-	reg, err = h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr = h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	if registryEntry(reg, ref.App, ref.Slug) != nil {
 		t.Error("the entry must drop once nothing survives")
@@ -170,9 +170,9 @@ func TestCoordTeardownUnavailableDoesNotFreeTheSlot(t *testing.T) {
 	if !strings.Contains(resp.Error.Msg, "unreachable") {
 		t.Errorf("the error must name the cause: %q", resp.Error.Msg)
 	}
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	if e := registryEntry(reg, ref.App, ref.Slug); e == nil || e.State != store.StateTearingDown {
 		t.Fatalf("entry = %+v, want tearing-down", e)
@@ -191,7 +191,7 @@ func TestCoordTeardownReservedNamespaceRefused(t *testing.T) {
 
 	// A person declares the co-resident production stack's project name once
 	// per machine, in the ledger.
-	resp := h.Request(context.Background(), sess, verbBandsReserve, &protocol.ReserveBandArgs{
+	resp := h.Request(context.Background(), sess, verbBandsReserve, &api.ReserveBandArgs{
 		Host: true, Names: []string{"compose-app-wt-1-1"},
 		Note: "compose-app production stack (compose.prod.yaml)",
 	})
@@ -209,9 +209,9 @@ func TestCoordTeardownReservedNamespaceRefused(t *testing.T) {
 	if !strings.Contains(td.Error.Msg, "compose-app production stack") {
 		t.Errorf("the refusal must name the reservation: %q", td.Error.Msg)
 	}
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	if e := registryEntry(reg, ref.App, ref.Slug); e == nil || e.State != store.StateTearingDown {
 		t.Fatalf("entry = %+v, want tearing-down", e)
@@ -230,9 +230,9 @@ func TestCoordTeardownCleanDropsTheEntry(t *testing.T) {
 	if resp.Error != nil {
 		t.Fatalf("clean teardown refused: %+v", resp.Error)
 	}
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	if registryEntry(reg, ref.App, ref.Slug) != nil {
 		t.Error("the entry must drop after a clean teardown")
@@ -258,9 +258,9 @@ func TestCoordTeardownRequiresSpecAndOwnership(t *testing.T) {
 	})
 
 	t.Run("foreign client refused", func(t *testing.T) {
-		other, reply := h.ConnectPeer(Peer{UID: 5000, Known: true}, protocol.KindHost, "")
-		if reply.Error != nil {
-			t.Fatalf("hello refused: %+v", reply.Error)
+		other, err := h.ConnectPeer(5000, api.KindHost, "")
+		if err != nil {
+			t.Fatalf("hello refused: %+v", err)
 		}
 		resp := h.H.Teardown(other, ref, sp, nil)
 		if resp.Error == nil || resp.Error.Code != 3 {
@@ -284,9 +284,9 @@ func TestAgeingOutTearsDownByHandle(t *testing.T) {
 	h, _, _, ref := setupTeardown(t, driver.NewRegistry(stub))
 
 	// The entry is still reserving — the client never activated it.
-	aged, err := h.H.AgeReserving(time.Now().UTC().Add(11*time.Minute), ReservingTimeout)
-	if err != nil {
-		t.Fatalf("AgeReserving: %v", err)
+	aged, rerr := h.H.AgeReserving(time.Now().UTC().Add(11*time.Minute), ReservingTimeout)
+	if rerr != nil {
+		t.Fatalf("AgeReserving: %v", rerr)
 	}
 	if aged != 1 {
 		t.Fatalf("aged = %d, want 1", aged)
@@ -295,9 +295,9 @@ func TestAgeingOutTearsDownByHandle(t *testing.T) {
 		t.Errorf("tornDown = %v, want the entry's own resource torn down by handle", stub.tornDown)
 	}
 
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	e := registryEntry(reg, ref.App, ref.Slug)
 	if e == nil {
@@ -318,16 +318,16 @@ func TestAgeingOutDropsACleanTeardown(t *testing.T) {
 	stub := &stubDriver{}
 	h, _, _, ref := setupTeardown(t, driver.NewRegistry(stub))
 
-	aged, err := h.H.AgeReserving(time.Now().UTC().Add(11*time.Minute), ReservingTimeout)
-	if err != nil || aged != 1 {
-		t.Fatalf("AgeReserving = %d, %v; want 1 aged out", aged, err)
+	aged, rerr := h.H.AgeReserving(time.Now().UTC().Add(11*time.Minute), ReservingTimeout)
+	if rerr != nil || aged != 1 {
+		t.Fatalf("AgeReserving = %d, %v; want 1 aged out", aged, rerr)
 	}
 	if len(stub.tornDown) != 1 {
 		t.Errorf("tornDown = %v, want the resource torn down before the entry was dropped", stub.tornDown)
 	}
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	if registryEntry(reg, ref.App, ref.Slug) != nil {
 		t.Error("the entry survived a clean teardown; the slot is not freed")

@@ -21,8 +21,8 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/platform"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 )
 
@@ -39,16 +39,16 @@ const verbBandsSuggest = "bands.suggest"
 // §3). A scan that cannot see every listener says so, with the remedy
 // naming the missing discovery tool (plan.md §3: bounded coverage is
 // stated, never silent).
-func (h *Handler) portsScan(s *Session, req *protocol.Request) *protocol.Response {
+func (h *Handler) portsScan(s *Session, req *api.Request) *api.Response {
 	holders, err := platform.AllListeners()
 	if err != nil {
 		return respErr(4, err.Error(),
 			"install the discovery tool the message names, then re-run: wt ports scan")
 	}
-	out := protocol.PortsScanResult{}
+	out := api.PortsScanResult{}
 	unknown := 0
 	for _, hld := range holders {
-		out.Listeners = append(out.Listeners, protocol.PortsScanEntry{
+		out.Listeners = append(out.Listeners, api.PortsScanEntry{
 			Port: hld.Port, PID: hld.PID, Command: hld.Command,
 		})
 		if hld.Port == 0 {
@@ -67,7 +67,7 @@ func (h *Handler) portsScan(s *Session, req *protocol.Request) *protocol.Respons
 		out.Notes = append(out.Notes,
 			"this coordinator runs inside a container: the scan sees this container's network namespace only — run wtd on the host for the machine's listeners")
 	}
-	return &protocol.Response{Result: mustJSON(out)}
+	return &api.Response{Result: mustJSON(out)}
 }
 
 // suggestBand implements the bands.suggest verb: given the spec, propose
@@ -87,8 +87,8 @@ func (h *Handler) portsScan(s *Session, req *protocol.Request) *protocol.Respons
 // resource, in spec order, wins; a resource with no acceptable base
 // anywhere in the port space is reported with the bound stated, never
 // silently skipped.
-func (h *Handler) suggestBand(s *Session, req *protocol.Request) *protocol.Response {
-	var args protocol.SuggestBandArgs
+func (h *Handler) suggestBand(s *Session, req *api.Request) *api.Response {
+	var args api.SuggestBandArgs
 	if err := json.Unmarshal(req.Args, &args); err != nil {
 		return respErr(1, fmt.Sprintf("malformed bands.suggest request: %v", err), "upgrade wt: this coordinator expects a spec")
 	}
@@ -126,7 +126,7 @@ func (h *Handler) suggestBand(s *Session, req *protocol.Request) *protocol.Respo
 		}
 	}
 
-	out := protocol.SuggestBandResult{App: args.Spec.App}
+	out := api.SuggestBandResult{App: args.Spec.App}
 	chosen := map[string]spanRange{} // resource name → proposed band range
 	for i := range args.Spec.Resources {
 		r := &args.Spec.Resources[i]
@@ -142,13 +142,13 @@ func (h *Handler) suggestBand(s *Session, req *protocol.Request) *protocol.Respo
 			continue
 		}
 		chosen[r.Name] = spanRange{lo: base, hi: base + span - 1}
-		out.Suggestions = append(out.Suggestions, protocol.BandSuggestion{
+		out.Suggestions = append(out.Suggestions, api.BandSuggestion{
 			Resource: r.Name, Base: base, Span: span,
 			Low: base, High: base + span - 1,
 		})
 	}
 	sort.Strings(out.Notes)
-	return &protocol.Response{Result: mustJSON(out)}
+	return &api.Response{Result: mustJSON(out)}
 }
 
 // spanRange is one busy range of the port space.

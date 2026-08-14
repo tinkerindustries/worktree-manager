@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/platform"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
@@ -42,7 +42,7 @@ func reapPortsEntry(t *testing.T, h *Harness, ports ...int) *store.Entry {
 	}
 	e := &store.Entry{
 		App: "compose-app", Slug: "wt-1", Slot: 1,
-		Owner: "4242", OwnerKind: protocol.KindHost,
+		Owner: "4242", OwnerKind: api.KindHost,
 		Path: "/tmp/wt/wt-1", State: store.StateActive,
 		Resources: resources, CreatedAt: now, LastSeen: now,
 	}

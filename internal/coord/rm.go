@@ -18,15 +18,15 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 )
 
 // rm implements the rm verb: reap, then teardown, then the entry drop. A
 // dry-run previews the reap and names the resources the teardown would
 // touch, changing nothing.
-func (h *Handler) rm(s *Session, req *protocol.Request) *protocol.Response {
-	var args protocol.RmArgs
+func (h *Handler) rm(s *Session, req *api.Request) *api.Response {
+	var args api.RmArgs
 	if err := json.Unmarshal(req.Args, &args); err != nil {
 		return respErr(1, fmt.Sprintf("malformed rm request: %v", err), "upgrade wt: this coordinator expects an app, slug and spec")
 	}
@@ -45,10 +45,10 @@ func (h *Handler) rm(s *Session, req *protocol.Request) *protocol.Response {
 	if !ok {
 		// Not an error: the client's no-entry paths (04-lifecycle.md §7.3)
 		// decide what the git half does.
-		return &protocol.Response{Result: mustJSON(protocol.RmResult{EntryFound: false})}
+		return &api.Response{Result: mustJSON(api.RmResult{EntryFound: false})}
 	}
 	if perr := h.checkOwner(s, e); perr != nil {
-		return &protocol.Response{Error: perr}
+		return &api.Response{Error: perr}
 	}
 	// The drivers are needed only for the teardown, so the no-entry data
 	// outcome above does not depend on the registry being installed.
@@ -60,18 +60,18 @@ func (h *Handler) rm(s *Session, req *protocol.Request) *protocol.Response {
 	// The reaper discovers listeners and waits out the grace period, which
 	// is seconds of wall-clock; it runs with the mutex released under the
 	// entry's claim. It reads the band ledger first, which is store work.
-	var reap protocol.ReapReport
+	var reap api.ReapReport
 	if cerr := h.runUnlocked(args.App, args.Slug, func() {
 		reap = h.reap(e, &args.Spec, args.KeepProcesses, args.DryRun)
 	}); cerr != nil {
-		return &protocol.Response{Error: cerr}
+		return &api.Response{Error: cerr}
 	}
 
 	if args.DryRun {
 		// Preview: the reap lists what it would signal (nothing is
 		// signalled under --dry-run), and the resources name what the
 		// teardown would touch.
-		return &protocol.Response{Result: mustJSON(protocol.RmResult{
+		return &api.Response{Result: mustJSON(api.RmResult{
 			EntryFound: true,
 			Reap:       reap,
 			Path:       e.Path,
@@ -93,15 +93,15 @@ func (h *Handler) rm(s *Session, req *protocol.Request) *protocol.Response {
 		if n := len(reap.Signalled) + len(reap.Holders); n > 0 {
 			msg = msg + fmt.Sprintf("; reap: %d process(es) signalled, %d reported", len(reap.Signalled), len(reap.Holders))
 		}
-		return &protocol.Response{Error: &protocol.Error{
+		return &api.Response{Error: &api.Error{
 			Code: tresp.Error.Code, Msg: msg, Remedy: tresp.Error.Remedy,
 		}}
 	}
-	var release protocol.ReleaseResult
+	var release api.ReleaseResult
 	if err := json.Unmarshal(tresp.Result, &release); err != nil {
 		return respErr(1, fmt.Sprintf("decoding the teardown result: %v", err), "re-run the rm")
 	}
-	return &protocol.Response{Result: mustJSON(protocol.RmResult{
+	return &api.Response{Result: mustJSON(api.RmResult{
 		EntryFound: true,
 		Reap:       reap,
 		Path:       e.Path,

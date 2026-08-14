@@ -35,8 +35,8 @@ import (
 	"slices"
 	"time"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/platform"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
@@ -78,9 +78,9 @@ func (h *Handler) reapBinaries(sp *spec.Spec) []string {
 // with is the store read that has to be tolerated there — a reservation
 // added mid-reap is not seen until the next call, and the consequence is
 // bounded, since a reserved port's holder is skipped rather than signalled.
-func (h *Handler) reap(e *store.Entry, sp *spec.Spec, keepProcesses, dryRun bool) protocol.ReapReport {
+func (h *Handler) reap(e *store.Entry, sp *spec.Spec, keepProcesses, dryRun bool) api.ReapReport {
 	if keepProcesses {
-		return protocol.ReapReport{
+		return api.ReapReport{
 			Available:     false,
 			Note:          "reaping opted out (--keep-processes): processes bound to this worktree's ports are left running",
 			KeptProcesses: true,
@@ -91,7 +91,7 @@ func (h *Handler) reap(e *store.Entry, sp *spec.Spec, keepProcesses, dryRun bool
 		inContainer = h.InContainer()
 	}
 	if inContainer {
-		return protocol.ReapReport{
+		return api.ReapReport{
 			Available: false,
 			Note: "reap unavailable: this coordinator runs inside a container, and discovery would see only the " +
 				"container's pid and network namespaces — not the processes bound to the worktree's ports. " +
@@ -101,7 +101,7 @@ func (h *Handler) reap(e *store.Entry, sp *spec.Spec, keepProcesses, dryRun bool
 
 	ports := entryPorts(e)
 	if len(ports) == 0 {
-		return protocol.ReapReport{Available: true}
+		return api.ReapReport{Available: true}
 	}
 
 	// The exclusion list is the same one allocation uses: the spec's
@@ -114,7 +114,7 @@ func (h *Handler) reap(e *store.Entry, sp *spec.Spec, keepProcesses, dryRun bool
 	}
 	bands, err := h.st.ReadBands()
 	if err != nil {
-		return protocol.ReapReport{
+		return api.ReapReport{
 			Available: false,
 			Note: fmt.Sprintf("reap unavailable: the band ledger could not be read (%v), so the host-global "+
 				"reservations — and with them the ports that must never be touched — are unknown; "+
@@ -126,7 +126,7 @@ func (h *Handler) reap(e *store.Entry, sp *spec.Spec, keepProcesses, dryRun bool
 			excluded[p] = true
 		}
 	}
-	report := protocol.ReapReport{Available: true}
+	report := api.ReapReport{Available: true}
 	var active []int
 	for _, p := range ports {
 		if excluded[p] {
@@ -158,25 +158,25 @@ func (h *Handler) reap(e *store.Entry, sp *spec.Spec, keepProcesses, dryRun bool
 // base-name comparison is the whole of "whose command names one of its own
 // binaries" (B7.1): a holder whose command base is in the allowlist is
 // signalled, everything else is reported and never signalled.
-func classifyAndSignal(holders []platform.Holder, allowlist []string, dryRun bool) ([]protocol.ReapHolder, []protocol.ReapAction) {
+func classifyAndSignal(holders []platform.Holder, allowlist []string, dryRun bool) ([]api.ReapHolder, []api.ReapAction) {
 	named := map[string]bool{}
 	for _, b := range allowlist {
 		named[filepath.Base(b)] = true
 	}
-	var reported []protocol.ReapHolder
-	var actions []protocol.ReapAction
+	var reported []api.ReapHolder
+	var actions []api.ReapAction
 	var signal []platform.Holder
 	for _, hld := range holders {
 		base := filepath.Base(hld.Command)
 		if !named[base] {
-			reported = append(reported, protocol.ReapHolder{
+			reported = append(reported, api.ReapHolder{
 				PID: hld.PID, Command: hld.Command, Port: hld.Port,
 				Reason: "not one of the spec's own binaries — reported and never signalled, because it is probably the developer's own instance",
 			})
 			continue
 		}
 		if dryRun {
-			actions = append(actions, protocol.ReapAction{
+			actions = append(actions, api.ReapAction{
 				PID: hld.PID, Command: hld.Command, Port: hld.Port,
 				Signal: "would-signal",
 			})
@@ -200,13 +200,13 @@ func classifyAndSignal(holders []platform.Holder, allowlist []string, dryRun boo
 // letting it release its lease. A failed graceful signal does not abort
 // the sequence: on Windows the failure is the common case, not the
 // process being gone, and the escalation still has to run.
-func signalEscalation(holders []platform.Holder) []protocol.ReapAction {
+func signalEscalation(holders []platform.Holder) []api.ReapAction {
 	if len(holders) == 0 {
 		return nil
 	}
-	terms := make([]protocol.ReapAction, len(holders))
+	terms := make([]api.ReapAction, len(holders))
 	for i, hld := range holders {
-		terms[i] = protocol.ReapAction{
+		terms[i] = api.ReapAction{
 			PID: hld.PID, Command: hld.Command, Port: hld.Port, Signal: "TERM",
 		}
 		if err := platform.SignalTerm(hld.PID); err != nil {
@@ -218,17 +218,17 @@ func signalEscalation(holders []platform.Holder) []protocol.ReapAction {
 	// three orphaned processes cost three seconds rather than nine.
 	time.Sleep(reapGraceWait)
 
-	actions := make([]protocol.ReapAction, 0, 2*len(holders))
+	actions := make([]api.ReapAction, 0, 2*len(holders))
 	for i, hld := range holders {
 		actions = append(actions, terms[i])
 		if !platform.Alive(hld.PID) {
-			actions = append(actions, protocol.ReapAction{
+			actions = append(actions, api.ReapAction{
 				PID: hld.PID, Command: hld.Command, Port: hld.Port,
 				Signal: "KILL", Err: "no escalation needed: the process exited during the wait after the graceful signal",
 			})
 			continue
 		}
-		killAction := protocol.ReapAction{
+		killAction := api.ReapAction{
 			PID: hld.PID, Command: hld.Command, Port: hld.Port, Signal: "KILL",
 		}
 		if killErr := platform.SignalKill(hld.PID); killErr != nil {

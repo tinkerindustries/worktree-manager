@@ -27,7 +27,7 @@ package coord
 import (
 	"fmt"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 )
 
 // entryKey identifies one registry entry.
@@ -39,10 +39,10 @@ type entryKey struct{ app, slug string }
 // It returns the refusal when another operation already holds the entry;
 // fn does not run in that case. Anything the caller read from the store
 // before the call is stale afterwards and must be re-read.
-func (h *Handler) runUnlocked(app, slug string, fn func()) *protocol.Error {
+func (h *Handler) runUnlocked(app, slug string, fn func()) *api.Error {
 	key := entryKey{app, slug}
 	if h.claims[key] {
-		return &protocol.Error{
+		return &api.Error{
 			Code: 3,
 			Msg: fmt.Sprintf("another operation on %s/%s is already running (its drivers are still working)",
 				app, slug),

@@ -19,9 +19,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
 	"github.com/mrgeoffrich/worktree-manager/internal/platform"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
@@ -42,9 +42,9 @@ func restartHarness(t *testing.T, root string, m *coordFakeMachine) *Harness {
 // vmName reads the entry's resolved machine name.
 func vmName(t *testing.T, h *Harness, app, slug string) string {
 	t.Helper()
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	for i := range reg.Entries {
 		if reg.Entries[i].App == app && reg.Entries[i].Slug == slug {
@@ -73,13 +73,13 @@ func TestRecoverInterruptedOnRestartTearsDownAndDrops(t *testing.T) {
 	h1 := restartHarness(t, root, nil)
 	m := &coordFakeMachine{}
 	h1.H.Machine = m
-	sess, reply := h1.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	sess, err := h1.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
 	sp := machineSpec(t, "")
 	allocateMachine(t, h1, sess, sp, "wt-1")
-	resp := h1.Request(context.Background(), sess, verbMaterialise, &protocol.MaterialiseArgs{
+	resp := h1.Request(context.Background(), sess, verbMaterialise, &api.MaterialiseArgs{
 		App: sp.App, Slug: "wt-1", Spec: *sp,
 	})
 	if resp.Error != nil {
@@ -95,9 +95,9 @@ func TestRecoverInterruptedOnRestartTearsDownAndDrops(t *testing.T) {
 	m2 := &coordFakeMachine{instances: m.instances}
 	h2 := restartHarness(t, root, m2)
 
-	n, err := h2.H.RecoverInterrupted()
-	if err != nil {
-		t.Fatalf("RecoverInterrupted: %v", err)
+	n, rerr := h2.H.RecoverInterrupted()
+	if rerr != nil {
+		t.Fatalf("RecoverInterrupted: %v", rerr)
 	}
 	if n != 1 {
 		t.Fatalf("recovered = %d, want 1", n)
@@ -105,9 +105,9 @@ func TestRecoverInterruptedOnRestartTearsDownAndDrops(t *testing.T) {
 	if len(m2.deleted) != 1 || m2.deleted[0] != name {
 		t.Errorf("the VM must be torn down by handle: deleted = %v, want [%s]", m2.deleted, name)
 	}
-	reg, err := h2.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr := h2.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	if len(reg.Entries) != 0 {
 		t.Fatalf("registry after recovery = %+v, want empty", reg.Entries)
@@ -115,9 +115,9 @@ func TestRecoverInterruptedOnRestartTearsDownAndDrops(t *testing.T) {
 
 	// The client's next init allocates fresh — the same slot, since nothing
 	// holds it.
-	sess2, reply2 := h2.Connect(protocol.KindHost, "")
-	if reply2.Error != nil {
-		t.Fatalf("second hello refused: %+v", reply2.Error)
+	sess2, err2 := h2.Connect(api.KindHost, "")
+	if err2 != nil {
+		t.Fatalf("second hello refused: %+v", err2)
 	}
 	slot := allocateMachine(t, h2, sess2, sp, "wt-1")
 	if slot != 1 {
@@ -133,24 +133,24 @@ func TestRecoverInterruptedNeverMaterialisedDropsCleanly(t *testing.T) {
 	h1 := restartHarness(t, root, nil)
 	m := &coordFakeMachine{}
 	h1.H.Machine = m
-	sess, reply := h1.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	sess, err := h1.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
 	sp := machineSpec(t, "")
 	allocateMachine(t, h1, sess, sp, "wt-1")
 
 	h2 := restartHarness(t, root, &coordFakeMachine{})
-	n, err := h2.H.RecoverInterrupted()
-	if err != nil {
-		t.Fatalf("RecoverInterrupted: %v", err)
+	n, rerr := h2.H.RecoverInterrupted()
+	if rerr != nil {
+		t.Fatalf("RecoverInterrupted: %v", rerr)
 	}
 	if n != 1 {
 		t.Fatalf("recovered = %d, want 1", n)
 	}
-	reg, err := h2.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr := h2.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	if len(reg.Entries) != 0 {
 		t.Fatalf("registry after recovery = %+v, want empty", reg.Entries)
@@ -167,9 +167,9 @@ func TestRecoverInterruptedTeardownUnavailableMovesToTearingDown(t *testing.T) {
 	h1 := restartHarness(t, root, nil)
 	m := &coordFakeMachine{instances: []platform.MachineInstance{{Name: "vm-app-wt-1-1", Running: true}}}
 	h1.H.Machine = m
-	sess, reply := h1.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	sess, err := h1.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
 	sp := machineSpec(t, "")
 	allocateMachine(t, h1, sess, sp, "wt-1")
@@ -180,16 +180,16 @@ func TestRecoverInterruptedTeardownUnavailableMovesToTearingDown(t *testing.T) {
 	h2 := restartHarness(t, root, m2)
 	m2.listErr = platform.ErrMachineUnavailable
 
-	n, err := h2.H.RecoverInterrupted()
-	if err != nil {
-		t.Fatalf("RecoverInterrupted: %v", err)
+	n, rerr := h2.H.RecoverInterrupted()
+	if rerr != nil {
+		t.Fatalf("RecoverInterrupted: %v", rerr)
 	}
 	if n != 1 {
 		t.Fatalf("recovered = %d, want 1 (the entry stopped being reserving)", n)
 	}
-	reg, err := h2.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr := h2.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	if len(reg.Entries) != 1 {
 		t.Fatalf("registry = %+v, want the entry held", reg.Entries)
@@ -203,20 +203,20 @@ func TestRecoverInterruptedTeardownUnavailableMovesToTearingDown(t *testing.T) {
 	}
 
 	// The owning client's rollback release must not orphan the survivors.
-	owner, reply2 := h2.Connect(protocol.KindHost, "")
-	if reply2.Error != nil {
-		t.Fatalf("hello refused: %+v", reply2.Error)
+	owner, err2 := h2.Connect(api.KindHost, "")
+	if err2 != nil {
+		t.Fatalf("hello refused: %+v", err2)
 	}
-	resp := h2.Request(context.Background(), owner, verbRelease, &protocol.EntryRef{App: sp.App, Slug: "wt-1"})
+	resp := h2.Request(context.Background(), owner, verbRelease, &api.EntryRef{App: sp.App, Slug: "wt-1"})
 	if resp.Error == nil || resp.Error.Code != 3 {
 		t.Fatalf("release of a tearing-down entry = %+v, want a refusal", resp.Error)
 	}
 	if !strings.Contains(resp.Error.Remedy, "wt rm") {
 		t.Errorf("the refusal must name the teardown re-run: %s", resp.Error.Remedy)
 	}
-	reg, err = h2.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr = h2.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	if len(reg.Entries) != 1 || reg.Entries[0].State != store.StateTearingDown {
 		t.Errorf("the refused release must leave the entry held: %+v", reg.Entries)
@@ -234,23 +234,23 @@ func TestRecoverInterruptedWithoutSpecMovesToTearingDown(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	fleetEntry(t, h1, &store.Entry{
 		App: "no-spec-app", Slug: "wt-1", Slot: 1,
-		Owner: "4242", OwnerKind: protocol.KindHost,
+		Owner: "4242", OwnerKind: api.KindHost,
 		Path: filepath.Join("/container", "worktrees", "wt-1"), PathVisible: false,
 		State: store.StateReserving, Resources: map[string]spec.Resolved{},
 		CreatedAt: now, LastSeen: now,
 	})
 
 	h2 := restartHarness(t, root, nil)
-	n, err := h2.H.RecoverInterrupted()
-	if err != nil {
-		t.Fatalf("RecoverInterrupted: %v", err)
+	n, rerr := h2.H.RecoverInterrupted()
+	if rerr != nil {
+		t.Fatalf("RecoverInterrupted: %v", rerr)
 	}
 	if n != 1 {
 		t.Fatalf("recovered = %d, want 1", n)
 	}
-	reg, err := h2.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr := h2.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	if len(reg.Entries) != 1 || reg.Entries[0].State != store.StateTearingDown {
 		t.Fatalf("registry after recovery = %+v, want the entry tearing-down", reg.Entries)
@@ -283,16 +283,16 @@ func TestRecoverInterruptedLeavesActiveAndTearingDownAlone(t *testing.T) {
 	fleetEntry(t, h1, mk("wt-reserving", store.StateReserving))
 
 	h2 := restartHarness(t, root, nil)
-	n, err := h2.H.RecoverInterrupted()
-	if err != nil {
-		t.Fatalf("RecoverInterrupted: %v", err)
+	n, rerr := h2.H.RecoverInterrupted()
+	if rerr != nil {
+		t.Fatalf("RecoverInterrupted: %v", rerr)
 	}
 	if n != 1 {
 		t.Fatalf("recovered = %d, want 1 (the reserving entry only)", n)
 	}
-	reg, err := h2.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr := h2.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	states := map[string]string{}
 	for _, e := range reg.Entries {
@@ -322,17 +322,17 @@ func TestReleaseRefusesTearingDownEntry(t *testing.T) {
 	e.CreatedAt, e.LastSeen = now, now
 	fleetEntry(t, h, e)
 
-	sess, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	sess, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
-	resp := h.Request(context.Background(), sess, verbRelease, &protocol.EntryRef{App: e.App, Slug: e.Slug})
+	resp := h.Request(context.Background(), sess, verbRelease, &api.EntryRef{App: e.App, Slug: e.Slug})
 	if resp.Error == nil || resp.Error.Code != 3 {
 		t.Fatalf("release of a tearing-down entry = %+v, want a refusal", resp.Error)
 	}
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatalf("reading the registry: %v", err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
 	}
 	if len(reg.Entries) != 1 {
 		t.Errorf("the refused release must leave the entry: %+v", reg.Entries)
