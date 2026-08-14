@@ -3,49 +3,50 @@ package cli
 // uninstall_test.go exercises `wt daemon uninstall`: the prefix rail (a
 // test never touches the machine's supervisor), the live-entry refusal
 // with its count and fix commands, --force as the only way past it, the
-// store being left alone, and the JSON shape. The live-entry tests plant a
-// real store — the client's one deliberate read of wt.db — and assert the
-// verb refuses against it.
+// store being left alone, and the JSON shape. The entry count comes from
+// the coordinator, so the live-entry tests stand up a fake one serving
+// `list`: the client never reads wt.db, and a test that seeded a real
+// database would be asserting a boundary violation rather than the
+// behaviour.
 
 import (
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/platform"
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
-	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
 
-// uninstallTestEnv builds a store root with the given number of live
-// entries and a planted registration file under a prefix, and returns the
-// WT_HOME value, the registration path and the database path. Every
+// uninstallTestEnv stands up a fake coordinator reporting the given number
+// of live entries, plus a planted registration file under a prefix, and
+// returns the WT_HOME value and the registration path. Every
 // uninstall test sets WT_HOME so the verb reads this store and never the
 // machine's real one.
-func uninstallTestEnv(t *testing.T, entries int) (home, regPath, dbPath string) {
+func uninstallTestEnv(t *testing.T, entries int) (home, regPath string) {
 	t.Helper()
 	home = filepath.Join(t.TempDir(), "wt")
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	st, err := store.Open(home)
-	if err != nil {
-		t.Fatalf("opening the store: %v", err)
-	}
-	for i := 0; i < entries; i++ {
-		slug := "wt-" + string(rune('1'+i))
-		if err := st.UpsertEntry(store.Entry{
-			App: "compose-app", Slug: slug, Slot: i + 1,
-			Owner: "me", OwnerKind: "host",
-			Path: "/tmp/" + slug, PathVisible: true, State: "active",
-			Resources: map[string]spec.Resolved{}, CreatedAt: "2026-01-01T00:00:00Z", LastSeen: "2026-01-01T00:00:00Z",
-		}); err != nil {
-			t.Fatalf("planting entry %d: %v", i, err)
+	// The entry count comes from the coordinator, not from wt.db: the
+	// client never reads the store. A fake coordinator serving `list` is
+	// therefore what stands in for a machine with allocations on it.
+	rows := make([]api.ListEntry, entries)
+	for i := range rows {
+		rows[i] = api.ListEntry{
+			App: "compose-app", Slug: "wt-" + strconv.Itoa(i+1), Slot: i + 1, State: "active",
 		}
 	}
+	endpoint := fakeCoordServer(t, map[string]func(*api.Request) *api.Response{
+		api.VerbList: canned(mustResult(t, api.ListResult{Entries: rows})),
+	})
+	t.Setenv("WT_ENDPOINT", endpoint)
+
 	prefix := filepath.Join(t.TempDir(), "reg")
 	if err := os.MkdirAll(prefix, 0o755); err != nil {
 		t.Fatal(err)
@@ -54,7 +55,28 @@ func uninstallTestEnv(t *testing.T, entries int) (home, regPath, dbPath string) 
 	if err := os.WriteFile(regPath, []byte("registration"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return home, regPath, filepath.Join(home, dbFileName)
+	return home, regPath
+}
+
+// emptyCoordinator is a fake reporting no allocations, for the tests whose
+// subject is not the refusal. Without one they fall through to the
+// compiled-in default endpoint and pass or fail depending on whether a real
+// coordinator happens to be running on the machine.
+func emptyCoordinator(t *testing.T) string {
+	t.Helper()
+	return fakeCoordServer(t, map[string]func(*api.Request) *api.Response{
+		api.VerbList: canned(mustResult(t, api.ListResult{Entries: []api.ListEntry{}})),
+	})
+}
+
+// mustResult wraps a verb result as the response the fake returns.
+func mustResult(t *testing.T, v any) *api.Response {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("encoding the canned result: %v", err)
+	}
+	return &api.Response{Result: raw}
 }
 
 // TestDaemonUninstallPrefixRoundTrip: install under a prefix, then
@@ -67,6 +89,7 @@ func TestDaemonUninstallPrefixRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("WT_HOME", home)
+	t.Setenv("WT_ENDPOINT", emptyCoordinator(t))
 	prefix := filepath.Join(t.TempDir(), "reg")
 	if err := os.MkdirAll(prefix, 0o755); err != nil {
 		t.Fatal(err)
@@ -109,7 +132,7 @@ func TestDaemonUninstallPrefixRoundTrip(t *testing.T) {
 // entries still allocated means uninstall refuses with exit 3, names how
 // many and the commands that resolve them, and changes nothing.
 func TestDaemonUninstallRefusesLiveEntries(t *testing.T) {
-	home, regPath, dbPath := uninstallTestEnv(t, 3)
+	home, regPath := uninstallTestEnv(t, 3)
 	t.Setenv("WT_HOME", home)
 	prefix := filepath.Dir(regPath)
 
@@ -129,15 +152,12 @@ func TestDaemonUninstallRefusesLiveEntries(t *testing.T) {
 	if _, err := os.Stat(regPath); err != nil {
 		t.Errorf("the refusal changed the registration: %v", err)
 	}
-	if _, err := os.Stat(dbPath); err != nil {
-		t.Errorf("the refusal changed the store: %v", err)
-	}
 }
 
 // TestDaemonUninstallForceOverridesTheRefusal: --force is the only way
 // past a live registry, and even then the store is left alone.
 func TestDaemonUninstallForceOverridesTheRefusal(t *testing.T) {
-	home, regPath, dbPath := uninstallTestEnv(t, 2)
+	home, regPath := uninstallTestEnv(t, 2)
 	t.Setenv("WT_HOME", home)
 	prefix := filepath.Dir(regPath)
 
@@ -148,27 +168,26 @@ func TestDaemonUninstallForceOverridesTheRefusal(t *testing.T) {
 	if _, err := os.Stat(regPath); !os.IsNotExist(err) {
 		t.Errorf("registration file still present after forced uninstall: %v", err)
 	}
-	if _, err := os.Stat(dbPath); err != nil {
-		t.Errorf("the store was removed by --force: %v", err)
-	}
 	if !strings.Contains(stdout, "left alone") {
 		t.Errorf("output does not say the store was left alone:\n%s", stdout)
 	}
 }
 
-// TestDaemonUninstallRefusesUnreadableRegistry: a registry that cannot be
-// read is a refusal too — whether entries are live cannot be verified, and
-// an uninstall that cannot verify may strand allocations. --force proceeds.
-func TestDaemonUninstallRefusesUnreadableRegistry(t *testing.T) {
+// TestDaemonUninstallRefusesWhenTheCoordinatorIsUnreachable is the
+// deliberate consequence of counting entries by asking the coordinator
+// rather than by reading wt.db: with the coordinator down the client
+// cannot know what is allocated, so it refuses instead of guessing. An
+// uninstall that cannot verify is an uninstall that may strand
+// allocations. --force is the documented way past it.
+func TestDaemonUninstallRefusesWhenTheCoordinatorIsUnreachable(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "wt")
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	dbPath := filepath.Join(home, dbFileName)
-	if err := os.WriteFile(dbPath, []byte("this is not a sqlite database"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	t.Setenv("WT_HOME", home)
+	// A port nothing is listening on: the client's dial fails, which is
+	// what a stopped or missing coordinator looks like.
+	t.Setenv("WT_ENDPOINT", "http://127.0.0.1:1")
 	prefix := filepath.Join(t.TempDir(), "reg")
 	if err := os.MkdirAll(prefix, 0o755); err != nil {
 		t.Fatal(err)
@@ -182,8 +201,11 @@ func TestDaemonUninstallRefusesUnreadableRegistry(t *testing.T) {
 	if code != ExitRefused {
 		t.Fatalf("exit = %d, want 3; stderr: %s", code, stderr)
 	}
-	if !strings.Contains(stderr, dbPath) {
-		t.Errorf("refusal does not name the unreadable registry %q:\n%s", dbPath, stderr)
+	if !strings.Contains(stderr, "--force") {
+		t.Errorf("refusal does not name --force as the way past it:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "still allocated") {
+		t.Errorf("refusal does not say what could not be determined:\n%s", stderr)
 	}
 	if _, err := os.Stat(regPath); err != nil {
 		t.Errorf("the refusal changed the registration: %v", err)
@@ -191,13 +213,7 @@ func TestDaemonUninstallRefusesUnreadableRegistry(t *testing.T) {
 
 	code, _, _ = runCLI(t, "daemon", "uninstall", "--prefix", prefix, "--force")
 	if code != ExitOK {
-		t.Fatalf("forced uninstall over an unreadable registry: exit = %d, want 0", code)
-	}
-	if _, err := os.Stat(regPath); !os.IsNotExist(err) {
-		t.Errorf("registration file still present after forced uninstall: %v", err)
-	}
-	if _, err := os.Stat(dbPath); err != nil {
-		t.Errorf("the store was removed: %v", err)
+		t.Fatalf("forced uninstall with the coordinator unreachable: exit = %d, want 0", code)
 	}
 }
 
@@ -205,6 +221,7 @@ func TestDaemonUninstallRefusesUnreadableRegistry(t *testing.T) {
 // installed succeeds and says so — a second uninstall is a no-op.
 func TestDaemonUninstallNothingRegistered(t *testing.T) {
 	t.Setenv("WT_HOME", filepath.Join(t.TempDir(), "wt"))
+	t.Setenv("WT_ENDPOINT", emptyCoordinator(t))
 	prefix := filepath.Join(t.TempDir(), "reg")
 	code, stdout, stderr := runCLI(t, "daemon", "uninstall", "--prefix", prefix)
 	if code != ExitOK {
@@ -221,7 +238,7 @@ func TestDaemonUninstallNothingRegistered(t *testing.T) {
 // TestDaemonUninstallJSON: --json prints exactly one JSON object with the
 // registration facts and the store-kept truth.
 func TestDaemonUninstallJSON(t *testing.T) {
-	home, regPath, _ := uninstallTestEnv(t, 0)
+	home, regPath := uninstallTestEnv(t, 0)
 	t.Setenv("WT_HOME", home)
 	prefix := filepath.Dir(regPath)
 
@@ -244,27 +261,24 @@ func TestDaemonUninstallJSON(t *testing.T) {
 	}
 }
 
-// TestCountRegistryEntries: the count reads exactly the planted rows, and
-// a store that does not exist counts zero — a machine nothing was ever
-// allocated on has nothing to refuse over.
+// TestCountRegistryEntries: the count is whatever the coordinator's list
+// reports, and an unreachable coordinator is an error rather than a zero —
+// counting zero when the truth is unknown is exactly the mistake the
+// refusal exists to prevent.
 func TestCountRegistryEntries(t *testing.T) {
-	t.Setenv("WT_HOME", filepath.Join(t.TempDir(), "wt"))
+	home, _ := uninstallTestEnv(t, 2)
+	t.Setenv("WT_HOME", home)
 	n, err := countRegistryEntries()
 	if err != nil {
-		t.Fatalf("count without a store: %v", err)
-	}
-	if n != 0 {
-		t.Errorf("count without a store = %d, want 0", n)
-	}
-
-	home, _, _ := uninstallTestEnv(t, 2)
-	t.Setenv("WT_HOME", home)
-	n, err = countRegistryEntries()
-	if err != nil {
-		t.Fatalf("count: %v", err)
+		t.Fatalf("count: %+v", err)
 	}
 	if n != 2 {
 		t.Errorf("count = %d, want 2", n)
+	}
+
+	t.Setenv("WT_ENDPOINT", "http://127.0.0.1:1")
+	if _, err := countRegistryEntries(); err == nil {
+		t.Error("an unreachable coordinator counted successfully; it must be an error, never a zero")
 	}
 }
 

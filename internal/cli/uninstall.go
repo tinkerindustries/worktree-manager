@@ -15,72 +15,42 @@ package cli
 // knows how to release them. --force is the only way past the refusal.
 
 import (
-	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"net/url"
-	"os"
-	"path/filepath"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/platform"
-	_ "modernc.org/sqlite"
 )
 
-// dbFileName is the coordinator's database inside the store root. The name
-// is restated here rather than imported from internal/store — the client
-// must not import the coordinator-only packages (cmd/wt's package-boundary
-// test) — and it is part of the documented store contract (CLAUDE.md,
-// "Environment": the database at <WT_HOME|$HOME/.wt>/wt.db).
-const dbFileName = "wt.db"
-
-// countRegistryEntries reports how many entries the store's registry
-// holds, by reading the coordinator's database directly.
+// countRegistryEntries reports how many entries the registry holds, by
+// asking the coordinator.
 //
-// This is the one place the client opens wt.db, and the exception to the
-// rule that the store database is never client-readable (endpoint.go) is
-// deliberate: `wt daemon uninstall` must refuse while entries are live,
-// and it is the one verb that has to work when the coordinator is dead or
-// gone — a broken installation is exactly when uninstall is needed, and a
-// check that dialed the coordinator would make the refusal unanswerable.
-// Only the count is read, never an entry's content, so the store keeps its
-// secrets. The database is opened read-write like the coordinator opens
-// it, because SQLite cannot reliably read a WAL-mode database read-only
-// (the -shm wal-index needs write access); nothing is ever written. A
-// database from a newer schema that renamed or dropped `entries` refuses
-// here with "no such table", the store's own refusal rule (a newer schema
-// is never half-read).
+// It asks rather than reading wt.db, and the distinction is the whole
+// point of the client/coordinator split: the store database is never
+// client-readable, only endpoint.json is (ARCHITECTURE.md §8.2; CLAUDE.md,
+// "The two binaries"). Reading it here would also link SQLite into the
+// client — 30 packages and 6 MB for one COUNT(*) — and would put a second
+// copy of the store's path and DSN rules somewhere they can drift from
+// internal/store's.
 //
-// A missing database means a machine nothing was ever allocated on: zero
-// entries, no refusal.
-func countRegistryEntries() (int, error) {
-	root, err := api.Home()
+// The consequence is deliberate and is what --force is for: with the
+// coordinator unreachable, the client cannot know what is allocated, so it
+// refuses instead of guessing. An uninstall that cannot verify is an
+// uninstall that may strand allocations, and refusing is this codebase's
+// answer to that everywhere else.
+func countRegistryEntries() (int, *Error) {
+	sess, err := dialCoordinator()
 	if err != nil {
 		return 0, err
 	}
-	path := filepath.Join(root, dbFileName)
-	if _, err := os.Stat(path); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return 0, nil // no store: nothing is allocated
-		}
-		return 0, fmt.Errorf("reading the registry at %s: %w", path, err)
+	defer sess.Close()
+	list, lerr := sess.client.List(&api.ListArgs{})
+	if lerr != nil {
+		return 0, requestErr(sess.endpoint, api.VerbList, lerr)
 	}
-	// The path is URL-escaped because SQLite parses the DSN as a URI (a
-	// store root whose path contains '?' or '#' must still open) — the
-	// same escaping the store's own dsn() applies.
-	db, err := sql.Open("sqlite", "file:"+url.PathEscape(filepath.ToSlash(path))+
-		"?_pragma=busy_timeout(5000)")
-	if err != nil {
-		return 0, fmt.Errorf("reading the registry at %s: %w", path, err)
-	}
-	defer db.Close()
-	var n int
-	if err := db.QueryRow("SELECT COUNT(*) FROM entries").Scan(&n); err != nil {
-		return 0, fmt.Errorf("reading the registry at %s: %w", path, err)
-	}
-	return n, nil
+	return len(list.Entries), nil
 }
 
 // daemonUninstallResult is the one JSON object `wt daemon uninstall
@@ -130,10 +100,11 @@ func runDaemonUninstall(args []string, stdout, stderr io.Writer) int {
 	// verified, and an uninstall that cannot verify is an uninstall that
 	// may strand allocations (refuse rather than partially honour).
 	if !*force {
-		n, err := countRegistryEntries()
-		if err != nil {
-			WriteError(stderr, New(ExitRefused, err.Error(),
-				"find out what is allocated first: run 'wt list' (needs the coordinator running), then re-run: wt daemon uninstall (or pass --force)"))
+		n, cerr := countRegistryEntries()
+		if cerr != nil {
+			WriteError(stderr, New(ExitRefused,
+				fmt.Sprintf("cannot tell whether anything is still allocated: %s", cerr.Msg),
+				"start the coordinator and re-run so the check can run, or pass --force to uninstall without it (anything still allocated will be stranded)"))
 			return ExitRefused
 		}
 		if n > 0 {

@@ -144,15 +144,21 @@ cd wt-<version>-<os>-<arch>
   remove the registration file) and then removes the two binaries from
   the prefix. The store is never removed, and the uninstall refuses —
   exit 3, nothing changed — while the registry still holds entries,
-  naming `wt list` and `wt rm`; `wt daemon uninstall --force` is the
-  documented way past the refusal.
+  naming `wt list` and `wt rm`, and equally when the coordinator is
+  unreachable and the count cannot be established; `wt daemon uninstall
+  --force` is the documented way past either refusal.
 
 ### Uninstall
 
 `wt daemon uninstall [--prefix <dir>] [--force] [--json]` reverses `wt
 daemon install` — launchctl bootout, `systemctl --user disable --now` and
 `schtasks /End` + `/Delete /F` per platform, then the registration file is
-removed. It is client-local: no coordinator call, no route. The store
+removed. Deregistration is client-local and needs no route; the entry
+count behind the refusal comes from the coordinator's `list`, because the
+store database is never client-readable — only `endpoint.json` is. The
+consequence is deliberate: with the coordinator down the client cannot
+know what is allocated, so it refuses rather than guessing, and `--force`
+is how an operator says they accept the risk. The store
 (`~/.wt`, or `WT_HOME`) is never removed — `wt.db` is the only record of
 what is allocated on the machine, and deleting it would strand every
 container, port and VM the tool has handed out — and the verb prints the

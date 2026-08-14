@@ -96,12 +96,13 @@ configuration; neither binary branches on repo identity.
   and `daemon install` registers with launchd, systemd (with its paired
   socket unit, which now carries a TCP `ListenStream`) or the Task
   Scheduler per platform. `daemon uninstall` is the reverse — stop,
-  deregister, remove the registration file — client-local with no
-  coordinator call and no route; it never removes the store, and it
-  refuses with exit 3 while the registry still holds entries, naming
-  `wt list` and `wt rm` (`--force` is the only way past the refusal; the
-  count is the client's one deliberate read of wt.db, which is why the
-  `wt` binary links modernc). `daemon install --addr <host:port>` and
+  deregister, remove the registration file. Deregistration is client-local
+  and needs no route, but the entry count comes from the coordinator's
+  `list`, because the store database is never client-readable. It never
+  removes the store, and it refuses with exit 3 while the registry still
+  holds entries, naming `wt list` and `wt rm`. With the coordinator
+  unreachable the count is unknowable, so that is a refusal too; `--force`
+  is the only way past either. `daemon install --addr <host:port>` and
   `--container-token <token>` are independent settings — a custom address
   needs no token and a token needs no custom address. With no `--addr` the
   install probes for a free port, pins it into the registration and says
