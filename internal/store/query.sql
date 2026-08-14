@@ -102,3 +102,12 @@ ON CONFLICT(app) DO UPDATE SET spec = excluded.spec;
 
 -- name: DeleteSpec :exec
 DELETE FROM specs WHERE app = ?;
+
+-- name: DeleteReservationPortsByNote :exec
+DELETE FROM reservation_ports WHERE reservation_id IN (SELECT id FROM reservations WHERE note = ?);
+
+-- name: DeleteReservationNamesByNote :exec
+DELETE FROM reservation_names WHERE reservation_id IN (SELECT id FROM reservations WHERE note = ?);
+
+-- name: DeleteReservationsByNote :exec
+DELETE FROM reservations WHERE note = ?;

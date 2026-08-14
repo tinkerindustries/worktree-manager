@@ -11,29 +11,32 @@
 # -Prefix the binaries go to %LOCALAPPDATA%\wt\bin and the logon task is
 # registered for real.
 #
-# The opt-in loopback TCP surface is configured with -Tcp <addr> and
-# -TcpToken <token> (both together, loopback address, 16+ characters) —
-# for hosts where a socket cannot be shared into a container.
+# The coordinator listens on a loopback HTTP port. -Addr overrides the
+# default; -ContainerToken admits container clients (16+ characters). The
+# two are independent: a custom port needs no token, and a token needs no
+# custom port.
 param(
     [string]$Prefix = "",
-    [string]$Tcp = "",
-    [string]$TcpToken = $env:WT_TCP_TOKEN
+    [string]$Addr = "",
+    [string]$ContainerToken = $env:WT_CONTAINER_TOKEN
 )
 
 $ErrorActionPreference = "Stop"
 
 function usage {
     @"
-usage: .\install.ps1 [-Prefix <dir>] [-Tcp <addr> -TcpToken <token>]
+usage: .\install.ps1 [-Prefix <dir>] [-Addr <addr>] [-ContainerToken <tok>]
 
-  -Prefix <dir>     install the binaries into <dir>\bin and write the task
-                    XML under <dir> (self-contained; nothing is
-                    registered). Default: %%LOCALAPPDATA%%\wt\bin with a
-                    real logon-task registration.
-  -Tcp <addr>       also start the coordinator's opt-in loopback TCP
-                    listener at this address (requires -TcpToken).
-  -TcpToken <tok>   the token every TCP connection must present (at least
-                    16 characters; WT_TCP_TOKEN also works).
+  -Prefix <dir>          install the binaries into <dir>\bin and write the
+                         task XML under <dir> (self-contained; nothing is
+                         registered). Default: %%LOCALAPPDATA%%\wt\bin
+                         with a real logon-task registration.
+  -Addr <addr>           the loopback address the coordinator listens on.
+                         Default: a free port, chosen at install time.
+  -ContainerToken <tok>  admit container clients with this token (at least
+                         16 characters; WT_CONTAINER_TOKEN also works,
+                         which keeps it out of shell history). Absent,
+                         only host clients are admitted.
 "@
 }
 
@@ -42,10 +45,6 @@ if ($Prefix -eq "") {
     $RegPrefix = ""
 } else {
     $RegPrefix = $Prefix
-}
-
-if ($Tcp -ne "" -and $TcpToken -eq "") {
-    Write-Error "--Tcp requires --TcpToken: peer credentials do not exist on a TCP connection, so the listener is unauthenticated without one"
 }
 
 # The archive's own directory: the two binaries must be right next to this
@@ -73,13 +72,18 @@ $regArgs = @()
 if ($RegPrefix -ne "") {
     $regArgs += "--prefix", $RegPrefix
 }
-if ($Tcp -ne "") {
-    & $wt daemon install @regArgs --wtd $wtd --tcp $Tcp --tcp-token $TcpToken
-    if ($RegPrefix -eq "") {
-        Write-Host "loopback TCP enabled on $Tcp; a container client dials tcp://<host>:<port> with WT_CLIENT_TOKEN set"
-    }
-} else {
-    & $wt daemon install @regArgs --wtd $wtd
+# --addr and --container-token are passed independently: the coordinator
+# has a default address and admits containers only when a token is
+# configured, so neither implies the other.
+if ($Addr -ne "") {
+    $regArgs += "--addr", $Addr
+}
+if ($ContainerToken -ne "") {
+    $regArgs += "--container-token", $ContainerToken
+}
+& $wt daemon install @regArgs --wtd $wtd
+if ($ContainerToken -ne "" -and $RegPrefix -eq "") {
+    Write-Host "container clients admitted; a container sets WT_ENDPOINT to the address above and WT_CLIENT_TOKEN to the token"
 }
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE

@@ -53,11 +53,13 @@ Install:
   ./install.sh --prefix <dir>   # self-contained install into <dir>; the
                                 # registration is written there and nothing
                                 # is loaded (a temp-prefix install)
-  ./install.sh --tcp 127.0.0.1:7331 --tcp-token <token>
-                                # also enable the opt-in loopback TCP
-                                # listener for hosts where a socket cannot
-                                # be shared into a container; every TCP
-                                # connection must present the token
+  ./install.sh --addr 127.0.0.1:7833
+                                # pin the coordinator's listen address
+                                # (default: a free port chosen at install)
+  ./install.sh --container-token <token>
+                                # admit container clients with this token;
+                                # a container sets WT_ENDPOINT and
+                                # WT_CLIENT_TOKEN to reach the coordinator
 
 Verify with: wt daemon status
 

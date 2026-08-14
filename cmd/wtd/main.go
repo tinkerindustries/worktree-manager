@@ -25,12 +25,12 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
-	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/coord"
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
 	"github.com/mrgeoffrich/worktree-manager/internal/platform"
@@ -60,11 +60,13 @@ func run(args []string) int {
 		return 1
 	}
 
-	// Containers are opt-in exactly as the old TCP surface was: absent
-	// --container-token the coordinator accepts host clients only, and a
-	// token short enough to brute-force is refused (plan.md §5, phase R1).
-	if *containerToken != "" && len(*containerToken) < 16 {
-		fmt.Fprintln(os.Stderr, "wtd: --container-token must be at least 16 characters (a short token would be brute-forceable over the wire)")
+	// The address and the token are validated by the same function
+	// `wt daemon install` runs, so a configuration the installer accepts is
+	// one this binary will start with, and neither can drift from the
+	// other's idea of what is valid. Containers stay opt-in: absent
+	// --container-token the coordinator accepts host clients only.
+	if err := platform.ValidateCoordinatorConfig(*addr, *containerToken, *allowRemote); err != nil {
+		fmt.Fprintf(os.Stderr, "wtd: %v\n", err)
 		return 1
 	}
 
@@ -139,6 +141,10 @@ func run(args []string) int {
 			log.Error("--activate given but no activated socket (LISTEN_FDS is unset); run wtd in the foreground, or start it through the systemd socket unit")
 			return 1
 		}
+		if perr := h.ReserveOwnPort(ln.Addr().String()); perr != nil {
+			log.Error("reserving the coordinator's own port in the band ledger", "err", perr)
+			return 1
+		}
 		log.Info("wtd starting", "version", version, "store", root, "addr", ln.Addr().String(), "activated", true)
 		if err := srv.ServeListener(ctx, ln); err != nil {
 			log.Error("coordinator stopped with an error", "err", err)
@@ -148,25 +154,18 @@ func run(args []string) int {
 		return 0
 	}
 
+	// The loopback rule was already enforced by ValidateCoordinatorConfig
+	// above, on the flag as given. The default is applied after it, so a
+	// bare `wtd` never had an address to check.
 	listenAddr := *addr
 	if listenAddr == "" {
-		listenAddr = "127.0.0.1:7833"
+		listenAddr = api.DefaultAddr
 	}
-	if !*allowRemote {
-		// A non-loopback bind address requires --allow-remote: the
-		// coordinator is a per-user process holding the user's tokens, and
-		// opening it to the network needs an explicit decision. A wildcard
-		// bind (":7833", "0.0.0.0:7833") is off loopback too.
-		tcpAddr, rerr := net.ResolveTCPAddr("tcp", listenAddr)
-		if rerr != nil {
-			log.Error("refusing to listen on an unresolvable address", "addr", listenAddr, "err", rerr)
-			return 1
-		}
-		if tcpAddr.IP == nil || !tcpAddr.IP.IsLoopback() {
-			log.Error("refusing to listen off loopback", "addr", listenAddr,
-				"err", "a non-loopback bind address requires --allow-remote; use 127.0.0.1:7833, or pass --allow-remote deliberately")
-			return 1
-		}
+	// The coordinator's own port is reserved in the band ledger before it
+	// serves, so bands suggest can never propose a base covering it.
+	if perr := h.ReserveOwnPort(listenAddr); perr != nil {
+		log.Error("reserving the coordinator's own port in the band ledger", "err", perr)
+		return 1
 	}
 	log.Info("wtd starting", "version", version, "store", root, "addr", listenAddr, "container_token", *containerToken != "")
 	if err := srv.Serve(ctx, listenAddr); err != nil {

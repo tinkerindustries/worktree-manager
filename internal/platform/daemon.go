@@ -126,14 +126,25 @@ type InstallSupervisorOpts struct {
 	// coordinator binary, normally a sibling of the wt binary that is
 	// running `wt daemon install`.
 	WtdPath string
-	// TCPAddr and TCPToken enable the opt-in loopback TCP surface in the
-	// registration: the unit starts wtd with --addr/--container-token so
-	// the supervisor-managed coordinator listens exactly like a foreground
-	// one. Both or neither (validated by ValidateTCPConfig); a
-	// registration file that carries the token is written 0600 on unix so
-	// a machine's other users cannot read it out of the unit file.
-	TCPAddr  string
-	TCPToken string
+	// Addr is the listen address the registration starts wtd with, so a
+	// supervisor-managed coordinator listens exactly like a foreground
+	// one. Empty means the unit omits --addr and wtd uses its default.
+	Addr string
+	// ContainerToken is the token that admits container clients. Empty
+	// means the unit omits --container-token and the coordinator accepts
+	// host clients only. A registration file that carries the token is
+	// written 0600 on unix so a machine's other users cannot read it out
+	// of the unit file.
+	//
+	// Addr and ContainerToken are independent: before R1 a TCP listener
+	// and its token were opt-in as a pair, but the listener is now the
+	// only surface and has a default, so a custom address needs no token
+	// (ValidateCoordinatorConfig checks each on its own terms).
+	ContainerToken string
+	// AllowRemote permits a non-loopback Addr, and is written into the
+	// registration so the started coordinator agrees with the check made
+	// here.
+	AllowRemote bool
 }
 
 // InstallSupervisorResult reports what registration wrote and whether the
@@ -165,16 +176,16 @@ func InstallSupervisor(opts InstallSupervisorOpts) (InstallSupervisorResult, err
 	if opts.WtdPath == "" {
 		return InstallSupervisorResult{}, errors.New("the registration file needs the coordinator binary path (wtd)")
 	}
-	if err := ValidateTCPConfig(opts.TCPAddr, opts.TCPToken); err != nil {
+	if err := ValidateCoordinatorConfig(opts.Addr, opts.ContainerToken, opts.AllowRemote); err != nil {
 		return InstallSupervisorResult{}, err
 	}
 	switch runtime.GOOS {
 	case "darwin":
 		return installLaunchAgent(opts)
 	case "linux":
-		return installSystemdUnits(opts.Prefix, opts.WtdPath, opts.TCPAddr, opts.TCPToken)
+		return installSystemdUnits(opts.Prefix, opts.WtdPath, opts.Addr, opts.ContainerToken)
 	case "windows":
-		return installWindowsTask(opts.Prefix, opts.WtdPath, opts.TCPAddr, opts.TCPToken)
+		return installWindowsTask(opts.Prefix, opts.WtdPath, opts.Addr, opts.ContainerToken)
 	}
 	return InstallSupervisorResult{}, ErrNoSupervisor
 }
@@ -189,19 +200,19 @@ func installLaunchAgent(opts InstallSupervisorOpts) (InstallSupervisorResult, er
 		return InstallSupervisorResult{}, fmt.Errorf("creating the registration directory %s: %w", filepath.Dir(path), err)
 	}
 	mode := os.FileMode(0o644)
-	if opts.TCPToken != "" {
+	if opts.ContainerToken != "" {
 		// The plist carries the TCP token: readable by the owner alone, so
 		// a machine's other users cannot lift the token out of the unit
 		// file and connect over the loopback surface (the security pass,
 		// phase 9).
 		mode = 0o600
 	}
-	if err := os.WriteFile(path, launchdPlist(opts.WtdPath, opts.TCPAddr, opts.TCPToken), mode); err != nil {
+	if err := os.WriteFile(path, launchdPlist(opts.WtdPath, opts.Addr, opts.ContainerToken), mode); err != nil {
 		return InstallSupervisorResult{}, fmt.Errorf("writing %s: %w", path, err)
 	}
 	if opts.Prefix != "" {
 		note := "registration written under a test prefix; no launchd state was touched"
-		if opts.TCPToken != "" {
+		if opts.ContainerToken != "" {
 			note += "; the registration carries the loopback TCP token"
 		}
 		return InstallSupervisorResult{
@@ -224,10 +235,17 @@ func installLaunchAgent(opts InstallSupervisorOpts) (InstallSupervisorResult, er
 // C API. With the container token configured, ProgramArguments carries
 // --addr and --container-token; each argument is its own element, so the
 // token needs no escaping beyond the XML text rules.
-func launchdPlist(wtdPath, tcpAddr, tcpToken string) []byte {
+func launchdPlist(wtdPath, addr, containerToken string) []byte {
 	args := []string{wtdPath}
-	if tcpAddr != "" {
-		args = append(args, "--addr", tcpAddr, "--container-token", tcpToken)
+	// Each flag is emitted on its own terms. They were coupled while the
+	// TCP listener was opt-in as a pair; emitting them together now would
+	// write an empty --container-token whenever only an address was given,
+	// and an empty token admits no container while looking like it does.
+	if addr != "" {
+		args = append(args, "--addr", addr)
+	}
+	if containerToken != "" {
+		args = append(args, "--container-token", containerToken)
 	}
 	var elems strings.Builder
 	for _, a := range args {
