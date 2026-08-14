@@ -1,6 +1,7 @@
 # sqlc configuration for the coordinator's store. sqlc is a build-time
-# tool (go.mod `tool` directive, pinned in go.mod); its output is
-# committed and must be regenerated with `go tool sqlc generate` whenever
+# tool, pinned by version at the point of invocation; its output is
+# committed and must be regenerated with
+# `go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate` whenever
 # internal/store/schema.sql or internal/store/query.sql changes. The
 # generated code uses database/sql, so the runtime dependency list stays
 # at two. Run from the repository root, as CI will.
