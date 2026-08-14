@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -13,6 +12,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/api"
+	apiclient "github.com/mrgeoffrich/worktree-manager/internal/api/client"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 )
 
@@ -111,15 +111,10 @@ func runBandsSuggest(args []string, stdout, stderr io.Writer) int {
 		return cerr.Code
 	}
 	defer sess.Close()
-	raw, rerr := sess.request("bands.suggest", &api.SuggestBandArgs{Spec: *parsed})
+	res, rerr := sess.client.BandsSuggest(&api.SuggestBandArgs{Spec: *parsed})
 	if rerr != nil {
-		WriteError(stderr, rerr)
+		WriteError(stderr, requestErr(sess.endpoint, api.VerbBandsSuggest, rerr))
 		return rerr.Code
-	}
-	var res api.SuggestBandResult
-	if err := json.Unmarshal(raw, &res); err != nil {
-		WriteError(stderr, New(ExitFailure, fmt.Sprintf("decoding the bands.suggest response: %v", err), ""))
-		return ExitFailure
 	}
 
 	if *jsonOut {
@@ -148,7 +143,12 @@ func runBandsSuggest(args []string, stdout, stderr io.Writer) int {
 // bases each app holds and the host-global reservations no app may allocate
 // from. It is the onboarding skill's read of the machine's port facts.
 func runBandsList(args []string, stdout, stderr io.Writer) int {
-	return coordVerb("bands list", args, stdout, stderr, "bands.list", nil, writeBandsTable)
+	return coordVerb("bands list", args, stdout, stderr, api.VerbBandsList,
+		func(*flag.FlagSet) func(*coordClient) (*api.BandsListResult, *apiclient.Error) {
+			return func(sess *coordClient) (*api.BandsListResult, *apiclient.Error) {
+				return sess.client.BandsList()
+			}
+		}, writeBandsTable)
 }
 
 // writeBandsTable prints the ledger in text form: one line per app band,
@@ -328,15 +328,10 @@ func runBandsReserve(args []string, stdout, stderr io.Writer) int {
 		return err.Code
 	}
 	defer sess.Close()
-	raw, err := sess.request("bands.reserve", &reqArgs)
-	if err != nil {
-		WriteError(stderr, err)
-		return err.Code
-	}
-	var res api.ReserveBandResult
-	if err := json.Unmarshal(raw, &res); err != nil {
-		WriteError(stderr, New(ExitFailure, fmt.Sprintf("decoding the bands.reserve response: %v", err), ""))
-		return ExitFailure
+	res, rerr := sess.client.BandsReserve(&reqArgs)
+	if rerr != nil {
+		WriteError(stderr, requestErr(sess.endpoint, api.VerbBandsReserve, rerr))
+		return rerr.Code
 	}
 
 	if *jsonOut {
@@ -346,7 +341,7 @@ func runBandsReserve(args []string, stdout, stderr io.Writer) int {
 		}
 		return ExitOK
 	}
-	return writeReserveTable(stdout, &res)
+	return writeReserveTable(stdout, res)
 }
 
 // writeReserveTable prints the registration result: the app's bases with

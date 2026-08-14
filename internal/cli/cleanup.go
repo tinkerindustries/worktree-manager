@@ -21,7 +21,6 @@ package cli
 // (06-fleet.md §7.2); it lives coordinator-side in coord/cleanup.go.
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -98,15 +97,10 @@ func runCleanup(args []string, stdout, stderr io.Writer) int {
 	}
 	defer sess.Close()
 
-	raw, lerr := sess.request("list", &api.ListArgs{})
+	list, lerr := sess.client.List(&api.ListArgs{})
 	if lerr != nil {
-		WriteError(stderr, lerr)
+		WriteError(stderr, requestErr(sess.endpoint, api.VerbList, lerr))
 		return lerr.Code
-	}
-	var list api.ListResult
-	if err := json.Unmarshal(raw, &list); err != nil {
-		WriteError(stderr, New(ExitFailure, fmt.Sprintf("decoding the list response: %v", err), ""))
-		return ExitFailure
 	}
 
 	// The candidates: this app's entries, in slug order, that are the
@@ -168,16 +162,11 @@ func runCleanup(args []string, stdout, stderr io.Writer) int {
 			row := cleanupRow{Slug: e.Slug, Action: "cleaned",
 				Detail: "merged PR; resources torn down, the registry entry was dropped"}
 			if containsFlag(e.Flags, "reclaimable") {
-				raw, rerr := sess.request("reconcile", &api.ReconcileArgs{App: sp.App, Spec: *sp,
+				res, rerr := sess.client.Reconcile(&api.ReconcileArgs{App: sp.App, Spec: *sp,
 					Refs: []api.EntryRef{{App: sp.App, Slug: e.Slug}}})
 				if rerr != nil {
 					final = append(final, cleanupRow{Slug: e.Slug, Action: "failed", Detail: rerr.Msg})
 					continue
-				}
-				var res api.ReconcileResult
-				if err := json.Unmarshal(raw, &res); err != nil {
-					WriteError(stderr, New(ExitFailure, fmt.Sprintf("decoding the reconcile response: %v", err), ""))
-					return ExitFailure
 				}
 				oc := res.Outcomes[0]
 				if oc.Action != "torn-down" {

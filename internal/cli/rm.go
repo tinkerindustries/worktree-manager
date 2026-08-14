@@ -27,7 +27,6 @@ package cli
 // deallocate; neither is a message and a stop.
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -244,18 +243,14 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 
 // rmRequest runs one rm call and decodes the result.
 func rmRequest(sess *coordClient, sp *spec.Spec, slug string, keepProcesses, dryRun bool, purgeFlags, keepFlags []string) (*api.RmResult, *Error) {
-	raw, err := sess.request("rm", &api.RmArgs{
+	res, rerr := sess.client.Rm(&api.RmArgs{
 		App: sp.App, Slug: slug, Spec: *sp,
 		KeepProcesses: keepProcesses, DryRun: dryRun, PurgeFlags: purgeFlags, KeepFlags: keepFlags,
 	})
-	if err != nil {
-		return nil, err
+	if rerr != nil {
+		return nil, requestErr(sess.endpoint, api.VerbRm, rerr)
 	}
-	var res api.RmResult
-	if err := json.Unmarshal(raw, &res); err != nil {
-		return nil, New(ExitFailure, fmt.Sprintf("decoding the rm response: %v", err), "")
-	}
-	return &res, nil
+	return res, nil
 }
 
 // rmNoEntry handles the two no-entry paths of 04-lifecycle.md §7.3:
