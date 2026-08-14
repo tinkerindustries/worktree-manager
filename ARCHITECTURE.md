@@ -12,12 +12,17 @@ internal packages:
 
 ```
 cmd/wt        the client: verb dispatch into internal/cli, then os.Exit
-cmd/wtd       the coordinator: socket listener, protocol loop, graceful
-              shutdown, the R1 restart recovery (every reserving entry is
-              torn down by handle or moved to tearing-down before the
-              first connection), and the opt-in loopback TCP listener
-              (--tcp/--tcp-token, both together, loopback-only); reads
-              WT_HOME and WT_SOCKET, logs to stderr
+cmd/wtd       the coordinator: the net/http server on --addr (default
+              127.0.0.1:7833), graceful shutdown via http.Server.Shutdown,
+              the R1 restart recovery (every reserving entry is torn down
+              by handle or moved to tearing-down before the first request
+              is served), the endpoint.json write, and the reservation of
+              its own port in the band ledger. --allow-remote permits a
+              non-loopback bind, --container-token admits container
+              clients, --activate consumes the systemd-passed listener;
+              reads WT_HOME, logs to stderr
+cmd/wtgen     the generator: reads api.Routes and the api types and emits
+              api/openapi.yaml and internal/api/client. Stdlib only
 dist/         the phase-9 distribution: build.sh assembles one archive
               per platform (both binaries plus the platform's installer),
               install.sh and install.ps1 install into a prefix and drive
@@ -47,22 +52,23 @@ internal/platform  M8: path realisation (on Windows via
               Git for Windows on Windows and refused by name when no
               POSIX shell exists — hook commands are shell commands), the port-probe socket options (SO_REUSEADDR set on
               unix, unset on Windows — the one GOOS branch callers never
-              see), the socket path (and the tcp:// form DialSocket
-              dials — the loopback TCP surface's client half), the
-              loopback-TCP configuration rails (ValidateTCPConfig:
-              literal loopback address only, 16+-character whitespace-free
-              token), the named-pipe transport on Windows
-              (owner-only ACL), peer credentials (the pipe's ACL is the
-              whole of host identity on Windows), the private-dir
+              see), the listen-address and container-token rails
+              (ValidateListenAddr, ValidateContainerToken, and the
+              ValidateCoordinatorConfig both wtd and `wt daemon install`
+              run so the two cannot disagree — each setting checked on its
+              own terms, since a custom address needs no token), the
+              free-port probe that pins an address into a registration
+              (ChooseRegistrationAddr, over the same ProbeBind the port
+              driver uses), the private-dir
               permission model (0700 on unix; the current-user ACL with
               the refusal to hold credentials where it cannot be set on
               Windows), the atomic-write helper (directory-fsync step
               unix-only), the supervisor seam (launchd on macOS, the
               systemd user unit with its paired .socket unit and
               LISTEN_FDS socket activation on Linux, the logon scheduled
-              task on Windows — each registration carrying the optional
-              --tcp/--tcp-token arguments, written 0600 when it carries
-              the token), listener discovery (lsof on macOS,
+              task on Windows — each registration carrying --addr and
+              --container-token independently, written 0600 when it
+              carries the token), listener discovery (lsof on macOS,
               /proc/net on Linux, netstat+tasklist on Windows) and
               signalling (TERM/KILL by pid, process groups; on Windows
               taskkill without /F then /F, the escalation reported); the
@@ -89,21 +95,29 @@ internal/artefact  M7: the phase-7 generated artefacts, rendered per
 internal/generate  M5: the generated Go descriptor reader — the source
               an adopted repo compiles into its own entry points, with an
               embedded YAML-subset parser (stdlib only)
-internal/protocol  the wire between the two binaries: message types,
-              newline-delimited JSON framing with the cap enforced while
-              reading (a peer streaming bytes without a newline cannot
-              grow the coordinator's memory past 1 MiB), version
-              negotiation, and the verb payloads — the phase-3
-              allocate/activate/release and bands verbs, phase 5's
-              materialise and rm, and phase 6's list, doctor, reconcile
-              and clients.list, which carry the parsed spec where a
-              teardown needs it
-internal/store  the coordinator's state directory: root resolution,
-              atomic writes, the schema_version envelope, clients.json,
-              registry.json, bands.json (with the per-base spans doctor
-              reads) and specs.json (the per-app spec cache reclamation
-              falls back to)
-internal/coord  the coordinator's request core, socket server and the
+internal/api  the HTTP surface both binaries share: the *Args/*Result
+              verb payloads (which carry the parsed spec where a teardown
+              needs it), the frozen Routes table mapping verb to method
+              and path, endpoint.json's reader/writer, and DefaultAddr.
+              Every RPC is POST /v1/<verb>; GET /version reports the
+              supported range and GET /v1/ping is the liveness probe
+internal/api/client  the generated client: one method per route, the
+              transport pinned to Proxy: nil so the bearer never reaches
+              an HTTP_PROXY, and no retries
+internal/apigen  the generator behind cmd/wtgen: emits the OpenAPI 3.1
+              document and the client from the route table and the api
+              types. No third-party codegen; CI fails on drift, and
+              adding a route without regenerating fails a test
+internal/store  the coordinator's state: one SQLite database at
+              <store>/wt.db (WAL, busy_timeout=5000, foreign_keys=on,
+              synchronous=FULL; the database and its -wal/-shm sidecars
+              all 0600, because entry secrets live in them). Whole-
+              collection reads and row-level mutations, WithTx for
+              sequences, meta.schema_version for versioning, and
+              UNIQUE (app, slot) making distinct-slot allocation a
+              database constraint. Queries are sqlc-generated from
+              schema.sql and query.sql
+internal/coord  the coordinator's request core, HTTP server and the
               in-process harness; one writer serialises here. Phase 5
               adds the materialise verb (driver apply with the
               reverse-order rollback), the rm verb (reap, then teardown,
@@ -146,15 +160,15 @@ internal/treecheck  the checks that must pass before a worktree is
 Import rules, fixed for the whole plan:
 
 - `cmd/wt` → `internal/cli` → `internal/spec`, `internal/identity`,
-  `internal/descriptor`, `internal/platform`, `internal/protocol`,
-  `internal/treecheck`. Nothing else.
+  `internal/descriptor`, `internal/platform`, `internal/api`,
+  `internal/api/client`, `internal/treecheck`. Nothing else.
 - `cmd/wt` may **never** import `internal/store`, `internal/coord`,
   `internal/driver` or `internal/fleet` — they are coordinator-only, and
   that separation is what keeps `WT_HOME` unreadable by a client.
   Enforced by `TestWtNeverImportsCoordinatorPackages` in `cmd/wt/`, which
   runs `go list -deps` over the real dependency graph, so a transitive
   import fails the suite too.
-- `internal/coord` → `internal/store`, `internal/protocol`,
+- `internal/coord` → `internal/store`, `internal/api`,
   `internal/platform`, `internal/driver`, `internal/treecheck`,
   `internal/artefact` (the drift
   check compares against `artefact.FieldsFor`, the renderer's own field
@@ -162,9 +176,12 @@ Import rules, fixed for the whole plan:
   Coordinator-only.
 - `internal/store` → `internal/platform` (the permission model is a
   platform surface). Coordinator-only.
-- `internal/protocol` → standard library plus `internal/spec` (the phase-3
-  verb payloads carry the parsed spec, per ARCHITECTURE.md §8.1); both
-  binaries link it.
+- `internal/api` → standard library plus `internal/spec` (the verb
+  payloads carry the parsed spec, per ARCHITECTURE.md §8.1); both binaries
+  link it. `internal/api/client` → `internal/api` plus the standard
+  library, and it is the only place in the client that speaks HTTP.
+- `internal/apigen` and `cmd/wtgen` → `internal/api` plus the standard
+  library. Build-time only; neither binary links them.
 - `internal/driver` → `internal/spec`, `internal/platform`,
   `internal/identity`, `internal/store` (`driver.Reservation` is the
   ledger's own type; a driver reads a reservation and never writes one).
@@ -371,21 +388,37 @@ Import rules, fixed for the whole plan:
   call reclassifies, failing open with a one-time note. The descriptor is
   never cached: the shared-store denial reads it fresh every call.
 
-## The protocol (`internal/protocol`)
+## The API (`internal/api`)
 
-- The wire is newline-delimited JSON: one JSON object per message, each
-  terminated by a newline — no framing header, no length prefix, no
-  protobuf, no gRPC. One MiB cap per message.
-- The first exchange on a connection is a hello: the client's protocol
-  version **range** (`min_version`/`max_version`) and its identity
-  declaration. The coordinator replies with the agreed version (the
-  highest common one) or refuses; a non-overlapping pair refuses whole and
-  names the upgrade in whichever direction the ranges imply
-  (`protocol.Agree`, `UpgradeError`).
-- Requests carry a verb and its arguments; responses carry either a result
-  or an error with the exit code the client should use — that is what lets
-  codes 3, 4 and 5 originate in the coordinator and still reach the
-  process exit status unchanged.
+- Every RPC is `POST /v1/<verb>` with a JSON request body and a JSON
+  response body. The two exceptions are `GET /version`, the unversioned
+  report of the supported version range, and `GET /v1/ping`. These are
+  RPCs rather than REST resources: no path parameters, no query strings,
+  no resource semantics.
+- `routes.go` holds the whole surface in one table — verb, method, path —
+  and both binaries derive from it, so a verb added in one place is added
+  in both. The table is frozen: `TestRoutesIsTheFrozenSurface` pins the
+  count, and `internal/apigen`'s tests refuse a route with no verb-type
+  entry, so adding one without regenerating fails the build rather than
+  producing a client that silently lacks the method.
+- `GET /version` replaced the hello exchange and `protocol.Agree`. A
+  mismatched client gets a real upgrade message rather than a bare 404.
+- Every request carries `Authorization: Bearer`, compared with
+  `subtle.ConstantTimeCompare`, with **one identical refusal** for a
+  missing, wrong or wrong-kind token — the API must not be an oracle that
+  distinguishes them. `http.MaxBytesReader` caps a body at 1 MiB, the
+  `Host` header must be loopback or the configured address, and
+  `X-Wt-Client: 1` is required so no browser simple-form POST can reach
+  the API. No CORS header is ever sent and no preflight answered.
+  `ReadHeaderTimeout` is 10s.
+- The response **body** is authoritative for the exit code; the HTTP
+  status is advisory, for anything reading the API that is not `wt`.
+  400→2, 403→3, 424→4, 500→1. Exit 5 is client-side only: a transport
+  failure, never a status code.
+- The client never retries. A retried `allocate` would double-allocate.
+- `endpoint.json` lives here too: the reader/writer for the 0600 file
+  carrying the base URL and the host token, plus `api.Home()` and
+  `DefaultAddr`.
 
 ## The store (`internal/store`)
 
@@ -405,22 +438,25 @@ Import rules, fixed for the whole plan:
   fails there; NTFS journaling plus MoveFileEx provides the durability).
   The sequence lives in `internal/platform` since phase 5 (the
   client-side emitters owe it and never import the store);
-  `store.AtomicWrite` delegates to it, and the registry, the ledger and
-  clients.json all go through it.
-- Every store file carries a `schema_version` field; a file written by a
+  `store.AtomicWrite` delegates to it, and `endpoint.json` goes through
+  it. The registry, the ledger and the client table are rows in the
+  database now, so their durability is SQLite's.
+- The database carries `meta.schema_version`; a database written by a
   newer schema is refused on read naming the upgrade, never written back.
-  The registry adds a second rail: `ReadRegistryList` decodes a newer file
-  well enough to list it (carrying the file's own version), and
+  The registry adds a second rail: `ReadRegistryList` reads a newer
+  database well enough to list it (carrying its own version), and
   `WriteRegistry` refuses to write a file whose version claims a newer
   schema — "lists but does not write" is structural at the write path.
 - JSON, never YAML: slugs match `^[a-z0-9][a-z0-9-]*$`, which admits `no`,
   `on`, `off`, `yes` and `y`, and a YAML 1.1 parser turns all of those
   into booleans.
 
-### The registry (`registry.json`)
+### The registry (the `entries` table)
 
-One file for every entry across every repo, so a multi-entry operation
-stays atomic under a single rename. The entry's fields are
+One table for every entry across every repo, so a multi-entry operation
+stays atomic under a single transaction. `UNIQUE (app, slot)` makes two
+concurrent allocations landing on one slot a database refusal rather than
+something the mutex alone must prevent. The entry's fields are
 `docs/ARCHITECTURE.md` §8.3 — there is no `view` field; `owner`,
 `owner_kind`, `ephemeral` and `path_visible` replaced view identity.
 
@@ -438,7 +474,7 @@ stays atomic under a single rename. The entry's fields are
 - An unparseable registry is reported, never truncated and recreated, and
   the refusal names the rebuild.
 
-### The band ledger (`bands.json`)
+### The band ledger (the `bands` and `reservations` tables)
 
 - Maps each app to the port bases it holds (keyed by port resource name,
   the shape `spec.Context.Bases` feeds into resolution), and holds the
@@ -459,34 +495,41 @@ stays atomic under a single rename. The entry's fields are
   label-based teardown is the one operation that could otherwise reach a
   co-resident stack the tool knows nothing else about (03-drivers.md §4.2,
   B8.2).
-- The store files are `clients.json`, `registry.json`, `bands.json` and —
-  since phase 6 — `specs.json`, each carrying the `schema_version`
-  envelope. The band ledger records each base's span (the size the
-  coordinator computed at registration), which is what doctor's overlap
-  check reads without any app's spec; `specs.json` is the per-app spec
-  cache every allocate writes, the fallback reclamation uses when an
-  entry's path is not visible from the host.
+- The store is one database, `wt.db`, holding `entries`, `bands`,
+  `reservations` (with `reservation_ports` and `reservation_names`),
+  `clients`, `specs` and `meta`. The band ledger records each base's span
+  (the size the coordinator computed at registration), which is what
+  doctor's overlap check reads without any app's spec; `specs` is the
+  per-app spec cache every allocate writes, the fallback reclamation uses
+  when an entry's path is not visible from the host.
+- One reservation is written by the coordinator rather than a person: its
+  own listening port, noted `worktree-manager coordinator` and re-asserted
+  at every start through `ReplaceReservationByNote`, so `bands suggest`
+  can never hand an app a base covering the port the coordinator is
+  sitting on. Keying on the note is what makes a restart idempotent and
+  makes moving to a new `--addr` release the old port.
 
 ## The coordinator (`internal/coord`)
 
-- `Handler` is the request core — protocol messages in, protocol
-  responses out, a store path, no socket, no supervisor, no container —
-  which is the in-process harness of ARCHITECTURE.md §13.3. `Harness`
-  wraps it for the tests: a full request runs with no socket at all.
-- Identity is enforced, never claimed: a host client's identity is the
-  kernel's uid from peer credentials (`platform.PeerUID`: SO_PEERCRED on
-  Linux, LOCAL_PEERCRED on macOS, both via the standard library's
-  syscall); on Windows the named pipe's owner-only ACL is the identity —
-  every connection the ACL admitted is the owning user
-  (`WindowsPipeOwnerUID`), stated rather than assumed. A named
-  container's identity is its token, an ephemeral one's is a session id
-  the coordinator issues. Every connection is observed in `clients.json`,
-  so last-seen is measured rather than written.
-- `Server.Serve` opens the platform listener (unix socket, or the named
-  pipe on Windows) and `ServeListener` serves an already-created one —
-  the descriptor systemd hands over under socket activation on Linux
-  (`wtd --activate`). Graceful shutdown: context cancellation, in-flight
-  requests allowed to finish.
+- `Handler` is the request core — a decoded request in, a response out, a
+  store path, no server, no supervisor, no container — which is the
+  in-process harness of ARCHITECTURE.md §13.3. `Harness` wraps it for the
+  tests: a full request runs with no HTTP at all, which is why the bulk of
+  this package's tests were indifferent to the move off the socket.
+- Identity is enforced, never claimed, but the enforcement is weaker than
+  it was. Peer credentials do not exist over TCP, so a host client is one
+  presenting the token from the 0600 `endpoint.json` and its identity is
+  the constant `host`. A named container's identity is the container token
+  the operator configured; an ephemeral one's is the session id the
+  coordinator issued from `POST /v1/session`. Absent `--container-token`,
+  only host clients are admitted at all. Every request is observed in the
+  `clients` table, so last-seen is measured rather than written.
+- `Server.Serve` listens on the configured address and `ServeListener`
+  serves an already-created listener — the descriptor systemd hands over
+  under socket activation on Linux (`wtd --activate`), which still works
+  because systemd passes a TCP listener through `LISTEN_FDS` exactly as it
+  passed a unix one. Graceful shutdown is `http.Server.Shutdown`:
+  in-flight requests are allowed to finish.
 - One writer serialises here. There is no lock file, no generation
   counter, no view identity and no view scoping — concurrent requests
   serialise in this one process, and the handler's mutex makes that true
@@ -543,7 +586,7 @@ stays atomic under a single rename. The entry's fields are
 - The ownership check runs on every mutating call (`activate`, `release`,
   and `allocate` against an existing entry): an entry owned by another
   client is refused with exit code 3, naming the owner (kind and key) and
-  its last-seen time from clients.json. The coordinator acts with host
+  its last-seen time from the `clients` table. The coordinator acts with host
   privilege on a caller's behalf, so ownership is the boundary that
   replaces filesystem permissions. Reads are unrestricted apart from
   `secrets`, which are served to the owning client alone.
@@ -598,7 +641,7 @@ stays atomic under a single rename. The entry's fields are
   `ReclaimIntervalDefault` (24 hours — the R3 answer, chosen and reasoned
   in fleet.go) the aged-out ephemeral clients' entries are torn down by
   handle and dropped. The spec comes from the walk-up lookup when the
-  entry's path is visible, else from `specs.json`, the per-app spec cache
+  entry's path is visible, else from the `specs` table, the per-app spec cache
   every allocate writes; an entry whose spec is unavailable is skipped
   with the bound stated, never torn down blind.
 - The reaper's allowlist is the spec's `reaper.binaries`, read through
@@ -791,44 +834,65 @@ The six rules of `docs/ARCHITECTURE.md` §8.6, stated as invariants:
     credentials.
   `--prefix` directs the registration at a temporary directory and loads
   nothing, so no test ever touches the machine's supervisor.
-  `--tcp <addr> --tcp-token <token>` (both together, loopback-only, token
-  of at least 16 characters) additionally starts the opt-in loopback TCP
-  listener, written into the registration; a registration that carries
-  the token is written 0600 on unix, and the token is never echoed.
-- The five environment variables read anywhere are `WT_SOCKET`,
-  `WT_HOME` (wtd alone), `WT_STANDALONE`, `WT_CLIENT_EPHEMERAL` (the
-  ephemeral declaration, `=1`) and `WT_CLIENT_TOKEN` (the named-container
-  token, phase 6). Setting the token together with the ephemeral
-  declaration is refused as ambiguous — one names a persistent client,
-  the other marks its entries reclaimable. The loopback TCP surface adds
-  no variable: `WT_SOCKET`'s `tcp://host:port` form names the
-  coordinator's location the way a socket path does — the §12.3 test is
-  the same one (a worker inheriting the coordinator's address is
-  correct), so the endpoint is carried in the location variable rather
-  than a sixth ambient one — and the token is the existing
-  `WT_CLIENT_TOKEN`. `WT_TCP_TOKEN` exists for the installer alone (the
-  operator's convenience when scripting `install.sh --tcp`), read by the
-  shell script, never by a binary.
+  `--addr <host:port>` and `--container-token <token>` are written into
+  the registration independently — a custom address needs no token, and a
+  token needs no custom address. With no `--addr` the install probes for a
+  free port, pins it, and says which, so a second user on one machine
+  needs no manual step. A registration carrying the token is written 0600
+  on unix, and the token is never echoed.
+- The five environment variables read anywhere are `WT_ENDPOINT` (the
+  coordinator's base URL), `WT_HOME`, `WT_STANDALONE`,
+  `WT_CLIENT_EPHEMERAL` (`=1`) and `WT_CLIENT_TOKEN` (the container
+  token). `WT_HOME` is now read by **both** binaries — the client reads
+  `endpoint.json` from it — where it was coordinator-only before; the
+  database itself stays coordinator-private and no container mounts the
+  store.
+- The token and the ephemeral declaration now **compose** rather than
+  being refused as ambiguous. The token is the admission credential and
+  the flag a lifecycle declaration: an ephemeral client presents the
+  container token to `POST /v1/session` once and uses the issued session
+  id as its bearer thereafter. That session id is a row in `clients`, so
+  it survives a restart mid-`init`, and reclamation deleting the row is
+  what revokes it.
+- `WT_CONTAINER_TOKEN` exists for the installer alone (the operator's way
+  to script `--container-token` without the token in shell history), read
+  by `install.sh`/`install.ps1`, never by a binary.
 
-## The security pass (phase 9)
+## The security pass
 
 The coordinator is the machine's most privileged component in this design
-and the socket is its entire attack surface (docs/ARCHITECTURE.md §12.2),
-so the phase-9 pass went over it deliberately. What was checked, what was
-fixed, and what remains:
+and its HTTP surface is its entire attack surface
+(docs/ARCHITECTURE.md §12.2). What is checked, and what the move to HTTP
+changed:
 
-- **Socket and pipe permissions**: the unix socket is born 0700 (umask,
-  verified, chmod fallback) and the Windows pipe carries an owner-only
-  ACL; the store is 0700/0600 with the Windows ACL refusal. Enforced at
-  creation, verified by tests.
-- **Peer credentials**: host identity comes from the kernel
-  (SO_PEERCRED/LOCAL_PEERCRED, the pipe ACL) and a host claim is never
-  trusted — `assignIdentity` refuses a host hello when peer credentials
-  are unavailable. Over the opt-in TCP listener there are no peer
-  credentials, which is why the listener requires the configured token
-  on every connection (constant-time compare, one refusal for missing
-  and wrong, 16-character minimum against brute force, loopback-only
-  bind so the surface never reaches the LAN).
+- **File permissions**: the store directory is 0700, and `wt.db`, its
+  `-wal` and `-shm` sidecars and `endpoint.json` are all 0600 — the
+  sidecars matter because entry secrets live in them and they are created
+  at the process umask, so the coordinator sets its umask around open and
+  verifies the modes afterwards. On Windows the current-user ACL applies,
+  with the standing refusal to hold credentials where it cannot be set.
+- **Host identity is weaker than it was, and that is stated rather than
+  glossed.** Peer credentials (SO_PEERCRED/LOCAL_PEERCRED, the pipe ACL)
+  gave a kernel-verified uid that no client could claim without being it.
+  There is no equivalent over TCP, so host identity is now possession of
+  the token in the 0600 `endpoint.json` — "can read a file in your own
+  home". Any process running as the user can read it. Same-user processes
+  could already impersonate each other by other means, so the practical
+  loss is small, but it is real and HTTP over a unix socket would have
+  avoided it.
+- **Admission**: every request presents a bearer token, compared in
+  constant time, with one identical refusal for missing, wrong and
+  wrong-kind so the surface cannot be used as an oracle. Container tokens
+  are 16 characters minimum against brute force, containers are admitted
+  only when `--container-token` is configured, and the bind is loopback
+  unless `--allow-remote` is passed deliberately.
+- **Browser reachability**: a loopback HTTP port is reachable from any
+  page the user opens. Bearer auth alone would cover it, but `Host`
+  validation, the required `X-Wt-Client: 1` header, no CORS headers and no
+  answered preflight make it structural.
+- **Proxy leakage**: the client's transport sets `Proxy: nil`.
+  `http.DefaultTransport` honours `HTTP_PROXY`, which would have sent the
+  coordinator's bearer token to a proxy from any shell that had one set.
 - **Secrets**: served to the owning client alone and only under `--wide`,
   redacted in `list`, `doctor` and every error path. The pass fixed the
   identity-key leak: a named client's key IS its token, so `list`,

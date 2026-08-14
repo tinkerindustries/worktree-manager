@@ -80,13 +80,15 @@ A coordinator resolves all three. Connection refused is diagnosable. The socket 
 
 | Platform | Host | Transport | Start |
 |---|---|---|---|
-| macOS | launchd LaunchAgent in `~/Library/LaunchAgents` | unix socket | socket activation via the `Sockets` key |
-| Linux | systemd user unit | unix socket | a paired `.socket` unit |
-| Windows | service under the user account, or a logon scheduled task | named pipe | automatic start |
+| macOS | launchd LaunchAgent in `~/Library/LaunchAgents` | HTTP on loopback | `RunAtLoad` and `KeepAlive` |
+| Linux | systemd user unit | HTTP on loopback | a paired `.socket` unit with a TCP `ListenStream`, handed over through `LISTEN_FDS` |
+| Windows | service under the user account, or a logon scheduled task | HTTP on loopback | automatic start |
 
 Windows carries the awkward case. A conventional service runs in session 0, isolated from the user's desktop session, where it cannot reach Docker Desktop's user-context pipe or a per-user WSL2 distro. A service configured to run as the user account works. A logon scheduled task is the more common idiom and gives up the service control manager's restart handling. Linux has a smaller version of the same problem: a systemd user unit stops at logout unless lingering is enabled for the account.
 
-TCP on loopback is available as an opt-in for hosts where a socket cannot be shared into a container. It requires an authentication token, since peer credentials do not exist on a TCP connection.
+The transport is HTTP on `127.0.0.1:7833` by default, on every platform. Unix sockets, the Windows named pipe and peer credentials are gone. Binding off loopback requires `--allow-remote`; the coordinator performs privileged operations on its clients' behalf, and a LAN-reachable coordinator hands that reach to the network.
+
+The cost of the change is stated rather than glossed. Peer credentials gave host identity from the kernel — `SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS, the pipe's owner-only ACL on Windows — and a client could not claim to be the host user without being it. Over TCP there is no equivalent, so host identity is now "can read a 0600 file in your own home": at startup the coordinator writes `endpoint.json` carrying its base URL and a generated token, and possession of that token is the proof. Any process running as the user can read it, whereas peer credentials also proved it at connect time. Same-user processes could already impersonate each other by other means, so the practical loss is small — but it is a loss, and HTTP over a unix socket would have avoided it.
 
 ### 4.2 A thin client binary, written in Go
 
@@ -102,7 +104,9 @@ The coordinator is the same Go codebase, shipped as a second entry point, so the
 
 The coordinator records the client identity that created each entry and refuses destructive verbs from any other client. Reads are unrestricted, apart from seed credentials, which are redacted for every client except the owner.
 
-Host clients present stable identity through peer credentials on the socket. Container clients do not: a disposable container presents a new container id and a new hostname on every run, so identity derived from the connection would mean nothing it created could ever be removed.
+Host clients present the token from the 0600 `endpoint.json`, and their identity is the constant `host`. Container clients cannot read that file — they are never given the store — so they present a separate token the operator configures with `wtd --container-token`. Absent that flag the coordinator admits host clients only, so containers are opt-in exactly as the loopback TCP surface used to be.
+
+A disposable container presents a new container id and a new hostname on every run, so identity derived from the connection would mean nothing it created could ever be removed.
 
 Such a client declares itself ephemeral at connection time. The coordinator marks its entries reclaimable and garbage-collects them once that client has been absent for a configured interval. Teardown works from a handle held in the registry, and the coordinator has host privileges, so reclamation is safe without the client ever returning.
 
@@ -181,7 +185,7 @@ graph LR
         M1["M1 Identity<br/>classification, slug, containment, guard"]
         M8b["M8b Local platform<br/>path realisation, case sensitivity,<br/>shell resolution"]
     end
-    CLIENT -->|socket, named pipe, loopback TCP| COORD
+    CLIENT -->|HTTP on loopback| COORD
 ```
 
 | Module | Runs | Constraint that shapes it |
@@ -274,21 +278,25 @@ The client sends the parsed spec with each call rather than the coordinator read
 ### 8.2 Coordinator store
 
 ```
-~/.wt/                    # dir 0700, files 0600, coordinator-owned
-  registry.json           every worktree entry, every repo
-  bands.json              port band ledger and host-global reservations
-  clients.json            known clients, last seen, ephemeral flag
+~/.wt/                    # dir 0700, coordinator-owned
+  wt.db                   # 0600 — entries, bands, reservations, clients, specs
+  wt.db-wal               # 0600
+  wt.db-shm               # 0600
+  endpoint.json           # 0600 — base URL and host token; the one client-readable file
   wtd.log
-
-# socket, outside the store so a container mounts it alone
-macOS    ~/Library/Application Support/wt/sock
-Linux    $XDG_RUNTIME_DIR/wt/sock
-Windows  \\.\pipe\wt
 ```
 
-No client reads these files. A container mounts the socket by itself, so `registry.json` never appears inside the container and the seed credentials stored there cannot be read from it. The coordinator writes every file as the user, so a container running as root can no longer leave files the host user is unable to rewrite.
+One SQLite database replaces the four JSON files. It is opened WAL with `busy_timeout=5000`, `foreign_keys=on` and `synchronous=FULL`, and `meta.schema_version` versions it — a database written by a newer build is refused rather than partially honoured.
 
-The registry is JSON. The descriptor format is a separate decision, left to whatever the repo already parses. YAML is disqualified for the registry by a specific hazard: slugs match `^[a-z0-9][a-z0-9-]*$`, which admits `no`, `on`, `off`, `yes` and `y`. YAML 1.1 parsers coerce all of those to booleans, so a worktree slugged `no` would round-trip as `false`. The hazard follows the slug everywhere, so a descriptor emitted as YAML quotes every string scalar.
+The `-wal` and `-shm` sidecars are held to the same 0600 mode as the database. They are separate files created at the process umask, and entry secrets live in them as much as in the database, so the coordinator sets its umask around open and verifies the modes afterwards rather than assuming.
+
+`UNIQUE (app, slot)` does real work: two concurrent allocations getting the same slot is refused by the database, not only by the coordinator's mutex. The mutex stays — it guards read-modify-write sequences spanning store calls and driver decisions, which no single transaction covers — with transactions underneath it rather than instead of it.
+
+No client reads the database. `endpoint.json` is the sole exception and carries only a base URL and the host token, so a container is given its endpoint and token explicitly and never mounts the store at all: seed credentials cannot be read from inside one.
+
+Queries are generated by sqlc from `schema.sql` and `query.sql`, with the output committed and CI failing on drift. sqlc runs as `go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate` and is deliberately not a `go.mod` tool directive: as a directive it dragged its whole transitive graph into the module, taking `go.sum` from 2 lines to 216 for a tool that only runs at codegen time.
+
+The descriptor format is a separate decision, left to whatever the repo already parses. YAML is disqualified for anything holding a slug by a specific hazard: slugs match `^[a-z0-9][a-z0-9-]*$`, which admits `no`, `on`, `off`, `yes` and `y`. YAML 1.1 parsers coerce all of those to booleans, so a worktree slugged `no` would round-trip as `false`. The hazard follows the slug everywhere, so a descriptor emitted as YAML quotes every string scalar.
 
 ### 8.3 Registry entry
 
@@ -439,7 +447,11 @@ The hook calls `wt guard --json`, which reads git and the descriptor and opens n
 
 ### 10.1 Reaching the coordinator
 
-A host client connects to the platform socket path, or to whatever `WT_SOCKET` names. A container mounts the socket file and sets the same variable. Nothing else is shared.
+A host client resolves its endpoint in one order: `WT_ENDPOINT`, then `endpoint.json` under `WT_HOME`/`$HOME/.wt`, then the compiled default. A missing endpoint file leaves it on the default and then fails to connect; a malformed one is an error naming the field, never a silent fallback.
+
+A container is given `WT_ENDPOINT` and `WT_CLIENT_TOKEN` explicitly and mounts nothing. This is the one place the HTTP change made things simpler: sharing a live unix socket into a container was the awkward case — Docker Desktop's virtiofs cannot carry one — and a loopback port needs no filesystem sharing at all.
+
+`WT_HOME` is consequently read by both binaries now, where it was coordinator-only before. Only `endpoint.json` is client-readable; the database is not, and no container ever mounts the store.
 
 A client that cannot connect fails with an error naming the coordinator and the command that starts it. No verb other than `show` and `guard` proceeds, and neither of those needs the coordinator to begin with.
 
@@ -449,9 +461,11 @@ Every entry records the client that created it, and only that client may mutate 
 
 | Client | Identity | Reclamation |
 |---|---|---|
-| Host | peer credentials on the socket, which give a stable uid | never; the developer owns these entries indefinitely |
-| Named container | a token the operator configures into the image | never, while the token persists |
-| Ephemeral container | declared at connect time; the coordinator issues a session id | entries are marked reclaimable and aged out on a configured interval |
+| Host | the token in the 0600 `endpoint.json`; identity is the constant `host` | never; the developer owns these entries indefinitely |
+| Named container | the container token the operator configures, matching `wtd --container-token` | never, while the token persists |
+| Ephemeral container | the container token plus `WT_CLIENT_EPHEMERAL=1`; the coordinator issues a session id from `POST /v1/session` | entries are marked reclaimable and aged out on a configured interval |
+
+The token and the ephemeral declaration compose rather than conflicting, which they did not before: the token is the admission credential and the flag is a lifecycle declaration. An issued session id is a row in `clients`, not memory, so it survives a coordinator restart in the middle of an `init`, and reclamation deleting the row is what revokes it.
 
 The ephemeral declaration exists because a disposable container presents a new container id and a new hostname on every run. Identity derived from the connection would mean nothing it created could ever be removed by anything. The coordinator observes every connection, so the interval is measured against a real last-seen time rather than a timestamp somebody wrote into a file.
 
@@ -548,7 +562,9 @@ Seed credentials are served to the owning client alone and redacted for everyone
 
 The store is created `0700` with files `0600`, written by the coordinator as the user. On Windows the equivalent ACL is set, and where it cannot be, the coordinator refuses to write credentials rather than writing them world-readable.
 
-Loopback TCP requires a token, because peer credentials do not exist on a TCP connection. It stays opt-in for that reason.
+Every request carries `Authorization: Bearer`, compared in constant time, with one identical refusal for a missing, wrong or wrong-kind token so the API cannot be used as an oracle. A 1 MiB `MaxBytesReader` caps every body, the `Host` header must be loopback or the configured address, and `X-Wt-Client: 1` is required — a browser cannot set a custom header on a simple-form POST, and no CORS header is ever sent nor any preflight answered, so no page can reach the API. The client's transport sets `Proxy: nil`, because `http.DefaultTransport` honours `HTTP_PROXY` and the bearer token must never leave the machine.
+
+The client never retries. A retried `allocate` would double-allocate, and the socket's unambiguous failure is a property worth keeping.
 
 Path-containment casing is the one platform detail carrying a security property, and it sits in the client. A case-sensitive comparison on a case-insensitive filesystem can be walked straight past, because `/Users/geoff/repos/…` and `/Users/geoff/Repos/…` name the same directory on APFS and NTFS while differing as strings. The comparison follows the filesystem, probed at the mount, since a case-sensitive volume on macOS is a supported configuration.
 
@@ -556,11 +572,11 @@ Path-containment casing is the one platform detail carrying a security property,
 
 One test governs the whole environment surface: would a child process inheriting this value do the right thing?
 
-`WT_SOCKET` passes. A worker inheriting the coordinator's address is correct, and is the point of setting it. `WT_STANDALONE` passes inside a disposable-clone image, because every process in that image is in a disposable clone. `WT_CLIENT_EPHEMERAL` passes for the same reason.
+`WT_ENDPOINT` passes. A worker inheriting the coordinator's address is correct, and is the point of setting it. `WT_STANDALONE` passes inside a disposable-clone image, because every process in that image is in a disposable clone. `WT_CLIENT_EPHEMERAL` passes for the same reason.
 
 An isolation flag fails the test. A worker's correct behaviour depends on its task rather than on its environment, so an ambient `*_ISOLATE_DB=1` reaches every dispatched worker and re-creates the bug it was added to fix. Detecting whether the current process is an agent does not help, because an interactive development session sets the same flag.
 
-`WT_SOCKET`, `WT_STANDALONE` and `WT_CLIENT_EPHEMERAL` each name a location or a capability. Values that name a policy must be supplied per invocation.
+`WT_ENDPOINT`, `WT_STANDALONE` and `WT_CLIENT_EPHEMERAL` each name a location or a capability. Values that name a policy must be supplied per invocation.
 
 The same reasoning makes the application-facing env override app-scoped, as `BACIO_ENV` rather than a shared name that would point every application at one descriptor.
 
@@ -582,11 +598,11 @@ One distribution per platform containing both binaries, built from one Go module
 
 Plane 3 artefacts are files generated into the target repository. Some are committed: the descriptor reader, the reference doc, the `.gitignore` line. Some go into `.claude/`: the skills and the hooks. Plane 4 is a skill installed once.
 
-Container images that run `wt` need the client binary, the socket mounted, and `WT_SOCKET` set. They need no state directory, no docker socket and no elevated capabilities.
+Container images that run `wt` need the client binary, `WT_ENDPOINT` and `WT_CLIENT_TOKEN`. They mount nothing — no state directory, no socket, no docker socket — and need no elevated capabilities.
 
 ### 13.2 Build order
 
-Two constraints pin the ends of the sequence. Nothing can be onboarded until the spec schema is settled, and the drivers module defines the schema. The protocol has to exist before anything crosses the socket.
+Two constraints pin the ends of the sequence. Nothing can be onboarded until the spec schema is settled, and the drivers module defines the schema. The API has to exist before anything crosses it.
 
 | Stage | Build | Unblocks |
 |---|---|---|

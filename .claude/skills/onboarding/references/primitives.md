@@ -124,7 +124,13 @@ tripwire reads the descriptor filename from its block).
 
 ## The environment variables
 
-`WT_SOCKET` (the socket path), `WT_HOME` (coordinator's store override,
-read by `wtd` alone), `WT_STANDALONE`, `WT_CLIENT_EPHEMERAL`,
-`WT_CLIENT_TOKEN`, and — the phase-7 sixth — `WT_GUARD_CACHE`, the
-per-session classification cache directory the guard hook sets.
+`WT_ENDPOINT` (the coordinator's base URL, e.g. `http://127.0.0.1:7833`),
+`WT_HOME` (the store directory — read by both binaries, though a client
+reads only `endpoint.json` from it and never the database),
+`WT_STANDALONE`, `WT_CLIENT_EPHEMERAL`, `WT_CLIENT_TOKEN` (the container
+token), and `WT_GUARD_CACHE`, the per-session classification cache
+directory the guard hook sets.
+
+A container is given `WT_ENDPOINT` and `WT_CLIENT_TOKEN` and mounts
+nothing. `WT_CLIENT_TOKEN` and `WT_CLIENT_EPHEMERAL=1` compose: the token
+admits the client and the flag marks its entries reclaimable.
