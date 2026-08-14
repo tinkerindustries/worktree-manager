@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/api"
@@ -203,6 +204,34 @@ type daemonInstallResult struct {
 	Note             string `json:"note,omitempty"`
 }
 
+// existingRegistrationAddr reports the address this machine's coordinator
+// is already using, so a re-install keeps it rather than being walked onto
+// a new port by the free-port probe.
+//
+// It reads `endpoint.json` rather than the registration file: the daemon
+// writes it with the address it actually bound, and it is one file on every
+// platform where the registration is a plist, a unit or task XML. The
+// client's `WT_ENDPOINT` override is deliberately ignored — that says where
+// a client should look, not what the coordinator was registered with.
+//
+// An absent or unreadable file means there is nothing to keep, and the
+// caller probes instead. That is the first-install path.
+func existingRegistrationAddr() (string, bool) {
+	home, err := api.Home()
+	if err != nil {
+		return "", false
+	}
+	ep, err := api.ReadEndpoint(api.EndpointPath(home))
+	if err != nil {
+		return "", false
+	}
+	u, err := url.Parse(ep.BaseURL)
+	if err != nil || u.Host == "" {
+		return "", false
+	}
+	return u.Host, true
+}
+
 // runDaemonInstall implements `wt daemon install [--prefix <dir>]
 // [--wtd <path>] [--json]`: it registers the coordinator with the
 // platform's supervisor and starts it. The --prefix option directs the
@@ -247,15 +276,29 @@ func runDaemonInstall(args []string, stdout, stderr io.Writer) int {
 	// machine is the case that needs it: the second cannot bind the
 	// default, and a registration that names a port it can never take is a
 	// coordinator that never starts.
+	//
+	// A re-install keeps the address it already had. The probe would
+	// otherwise move it every time: at probe time the running coordinator
+	// still holds its own port, so the probe reads it as taken, steps past
+	// it, and the reload frees the port the new registration has just
+	// stopped naming. An upgrade would walk the coordinator onto a new port
+	// and break every container configured with the old WT_ENDPOINT. The
+	// probe is for a first install; `--addr` is how an address is changed
+	// deliberately.
 	addr := *addrFlag
 	chosen := false
+	reused := false
 	if addr == "" {
-		var perr error
-		addr, chosen, perr = platform.ChooseRegistrationAddr(api.DefaultAddr)
-		if perr != nil {
-			WriteError(stderr, New(ExitFailure, perr.Error(),
-				"pass --addr <host:port> with a port you know is free"))
-			return ExitFailure
+		if existing, ok := existingRegistrationAddr(); ok {
+			addr, reused = existing, true
+		} else {
+			var perr error
+			addr, chosen, perr = platform.ChooseRegistrationAddr(api.DefaultAddr)
+			if perr != nil {
+				WriteError(stderr, New(ExitFailure, perr.Error(),
+					"pass --addr <host:port> with a port you know is free"))
+				return ExitFailure
+			}
 		}
 	}
 
@@ -316,6 +359,9 @@ func runDaemonInstall(args []string, stdout, stderr io.Writer) int {
 	if chosen {
 		fmt.Fprintf(stdout, "note: %s was already in use, so this registration takes the next free port\n",
 			api.DefaultAddr)
+	}
+	if reused {
+		fmt.Fprintf(stdout, "note: kept the address this coordinator was already using (pass --addr to change it)\n")
 	}
 	if *containerToken != "" {
 		fmt.Fprintf(stdout, "container clients: admitted (set WT_ENDPOINT to http://%s and WT_CLIENT_TOKEN to the token)\n", addr)

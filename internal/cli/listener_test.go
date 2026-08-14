@@ -15,6 +15,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -481,5 +482,53 @@ func TestDaemonInstallPinsAFreePortWhenTheDefaultIsHeld(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "--addr") {
 		t.Errorf("the registration must pin a concrete address rather than leaving it to the default:\n%s", data)
+	}
+}
+
+// TestDaemonInstallKeepsTheAddressItAlreadyHad is the re-install regression.
+// The free-port probe exists so a second user on a machine gets a port they
+// can bind; it must not move an existing coordinator. At probe time the
+// running daemon still holds its own port, so a naive probe reads it as
+// taken, steps past it, and the reload then frees the port the new
+// registration has just stopped naming — walking the coordinator onto a new
+// port on every upgrade and breaking every container configured with the
+// old WT_ENDPOINT.
+func TestDaemonInstallKeepsTheAddressItAlreadyHad(t *testing.T) {
+	prefix := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("WT_HOME", home)
+	wtd := filepath.Join(prefix, "wtd")
+	if err := os.WriteFile(wtd, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("writing the stand-in wtd: %v", err)
+	}
+
+	// A coordinator that has run before leaves an endpoint file naming the
+	// address it bound. Hold that port too, which is what makes the naive
+	// probe move: the running daemon is the occupant.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("holding a port: %v", err)
+	}
+	defer ln.Close()
+	held := ln.Addr().String()
+	if werr := api.WriteEndpoint(api.EndpointPath(home), &api.Endpoint{
+		SchemaVersion: 1, BaseURL: "http://" + held, Token: strings.Repeat("a", 64),
+	}); werr != nil {
+		t.Fatalf("seeding the endpoint file: %v", werr)
+	}
+
+	code, stdout, stderr := runCLI(t, "daemon", "install", "--prefix", prefix, "--wtd", wtd)
+	if code != ExitOK {
+		t.Fatalf("daemon install exit = %d; stderr:\n%s", code, stderr)
+	}
+	if !strings.Contains(stdout, held) {
+		t.Errorf("re-install moved the coordinator off %s:\n%s", held, stdout)
+	}
+	data, err := os.ReadFile(filepath.Join(prefix, registrationFilenameForThisPlatform()))
+	if err != nil {
+		t.Fatalf("reading the registration: %v", err)
+	}
+	if !strings.Contains(string(data), held) {
+		t.Errorf("the registration does not keep the existing address %s:\n%s", held, data)
 	}
 }
