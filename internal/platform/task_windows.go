@@ -216,6 +216,40 @@ func taskSchedulerRunning(prefix string) (bool, error) {
 	return parseTaskStatus(string(out)), nil
 }
 
+// uninstallWindowsTask reverses installWindowsTask: end the running task
+// (schtasks /End — the graceful stop the coordinator's SIGTERM handling
+// answers), delete the task from the scheduler database (schtasks /Delete
+// /F), then remove the XML file. The XML file — the registration's primary
+// file, what "registered" checks — gates the scheduler calls: a
+// registration that was never written has nothing to end or delete, and
+// schtasks on a task that does not exist is an error, not a no-op. An
+// /End failure is reported in the note rather than fatal: a task that is
+// not running fails /End, and not running is the goal. Under a prefix
+// nothing was ever registered, so only the XML is removed.
+func uninstallWindowsTask(prefix string) (UninstallSupervisorResult, error) {
+	dir, err := windowsTaskDir(prefix)
+	if err != nil {
+		return UninstallSupervisorResult{}, err
+	}
+	xmlPath := filepath.Join(dir, WindowsTaskFilename)
+	res := UninstallSupervisorResult{RegistrationPath: xmlPath}
+	if prefix == "" {
+		if _, serr := os.Stat(xmlPath); serr == nil {
+			if eerr := schtasks("/End", "/TN", WindowsTaskName); eerr != nil {
+				res.Note = "the coordinator task could not be ended (" + eerr.Error() + "); check 'schtasks /Query /TN " + WindowsTaskName + "'"
+			}
+			if derr := schtasks("/Delete", "/TN", WindowsTaskName, "/F"); derr != nil {
+				return res, fmt.Errorf("deleting the coordinator's logon task: %w", derr)
+			}
+			res.Stopped = true
+		}
+	}
+	if res.Removed, err = removeRegistrationFile(xmlPath); err != nil {
+		return res, err
+	}
+	return res, nil
+}
+
 // parseTaskStatus extracts the running state from schtasks /Query
 // /FO LIST output: the Status line's value. "Running" reports running;
 // anything else (Ready, Disabled, Unknown, a localized value) reports

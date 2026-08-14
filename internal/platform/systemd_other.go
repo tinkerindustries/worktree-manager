@@ -24,6 +24,11 @@ func installSystemdUnits(prefix, wtdPath, addr, containerToken string) (InstallS
 	return InstallSupervisorResult{}, errors.New("no systemd on this platform")
 }
 
+// uninstallSystemdUnits refuses off linux.
+func uninstallSystemdUnits(prefix string) (UninstallSupervisorResult, error) {
+	return UninstallSupervisorResult{}, errors.New("no systemd on this platform")
+}
+
 // lingeringCaveat is empty off Linux: only the systemd user unit has the
 // logout problem, and the launchd agent on macOS belongs to the GUI
 // session by construction.

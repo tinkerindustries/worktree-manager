@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -187,6 +188,72 @@ func TestInstallSupervisorNeedsWtdPath(t *testing.T) {
 	prefix := tempDir(t)
 	if _, err := InstallSupervisor(InstallSupervisorOpts{Prefix: prefix}); err == nil {
 		t.Fatal("InstallSupervisor without a wtd path succeeded")
+	}
+}
+
+// TestUninstallSupervisorPrefixRemovesRegistration: install under a prefix,
+// then uninstall under the same prefix — the registration file(s) come
+// back off the disk and nothing is reported as stopped (a test prefix
+// never loaded anything). On Linux the paired socket unit must go too.
+func TestUninstallSupervisorPrefixRemovesRegistration(t *testing.T) {
+	prefix := tempDir(t)
+	wtd := filepath.Join(prefix, "wtd")
+	if err := os.WriteFile(wtd, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InstallSupervisor(InstallSupervisorOpts{Prefix: prefix, WtdPath: wtd}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	regPath := filepath.Join(prefix, SupervisorFilename(runtime.GOOS))
+	if _, err := os.Stat(regPath); err != nil {
+		t.Fatalf("registration was not written: %v", err)
+	}
+	res, err := UninstallSupervisor(prefix)
+	if err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	if !res.Removed {
+		t.Error("uninstall reported nothing removed; the registration file existed")
+	}
+	if res.Stopped {
+		t.Error("a prefixed uninstall reported stopped; a test prefix must never touch the supervisor")
+	}
+	if _, err := os.Stat(regPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("registration file still present after uninstall: %v", err)
+	}
+	if runtime.GOOS == "linux" {
+		sockPath := filepath.Join(prefix, SystemdSocketFilename)
+		if _, err := os.Stat(sockPath); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the paired socket unit still present after uninstall: %v", err)
+		}
+	}
+}
+
+// TestUninstallSupervisorPrefixNothingRegistered: uninstalling something
+// never installed succeeds and reports nothing was removed — a second
+// uninstall is a no-op, not an error.
+func TestUninstallSupervisorPrefixNothingRegistered(t *testing.T) {
+	res, err := UninstallSupervisor(tempDir(t))
+	if err != nil {
+		t.Fatalf("uninstall of nothing: %v", err)
+	}
+	if res.Removed || res.Stopped {
+		t.Errorf("uninstall of nothing reported removed=%v stopped=%v", res.Removed, res.Stopped)
+	}
+}
+
+// TestUninstallSupervisorRealNeverRunsInTests: a real (prefix-less)
+// uninstall stops the machine's supervisor registration, which no test may
+// do on any platform — darwin (launchctl bootout), linux (systemctl
+// disable), windows (schtasks /Delete). The test exists so a future
+// platform that forgets the rule fails loudly here instead of in review.
+func TestUninstallSupervisorRealNeverRunsInTests(t *testing.T) {
+	switch runtime.GOOS {
+	case "darwin", "linux", "windows":
+		t.Skipf("a prefix-less uninstall on %s is the real supervisor; tests only use prefixes", runtime.GOOS)
+	}
+	if _, err := UninstallSupervisor(""); err == nil {
+		t.Fatal("UninstallSupervisor without a prefix succeeded on this platform")
 	}
 }
 

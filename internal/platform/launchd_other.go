@@ -9,3 +9,8 @@ package platform
 func loadLaunchAgent(plistPath string) error { return ErrNoSupervisor }
 
 func launchdRunning() (bool, error) { return false, nil }
+
+// uninstallLaunchAgent refuses off darwin.
+func uninstallLaunchAgent(prefix string) (UninstallSupervisorResult, error) {
+	return UninstallSupervisorResult{}, ErrNoSupervisor
+}

@@ -192,6 +192,42 @@ func systemdRunning(prefix string) (bool, error) {
 	return systemctl("is-active", "--quiet", SystemdSocketFilename) == nil, nil
 }
 
+// uninstallSystemdUnits reverses installSystemdUnits: stop and deregister
+// the units (disable --now, which both stops the running service and
+// removes the enable symlinks), reload the user manager, then remove the
+// two unit files. The service unit file — the registration's primary file,
+// what "registered" checks — gates the supervisor calls: a registration
+// that was never written has nothing to disable, and `systemctl disable`
+// on a unit file that does not exist is an error, not a no-op. Under a
+// prefix nothing was ever loaded, so only the files are removed.
+func uninstallSystemdUnits(prefix string) (UninstallSupervisorResult, error) {
+	dir, err := systemdUserDir(prefix)
+	if err != nil {
+		return UninstallSupervisorResult{}, err
+	}
+	svc := filepath.Join(dir, SystemdServiceFilename)
+	sock := filepath.Join(dir, SystemdSocketFilename)
+	res := UninstallSupervisorResult{RegistrationPath: svc}
+	if prefix == "" {
+		if _, serr := os.Stat(svc); serr == nil {
+			if derr := systemctl("disable", "--now", SystemdServiceFilename, SystemdSocketFilename); derr != nil {
+				return res, fmt.Errorf("stopping and disabling the coordinator's systemd units: %w", derr)
+			}
+			if derr := systemctl("daemon-reload"); derr != nil {
+				return res, fmt.Errorf("reloading the systemd user manager after removing the coordinator's units: %w", derr)
+			}
+			res.Stopped = true
+		}
+	}
+	if res.Removed, err = removeRegistrationFile(svc); err != nil {
+		return res, err
+	}
+	if _, err := removeRegistrationFile(sock); err != nil {
+		return res, err
+	}
+	return res, nil
+}
+
 // systemdLinger reports whether user lingering is enabled for the
 // account. The lingering caveat is the point of the Linux section: a
 // systemd user unit stops at logout unless lingering is enabled, and a

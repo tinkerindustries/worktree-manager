@@ -26,6 +26,16 @@ VERSION="${1:-}"
 if [ -z "$VERSION" ]; then
 	VERSION="$(git describe --tags --always 2>/dev/null || echo 0.0.0-dev)"
 fi
+# The commit the binaries were built from, for `wt --version` / `wtd
+# --version`. Both binaries carry the same version and commit — they ship
+# together. The client's variables live in internal/cli (addressed by
+# their import path); the coordinator's live in its own main package,
+# whose symbols the linker knows as main.version/main.commit. Each keeps
+# its default as the fallback when the flag is not set.
+COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+LDFLAGS="-X github.com/mrgeoffrich/worktree-manager/internal/cli.version=$VERSION \
+-X github.com/mrgeoffrich/worktree-manager/internal/cli.commit=$COMMIT \
+-X main.version=$VERSION -X main.commit=$COMMIT"
 
 OUT="$ROOT/dist/out"
 rm -rf "$OUT"
@@ -39,6 +49,9 @@ the wtd coordinator — built from the one Go module with CGO_ENABLED=0, so
 nothing else needs installing. This archive contains:
 
   wt, wtd                    the two binaries (wt.exe, wtd.exe on Windows)
+  SHA256SUMS                 the sha256 of each binary; install.sh verifies
+                             the binaries against it before copying
+                             anything (--skip-verify overrides)
   install.sh                 the unix installer (install.ps1 on Windows)
 
 Install:
@@ -61,6 +74,11 @@ Install:
                                 # a container sets WT_ENDPOINT and
                                 # WT_CLIENT_TOKEN to reach the coordinator
 
+  ./install.sh --dry-run        # print every action, change nothing
+  ./install.sh --uninstall      # stop the coordinator, remove the
+                                # registration and the two binaries; the
+                                # store is never removed
+
 Verify with: wt daemon status
 
 See RELEASE.md in the repository for versioning, the compatibility policy
@@ -75,21 +93,36 @@ stage_for() { # goos goarch ext bin-ext
 	STAGE="$(mktemp -d)"
 	trap 'rm -rf "$STAGE"' EXIT
 
-	CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -o "$STAGE/wt$BINEXT" ./cmd/wt
-	CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -o "$STAGE/wtd$BINEXT" ./cmd/wtd
+	CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -ldflags "$LDFLAGS" -o "$STAGE/wt$BINEXT" ./cmd/wt
+	CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -ldflags "$LDFLAGS" -o "$STAGE/wtd$BINEXT" ./cmd/wtd
 	cp "$OUT/README.txt" "$STAGE/README.txt"
+
+	# The archive's own manifest: a SHA256SUMS covering the two binaries,
+	# which the installer verifies against before copying anything. It sits
+	# inside the archive — the outside manifest covers the archives
+	# themselves — because an archive without one is not a distribution
+	# this installer will install (install.sh refuses, naming --skip-verify
+	# as the deliberate override). sha256sum on Linux, shasum -a 256 on
+	# macOS.
+	if command -v sha256sum >/dev/null 2>&1; then
+		(cd "$STAGE" && sha256sum "wt$BINEXT" "wtd$BINEXT") >"$STAGE/SHA256SUMS"
+	else
+		(cd "$STAGE" && for f in "wt$BINEXT" "wtd$BINEXT"; do
+			printf '%s  %s\n' "$(shasum -a 256 "$f" | awk '{print $1}')" "$f"
+		done) >"$STAGE/SHA256SUMS"
+	fi
 
 	case "$EXT" in
 	tar.gz)
 		cp "$ROOT/dist/install.sh" "$STAGE/install.sh"
 		chmod 755 "$STAGE/install.sh"
 		tar -C "$STAGE" -czf "$OUT/wt-$VERSION-$GOOS-$GOARCH.tar.gz" \
-			"wt$BINEXT" "wtd$BINEXT" install.sh README.txt
+			"wt$BINEXT" "wtd$BINEXT" install.sh README.txt SHA256SUMS
 		;;
 	zip)
 		cp "$ROOT/dist/install.ps1" "$STAGE/install.ps1"
 		go run "$ROOT/dist/ziphelper.go" "$OUT/wt-$VERSION-$GOOS-$GOARCH.zip" \
-			"$STAGE" "wt$BINEXT" "wtd$BINEXT" install.ps1 README.txt
+			"$STAGE" "wt$BINEXT" "wtd$BINEXT" install.ps1 README.txt SHA256SUMS
 		;;
 	esac
 }

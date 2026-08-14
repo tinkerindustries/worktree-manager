@@ -12,12 +12,13 @@ import (
 	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 )
 
-// runDaemon implements the two daemon verbs: `wt daemon status` and
-// `wt daemon install`. Both take --json, as every verb in the system does.
+// runDaemon implements the three daemon verbs: `wt daemon status`, `wt
+// daemon install` and `wt daemon uninstall`. Each takes --json, as every
+// verb in the system does.
 func runDaemon(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		WriteError(stderr, UsageError(
-			"run 'wt daemon status' or 'wt daemon install'",
+			"run 'wt daemon status', 'wt daemon install' or 'wt daemon uninstall'",
 			"daemon needs a verb"))
 		return ExitUsage
 	}
@@ -26,12 +27,14 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		return runDaemonStatus(args[1:], stdout, stderr)
 	case "install":
 		return runDaemonInstall(args[1:], stdout, stderr)
+	case "uninstall":
+		return runDaemonUninstall(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usageText)
 		return ExitOK
 	default:
 		WriteError(stderr, UsageError(
-			"run 'wt daemon status' or 'wt daemon install'",
+			"run 'wt daemon status', 'wt daemon install' or 'wt daemon uninstall'",
 			"unknown daemon verb %q", args[0]))
 		return ExitUsage
 	}

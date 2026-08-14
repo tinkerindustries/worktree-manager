@@ -17,11 +17,31 @@
 # default; --container-token admits container clients (16+ characters).
 # The two are independent: a custom port needs no token, and a token needs
 # no custom port.
+#
+# Before anything is copied the two binaries are verified against the
+# SHA256SUMS manifest this archive carries (build.sh writes it) — an
+# archive without one is refused, not skipped; --skip-verify is the
+# deliberate override. A verification happens before an upgrade too, and
+# the version line says what is being replaced and with what.
+#
+# --dry-run prints every action — the verification, the paths that would
+# be written, the address and container-token decision, the supervisor
+# command — and changes nothing on disk; the last line is "dry run:
+# nothing was changed".
+#
+# --uninstall reverses the install: it drives `wt daemon uninstall`
+# (which stops the coordinator, deregisters it from the supervisor and
+# removes the registration) and then removes the two binaries. The store
+# is never removed — it is the only record of what is allocated on the
+# machine — and a registry that still holds entries makes the verb (and
+# so this script) refuse with exit 3, naming `wt list` and `wt rm`;
+# `wt daemon uninstall --force` is the documented way past that refusal.
 set -eu
 
 usage() {
 	cat <<'EOF'
 usage: install.sh [--prefix <dir>] [--addr <addr>] [--container-token <tok>]
+                  [--skip-verify] [--dry-run] [--uninstall]
 
   --prefix <dir>          install the binaries into <dir>/bin and write the
                           supervisor registration under <dir>
@@ -34,6 +54,17 @@ usage: install.sh [--prefix <dir>] [--addr <addr>] [--container-token <tok>]
                           least 16 characters; WT_CONTAINER_TOKEN also
                           works, which keeps it out of shell history).
                           Absent, only host clients are admitted.
+  --skip-verify           install without checking the binaries against the
+                          archive's SHA256SUMS (deliberate override; the
+                          check runs by default and refuses on a mismatch
+                          or a missing manifest).
+  --dry-run               print every action — verification, paths, the
+                          address and container-token decision, the
+                          supervisor command — and change nothing on disk.
+  --uninstall             the reverse: drive `wt daemon uninstall` (stop
+                          the coordinator, remove the registration), then
+                          remove the two binaries. The store is never
+                          removed.
   -h, --help              this help.
 EOF
 }
@@ -42,6 +73,9 @@ PREFIX="${WT_PREFIX:-$HOME/.local}"
 REG_PREFIX=""
 ADDR=""
 CONTAINER_TOKEN="${WT_CONTAINER_TOKEN:-}"
+UNINSTALL=""
+DRY_RUN=""
+SKIP_VERIFY=""
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -61,6 +95,18 @@ while [ $# -gt 0 ]; do
 		CONTAINER_TOKEN="$2"
 		shift 2
 		;;
+	--skip-verify)
+		SKIP_VERIFY=1
+		shift
+		;;
+	--dry-run)
+		DRY_RUN=1
+		shift
+		;;
+	--uninstall)
+		UNINSTALL=1
+		shift
+		;;
 	-h | --help)
 		usage
 		exit 0
@@ -74,19 +120,182 @@ while [ $# -gt 0 ]; do
 done
 
 # The archive's own directory: the two binaries must be right next to this
-# script, which is how the distribution is assembled.
+# script, which is how the distribution is assembled. An uninstall does not
+# need them — it drives the already-installed wt — so the presence check is
+# the install path's.
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-for bin in wt wtd; do
-	if [ ! -x "$SCRIPT_DIR/$bin" ]; then
-		echo "install.sh: $bin is missing from this distribution (install from the archive, not from a bare copy)" >&2
-		exit 1
-	fi
-done
+if [ -z "$UNINSTALL" ]; then
+	for bin in wt wtd; do
+		if [ ! -x "$SCRIPT_DIR/$bin" ]; then
+			echo "install.sh: $bin is missing from this distribution (install from the archive, not from a bare copy)" >&2
+			exit 1
+		fi
+	done
+fi
 
 BINDIR="$PREFIX/bin"
+
+# The checksum tool: sha256sum where present, shasum -a 256 on macOS.
+# Neither present is a refusal naming both, not a silent skip.
+SUM=""
+if command -v sha256sum >/dev/null 2>&1; then
+	SUM="sha256sum"
+elif command -v shasum >/dev/null 2>&1; then
+	SUM="shasum -a 256"
+fi
+
+# verify_binaries checks the two binaries against the archive's own
+# SHA256SUMS (the manifest build.sh writes inside every archive, covering
+# exactly wt and wtd). A missing manifest is a refusal too — an archive
+# without one is not a distribution this installer built — and every
+# refusal names --skip-verify as the deliberate override.
+verify_binaries() {
+	if [ ! -f "$SCRIPT_DIR/SHA256SUMS" ]; then
+		echo "install.sh: SHA256SUMS is missing from this distribution; refusing to install an archive this installer did not build (pass --skip-verify to install anyway)" >&2
+		exit 1
+	fi
+	if [ -z "$SUM" ]; then
+		echo "install.sh: neither sha256sum nor shasum is installed, so the binaries cannot be verified (pass --skip-verify to install anyway)" >&2
+		exit 1
+	fi
+	for bin in wt wtd; do
+		want=$(awk -v b="$bin" '$2 == b { print $1; exit }' "$SCRIPT_DIR/SHA256SUMS")
+		if [ -z "$want" ]; then
+			echo "install.sh: SHA256SUMS has no entry for $bin; refusing to install an unverifiable binary (pass --skip-verify to install anyway)" >&2
+			exit 1
+		fi
+		got=$($SUM "$SCRIPT_DIR/$bin" | awk '{print $1}')
+		if [ "$got" != "$want" ]; then
+			echo "install.sh: checksum mismatch for $bin: the archive's SHA256SUMS says $want, the file hashes to $got (pass --skip-verify to install anyway)" >&2
+			exit 1
+		fi
+	done
+	echo "verified wt and wtd against SHA256SUMS"
+}
+
+# wt_ident prints a wt binary's identity as "VERSION (COMMIT)" — the
+# parenthesised tail of its `wt --version` line — or nothing when the
+# binary is missing or its version line is unreadable. That is what lets
+# the installer say what is being replaced and with what.
+wt_ident() {
+	[ -x "$1" ] || return 1
+	line="$("$1" --version 2>/dev/null)" || return 1
+	set -- $line # wt VERSION (COMMIT)
+	[ $# -ge 3 ] || return 1
+	printf '%s %s' "$2" "$3"
+}
+
+# version_line reports the replacement in the distribution's terms: what
+# the machine already has (if anything) and what this archive brings.
+version_line() {
+	new="$(wt_ident "$SCRIPT_DIR/wt")" || new=""
+	if [ -z "$new" ]; then
+		new="version unknown"
+	fi
+	if [ -x "$BINDIR/wt" ]; then
+		old="$(wt_ident "$BINDIR/wt")" || old=""
+		if [ -n "$old" ]; then
+			echo "replacing wt $old with $new"
+		else
+			echo "replacing wt (installed version unreadable) with $new"
+		fi
+	else
+		echo "installing wt $new"
+	fi
+}
+
+# The supervisor command the real run issues, as one line for a dry run.
+# The container token is a secret and is never echoed — the placeholder
+# says a token is configured without repeating it.
+supervisor_command() {
+	cmd="$BINDIR/wt daemon install --wtd $BINDIR/wtd"
+	if [ -n "$REG_PREFIX" ]; then
+		cmd="$cmd --prefix $REG_PREFIX"
+	fi
+	if [ -n "$ADDR" ]; then
+		cmd="$cmd --addr $ADDR"
+	fi
+	if [ -n "$CONTAINER_TOKEN" ]; then
+		cmd="$cmd --container-token <token>"
+	fi
+	echo "$cmd"
+}
+
+if [ -n "$UNINSTALL" ]; then
+	if [ -n "$DRY_RUN" ]; then
+		# Print every action, change nothing.
+		if [ -x "$BINDIR/wt" ]; then
+			if [ -n "$REG_PREFIX" ]; then
+				echo "would run: $BINDIR/wt daemon uninstall --prefix $REG_PREFIX"
+			else
+				echo "would run: $BINDIR/wt daemon uninstall"
+			fi
+		else
+			echo "wt is not installed in $BINDIR; nothing to uninstall"
+		fi
+		echo "would remove: $BINDIR/wt $BINDIR/wtd"
+		echo "the store at ${WT_HOME:-$HOME/.wt} is never removed"
+		echo "dry run: nothing was changed"
+		exit 0
+	fi
+	# Drive the verb first: it stops the coordinator, deregisters it and
+	# removes the registration, and it refuses (exit 3, nothing changed)
+	# while the registry still holds entries. Its exit code propagates.
+	if [ -x "$BINDIR/wt" ]; then
+		if [ -n "$REG_PREFIX" ]; then
+			"$BINDIR/wt" daemon uninstall --prefix "$REG_PREFIX"
+		else
+			"$BINDIR/wt" daemon uninstall
+		fi
+	else
+		echo "wt is not installed in $BINDIR; nothing to uninstall"
+		echo "store: ${WT_HOME:-$HOME/.wt} — left alone (it is the only record of what is allocated on this machine)"
+	fi
+	rm -f "$BINDIR/wt" "$BINDIR/wtd"
+	echo "removed wt and wtd from $BINDIR"
+	exit 0
+fi
+
+# Verification first, before anything is copied. The dry run runs the same
+# checks — they only read — and then prints every action without taking
+# it. --skip-verify skips the check in both.
+if [ -z "$SKIP_VERIFY" ]; then
+	verify_binaries
+else
+	echo "skipped verification (--skip-verify)"
+fi
+version_line
+
+if [ -n "$DRY_RUN" ]; then
+	echo "would install wt and wtd into $BINDIR"
+	if [ -n "$ADDR" ]; then
+		echo "address: $ADDR (as given)"
+	else
+		echo "address: a free port, chosen at install time"
+	fi
+	if [ -n "$CONTAINER_TOKEN" ]; then
+		echo "container clients: admitted (a token is configured; it is never echoed)"
+	else
+		echo "container clients: not admitted (no --container-token)"
+	fi
+	echo "would run: $(supervisor_command)"
+	echo "dry run: nothing was changed"
+	exit 0
+fi
+
 mkdir -p "$BINDIR"
-cp "$SCRIPT_DIR/wt" "$SCRIPT_DIR/wtd" "$BINDIR/"
-chmod 755 "$BINDIR/wt" "$BINDIR/wtd"
+# Copy to a temporary name in the same directory, then rename into place.
+# A straight `cp` over a running coordinator rewrites the image underneath
+# the live process — it happens to succeed on macOS, which is worse rather
+# than better, because the daemon is left executing a file that changed
+# under it. rename(2) over a running executable is safe and atomic: the
+# running process keeps the old inode until it exits.
+for bin in wt wtd; do
+	tmp="$BINDIR/.$bin.tmp.$$"
+	cp "$SCRIPT_DIR/$bin" "$tmp"
+	chmod 755 "$tmp"
+	mv -f "$tmp" "$BINDIR/$bin"
+done
 echo "installed wt and wtd into $BINDIR"
 
 # Register the coordinator with the platform's supervisor and start it:

@@ -22,3 +22,8 @@ func taskSchedulerRunning(prefix string) (bool, error) { return false, nil }
 func installWindowsTask(prefix, wtdPath, addr, containerToken string) (InstallSupervisorResult, error) {
 	return InstallSupervisorResult{}, errors.New("no Task Scheduler on this platform")
 }
+
+// uninstallWindowsTask refuses off windows.
+func uninstallWindowsTask(prefix string) (UninstallSupervisorResult, error) {
+	return UninstallSupervisorResult{}, errors.New("no Task Scheduler on this platform")
+}

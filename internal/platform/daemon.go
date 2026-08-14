@@ -190,6 +190,61 @@ func InstallSupervisor(opts InstallSupervisorOpts) (InstallSupervisorResult, err
 	return InstallSupervisorResult{}, ErrNoSupervisor
 }
 
+// UninstallSupervisorResult reports what uninstalling the registration
+// removed and whether the supervisor was asked to stop the coordinator.
+type UninstallSupervisorResult struct {
+	// RegistrationPath is the primary registration file that would have
+	// been removed (the plist, the service unit, or the task XML) — the
+	// same file InstallSupervisorResult reports.
+	RegistrationPath string
+	// Removed reports whether the registration file existed and was
+	// removed. False means nothing was registered there.
+	Removed bool
+	// Stopped reports whether the supervisor was asked to stop the
+	// coordinator. False under a test prefix, which never loaded anything.
+	Stopped bool
+	// Note carries a platform caveat a reader of the result needs — for
+	// example launchd still reporting the agent loaded after bootout.
+	Note string
+}
+
+// UninstallSupervisor reverses InstallSupervisor: stop the coordinator,
+// deregister it from the platform's supervisor and remove the registration
+// file. The per-platform order is the task's: stop, deregister, remove
+// (launchd bootout, systemd disable --now, schtasks /End then /Delete).
+// Under a prefix nothing is loaded, so only the registration file(s) are
+// removed — the point of the prefix is that a test never touches the
+// machine's supervisor.
+//
+// Uninstalling something never installed succeeds: absence is the goal,
+// so a second `wt daemon uninstall` is a no-op that reports nothing was
+// registered rather than an error.
+func UninstallSupervisor(prefix string) (UninstallSupervisorResult, error) {
+	switch runtime.GOOS {
+	case "darwin":
+		return uninstallLaunchAgent(prefix)
+	case "linux":
+		return uninstallSystemdUnits(prefix)
+	case "windows":
+		return uninstallWindowsTask(prefix)
+	}
+	return UninstallSupervisorResult{}, ErrNoSupervisor
+}
+
+// removeRegistrationFile removes one registration file, tolerating its
+// absence — an uninstall of something never installed is an uninstall that
+// succeeded. It reports whether the file existed.
+func removeRegistrationFile(path string) (bool, error) {
+	err := os.Remove(path)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return false, fmt.Errorf("removing %s: %w", path, err)
+}
+
 // installLaunchAgent writes the plist and, outside a prefix, loads it.
 func installLaunchAgent(opts InstallSupervisorOpts) (InstallSupervisorResult, error) {
 	path, err := SupervisorRegistrationPath(opts.Prefix)
