@@ -2,7 +2,10 @@ module github.com/mrgeoffrich/worktree-manager
 
 go 1.26.0
 
-require github.com/goccy/go-yaml v1.19.2
+require (
+	github.com/goccy/go-yaml v1.19.2
+	modernc.org/sqlite v1.56.0
+)
 
 require (
 	cel.dev/expr v0.25.1 // indirect
@@ -57,7 +60,6 @@ require (
 	modernc.org/libc v1.74.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.56.0 // indirect
 )
 
 tool github.com/sqlc-dev/sqlc/cmd/sqlc
