@@ -9,9 +9,9 @@ import (
 	"os"
 	"time"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
 	"github.com/mrgeoffrich/worktree-manager/internal/platform"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
@@ -31,7 +31,7 @@ import (
 // purgeFlags are the CLI purge flags the caller passed; a state-path
 // resource whose purge.flag was passed is purged, every other state-path is
 // left alone.
-func (h *Handler) Teardown(s *Session, ref protocol.EntryRef, sp *spec.Spec, purgeFlags []string) *protocol.Response {
+func (h *Handler) Teardown(s *Session, ref api.EntryRef, sp *spec.Spec, purgeFlags []string) *api.Response {
 	if sp == nil {
 		return respErr(3, "teardown needs the spec: without it the dependent projects and the purge refusal cannot be computed",
 			"send the spec with the teardown, then re-run")
@@ -57,7 +57,7 @@ func (h *Handler) Teardown(s *Session, ref protocol.EntryRef, sp *spec.Spec, pur
 			"allocate the worktree first, then re-run")
 	}
 	if perr := h.checkOwner(s, e); perr != nil {
-		return &protocol.Response{Error: perr}
+		return &api.Response{Error: perr}
 	}
 	return h.teardownEntry(s, e, sp, purgeFlags, nil)
 }
@@ -68,10 +68,10 @@ func (h *Handler) Teardown(s *Session, ref protocol.EntryRef, sp *spec.Spec, pur
 // are the CLI keep flags the caller passed (e.g. "--keep-vm"); a machine
 // resource whose keep_flag was passed is left up, and the note names the
 // manual teardown command.
-func (h *Handler) teardownEntry(s *Session, e *store.Entry, sp *spec.Spec, purgeFlags, keepFlags []string) *protocol.Response {
+func (h *Handler) teardownEntry(s *Session, e *store.Entry, sp *spec.Spec, purgeFlags, keepFlags []string) *api.Response {
 	env, perr := h.entryEnv(e, sp)
 	if perr != nil {
-		return &protocol.Response{Error: perr}
+		return &api.Response{Error: perr}
 	}
 	app, slug := e.App, e.Slug
 
@@ -84,7 +84,7 @@ func (h *Handler) teardownEntry(s *Session, e *store.Entry, sp *spec.Spec, purge
 	if cerr := h.runUnlocked(app, slug, func() {
 		rep = h.Drivers.TeardownAll(sp, e.Resources, env, purgeFlags, keepFlags)
 	}); cerr != nil {
-		return &protocol.Response{Error: cerr}
+		return &api.Response{Error: cerr}
 	}
 
 	_, ok, err := h.st.GetEntry(app, slug)
@@ -105,7 +105,7 @@ func (h *Handler) teardownEntry(s *Session, e *store.Entry, sp *spec.Spec, purge
 		if err := h.st.DeleteEntry(app, slug); err != nil {
 			return h.storeErr("writing the registry", err)
 		}
-		return &protocol.Response{Result: mustJSON(protocol.ReleaseResult{
+		return &api.Response{Result: mustJSON(api.ReleaseResult{
 			App: app, Slug: slug, Removed: true, Notes: notes,
 		})}
 	}
@@ -155,17 +155,17 @@ func (h *Handler) machine() platform.MachineRunner {
 // the docker seam. It is the shared construction behind teardown,
 // materialise and the rm verb, so the three cannot drift apart on what an
 // operation may see (03-drivers.md §2).
-func (h *Handler) entryEnv(e *store.Entry, sp *spec.Spec) (driver.Env, *protocol.Error) {
+func (h *Handler) entryEnv(e *store.Entry, sp *spec.Spec) (driver.Env, *api.Error) {
 	bands, err := h.st.ReadBands()
 	if err != nil {
-		return driver.Env{}, &protocol.Error{
+		return driver.Env{}, &api.Error{
 			Code: 1, Msg: fmt.Sprintf("reading the band ledger: %v", err),
 			Remedy: "check the coordinator's store (WT_HOME) is readable and writable, then re-run",
 		}
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return driver.Env{}, &protocol.Error{
+		return driver.Env{}, &api.Error{
 			Code:   4,
 			Msg:    fmt.Sprintf("the coordinator cannot determine the home directory for {home}: %v", err),
 			Remedy: "set $HOME for the coordinator, then re-run",

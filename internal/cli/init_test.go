@@ -13,9 +13,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/descriptor"
 	"github.com/mrgeoffrich/worktree-manager/internal/envfile"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 )
 
@@ -101,30 +101,32 @@ type recordingCoord struct {
 	requests map[string][]json.RawMessage
 }
 
-// newRecordingCoord runs the fake on sock and returns the recorder.
-func newRecordingCoord(t *testing.T, sock string, handlers map[string]func(*protocol.Request) *protocol.Response) *recordingCoord {
+// newRecordingCoord runs the fake and returns the recorder and the
+// endpoint to point the client at.
+func newRecordingCoord(t *testing.T, handlers map[string]func(*api.Request) *api.Response) (*recordingCoord, string) {
 	t.Helper()
 	rc := &recordingCoord{requests: map[string][]json.RawMessage{}}
 	// The fake's dispatch is per verb, so the recorder registers itself
 	// under every lifecycle and fleet verb.
-	all := map[string]func(*protocol.Request) *protocol.Response{}
+	all := map[string]func(*api.Request) *api.Response{}
 	for _, verb := range []string{"allocate", "materialise", "activate", "release", "rm", "list", "reconcile", "clients.list", "doctor"} {
-		all[verb] = func(req *protocol.Request) *protocol.Response {
-			rc.requests[req.Verb] = append(rc.requests[req.Verb], req.Args)
-			if h, ok := handlers[req.Verb]; ok {
+		verb := verb
+		all[verb] = func(req *api.Request) *api.Response {
+			rc.requests[verb] = append(rc.requests[verb], req.Args)
+			if h, ok := handlers[verb]; ok {
 				return h(req)
 			}
-			return &protocol.Response{Error: &protocol.Error{Code: 1, Msg: "fake coordinator: no canned response for " + req.Verb, Remedy: "test defect"}}
+			return &api.Response{Error: &api.Error{Code: 1, Msg: "fake coordinator: no canned response for " + verb, Remedy: "test defect"}}
 		}
 	}
-	fakeCoordServer(t, sock, all)
-	return rc
+	ep := fakeCoordServer(t, all)
+	return rc, ep
 }
 
 // allocateOK is the canned allocate response: the lowest slot, one port
 // and one state path, at the given worktree.
-func allocateOK(worktree string) *protocol.Response {
-	return &protocol.Response{Result: mustJSONT(protocol.AllocateResult{
+func allocateOK(worktree string) *api.Response {
+	return &api.Response{Result: mustJSONT(api.AllocateResult{
 		App: "lifecycle-app", Slug: "wt-1", Slot: 1, State: "reserving",
 		Resources: map[string]spec.Resolved{
 			"api": {Type: "port", Value: 4201},
@@ -142,8 +144,8 @@ func mustJSONT(v any) json.RawMessage {
 	return data
 }
 
-func cannedT(v any) func(*protocol.Request) *protocol.Response {
-	return func(*protocol.Request) *protocol.Response { return &protocol.Response{Result: mustJSONT(v)} }
+func cannedT(v any) func(*api.Request) *api.Response {
+	return func(*api.Request) *api.Response { return &api.Response{Result: mustJSONT(v)} }
 }
 
 // TestInitAllocatesEmitsActivates: the happy path — the seven steps run,
@@ -152,13 +154,12 @@ func cannedT(v any) func(*protocol.Request) *protocol.Response {
 func TestInitAllocatesEmitsActivates(t *testing.T) {
 	sp := lifecycleSpec(t)
 	main, worktree := lifecycleFixture(t, sp)
-	sock := shortSock(t, "init")
-	rc := newRecordingCoord(t, sock, map[string]func(*protocol.Request) *protocol.Response{
-		"allocate":    func(*protocol.Request) *protocol.Response { return allocateOK(worktree) },
-		"materialise": cannedT(&protocol.MaterialiseResult{App: "lifecycle-app", Slug: "wt-1", State: "reserving"}),
-		"activate":    cannedT(&protocol.ActivateResult{App: "lifecycle-app", Slug: "wt-1", State: "active"}),
+	rc, ep := newRecordingCoord(t, map[string]func(*api.Request) *api.Response{
+		"allocate":    func(*api.Request) *api.Response { return allocateOK(worktree) },
+		"materialise": cannedT(&api.MaterialiseResult{App: "lifecycle-app", Slug: "wt-1", State: "reserving"}),
+		"activate":    cannedT(&api.ActivateResult{App: "lifecycle-app", Slug: "wt-1", State: "active"}),
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", ep)
 
 	code, stdout, stderr := runCLI(t, "init", "--cwd", worktree, "--description", "the test worktree")
 	if code != ExitOK {
@@ -266,17 +267,16 @@ func TestInitSlugCollisionWithDifferentPathStops(t *testing.T) {
 	if err := os.MkdirAll(other, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	sock := shortSock(t, "collide")
-	newRecordingCoord(t, sock, map[string]func(*protocol.Request) *protocol.Response{
-		"allocate": func(*protocol.Request) *protocol.Response {
-			return &protocol.Response{Result: mustJSONT(protocol.AllocateResult{
+	_, ep := newRecordingCoord(t, map[string]func(*api.Request) *api.Response{
+		"allocate": func(*api.Request) *api.Response {
+			return &api.Response{Result: mustJSONT(api.AllocateResult{
 				App: "lifecycle-app", Slug: "wt-1", Slot: 1, State: "reserving",
 				Resources: map[string]spec.Resolved{"api": {Type: "port", Value: 4201}},
 				Path:      other, Existed: true,
 			})}
 		},
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", ep)
 
 	code, _, stderr := runCLI(t, "init", "--cwd", worktree, "--description", "the test worktree")
 	if code != ExitRefused {
@@ -293,13 +293,12 @@ func TestInitSlugCollisionWithDifferentPathStops(t *testing.T) {
 func TestInitMaterialiseFailureReleasesTheEntry(t *testing.T) {
 	sp := lifecycleSpec(t)
 	_, worktree := lifecycleFixture(t, sp)
-	sock := shortSock(t, "matfail")
-	rc := newRecordingCoord(t, sock, map[string]func(*protocol.Request) *protocol.Response{
-		"allocate":    func(*protocol.Request) *protocol.Response { return allocateOK(worktree) },
-		"materialise": cannedT(&protocol.MaterialiseResult{App: "lifecycle-app", Slug: "wt-1", State: "reserving", Failed: "db", Err: "apply failed on purpose"}),
-		"release":     cannedT(&protocol.ReleaseResult{App: "lifecycle-app", Slug: "wt-1", Removed: true}),
+	rc, ep := newRecordingCoord(t, map[string]func(*api.Request) *api.Response{
+		"allocate":    func(*api.Request) *api.Response { return allocateOK(worktree) },
+		"materialise": cannedT(&api.MaterialiseResult{App: "lifecycle-app", Slug: "wt-1", State: "reserving", Failed: "db", Err: "apply failed on purpose"}),
+		"release":     cannedT(&api.ReleaseResult{App: "lifecycle-app", Slug: "wt-1", Removed: true}),
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", ep)
 
 	code, _, stderr := runCLI(t, "init", "--cwd", worktree, "--description", "the test worktree")
 	if code != ExitFailure {
@@ -323,15 +322,14 @@ func TestInitMaterialiseFailureReleasesTheEntry(t *testing.T) {
 func TestInitMaterialiseFailureWithFailedRollbackKeepsEntry(t *testing.T) {
 	sp := lifecycleSpec(t)
 	_, worktree := lifecycleFixture(t, sp)
-	sock := shortSock(t, "matrollback")
-	rc := newRecordingCoord(t, sock, map[string]func(*protocol.Request) *protocol.Response{
-		"allocate": func(*protocol.Request) *protocol.Response { return allocateOK(worktree) },
-		"materialise": cannedT(&protocol.MaterialiseResult{
+	rc, ep := newRecordingCoord(t, map[string]func(*api.Request) *api.Response{
+		"allocate": func(*api.Request) *api.Response { return allocateOK(worktree) },
+		"materialise": cannedT(&api.MaterialiseResult{
 			App: "lifecycle-app", Slug: "wt-1", State: "tearing-down",
 			Failed: "db", Err: "apply failed", RollbackErr: "teardown failed too",
 		}),
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", ep)
 
 	code, _, stderr := runCLI(t, "init", "--cwd", worktree, "--description", "the test worktree")
 	if code != ExitFailure {
@@ -352,13 +350,12 @@ func TestInitHealthFailureKeepsTheWorktreeAllocated(t *testing.T) {
 	sp := lifecycleSpec(t)
 	sp.Hooks.Start = &spec.Hook{Run: "echo stack failed; exit 7"}
 	_, worktree := lifecycleFixture(t, sp)
-	sock := shortSock(t, "healthfail")
-	rc := newRecordingCoord(t, sock, map[string]func(*protocol.Request) *protocol.Response{
-		"allocate":    func(*protocol.Request) *protocol.Response { return allocateOK(worktree) },
-		"materialise": cannedT(&protocol.MaterialiseResult{App: "lifecycle-app", Slug: "wt-1", State: "reserving"}),
-		"activate":    cannedT(&protocol.ActivateResult{App: "lifecycle-app", Slug: "wt-1", State: "active"}),
+	rc, ep := newRecordingCoord(t, map[string]func(*api.Request) *api.Response{
+		"allocate":    func(*api.Request) *api.Response { return allocateOK(worktree) },
+		"materialise": cannedT(&api.MaterialiseResult{App: "lifecycle-app", Slug: "wt-1", State: "reserving"}),
+		"activate":    cannedT(&api.ActivateResult{App: "lifecycle-app", Slug: "wt-1", State: "active"}),
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", ep)
 
 	code, _, stderr := runCLI(t, "init", "--cwd", worktree, "--description", "the test worktree")
 	if code != ExitFailure {
@@ -385,20 +382,19 @@ func TestInitHealthFailureKeepsTheWorktreeAllocated(t *testing.T) {
 func TestInitReemitsDescriptorFromEntry(t *testing.T) {
 	sp := lifecycleSpec(t)
 	_, worktree := lifecycleFixture(t, sp)
-	sock := shortSock(t, "reemit")
-	newRecordingCoord(t, sock, map[string]func(*protocol.Request) *protocol.Response{
-		"allocate": func(*protocol.Request) *protocol.Response {
+	_, ep := newRecordingCoord(t, map[string]func(*api.Request) *api.Response{
+		"allocate": func(*api.Request) *api.Response {
 			res := allocateOK(worktree)
-			var a protocol.AllocateResult
+			var a api.AllocateResult
 			json.Unmarshal(res.Result, &a)
 			a.Existed = true
 			res.Result = mustJSONT(a)
 			return res
 		},
-		"materialise": cannedT(&protocol.MaterialiseResult{App: "lifecycle-app", Slug: "wt-1", State: "reserving"}),
-		"activate":    cannedT(&protocol.ActivateResult{App: "lifecycle-app", Slug: "wt-1", State: "active"}),
+		"materialise": cannedT(&api.MaterialiseResult{App: "lifecycle-app", Slug: "wt-1", State: "reserving"}),
+		"activate":    cannedT(&api.ActivateResult{App: "lifecycle-app", Slug: "wt-1", State: "active"}),
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", ep)
 
 	code, _, stderr := runCLI(t, "init", "--cwd", worktree, "--description", "the test worktree")
 	if code != ExitOK {
@@ -430,21 +426,20 @@ func TestInitRebuildsRegistryFromDescriptor(t *testing.T) {
 	if err := descriptor.Write(filepath.Join(worktree, "wt-env.yaml"), "yaml", d); err != nil {
 		t.Fatalf("planting the descriptor: %v", err)
 	}
-	sock := shortSock(t, "rebuild")
-	rc := newRecordingCoord(t, sock, map[string]func(*protocol.Request) *protocol.Response{
-		"allocate": func(*protocol.Request) *protocol.Response {
+	rc, ep := newRecordingCoord(t, map[string]func(*api.Request) *api.Response{
+		"allocate": func(*api.Request) *api.Response {
 			res := allocateOK(worktree)
-			var a protocol.AllocateResult
+			var a api.AllocateResult
 			json.Unmarshal(res.Result, &a)
 			a.Slot = 3
 			a.Resources["api"] = spec.Resolved{Type: "port", Value: 4207}
 			res.Result = mustJSONT(a)
 			return res
 		},
-		"materialise": cannedT(&protocol.MaterialiseResult{App: "lifecycle-app", Slug: "wt-1", State: "reserving"}),
-		"activate":    cannedT(&protocol.ActivateResult{App: "lifecycle-app", Slug: "wt-1", State: "active"}),
+		"materialise": cannedT(&api.MaterialiseResult{App: "lifecycle-app", Slug: "wt-1", State: "reserving"}),
+		"activate":    cannedT(&api.ActivateResult{App: "lifecycle-app", Slug: "wt-1", State: "active"}),
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", ep)
 
 	code, _, stderr := runCLI(t, "init", "--cwd", worktree, "--description", "the test worktree")
 	if code != ExitOK {
@@ -457,7 +452,7 @@ func TestInitRebuildsRegistryFromDescriptor(t *testing.T) {
 	if len(rc.requests["allocate"]) != 1 {
 		t.Fatalf("allocate requests = %d, want 1", len(rc.requests["allocate"]))
 	}
-	var args protocol.AllocateArgs
+	var args api.AllocateArgs
 	if err := json.Unmarshal(rc.requests["allocate"][0], &args); err != nil {
 		t.Fatalf("decoding the allocate request: %v", err)
 	}

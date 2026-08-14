@@ -27,7 +27,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 	"github.com/mrgeoffrich/worktree-manager/internal/treecheck"
@@ -107,7 +107,7 @@ func (h *Handler) SweepCleanup() (int, error) {
 		skip := func(reason string) {
 			h.log.Info("scheduled cleanup skipped an entry", "app", c.app, "slug", c.slug, "reason", reason)
 		}
-		if e.OwnerKind != protocol.KindHost || e.Owner != uid {
+		if e.OwnerKind != api.KindHost || e.Owner != uid {
 			skip("owned by another client; the sweep never adopts a view")
 			continue
 		}

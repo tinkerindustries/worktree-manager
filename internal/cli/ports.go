@@ -14,7 +14,7 @@ import (
 	"io"
 	"text/tabwriter"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 )
 
 // runPorts implements `wt ports scan [--json]`.
@@ -50,7 +50,7 @@ func runPortsScan(args []string, stdout, stderr io.Writer) int {
 
 // writePortsTable prints one line per LISTEN socket, with the scan's
 // bounded-coverage notes on stderr.
-func writePortsTable(stdout, stderr io.Writer, res *protocol.PortsScanResult) int {
+func writePortsTable(stdout, stderr io.Writer, res *api.PortsScanResult) int {
 	for _, n := range res.Notes {
 		fmt.Fprintf(stderr, "note: %s\n", n)
 	}

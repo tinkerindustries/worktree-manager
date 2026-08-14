@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 )
 
@@ -59,12 +59,12 @@ func (d *blockingDriver) BlastRadius(*spec.Resource, *spec.Spec) string { return
 func TestSlowDriverDoesNotBlockOtherClients(t *testing.T) {
 	blocker := &blockingDriver{entered: make(chan struct{}), release: make(chan struct{})}
 	h, sess, sp, ref := setupTeardown(t, driver.NewRegistry(blocker))
-	reader, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("second hello refused: %+v", reply.Error)
+	reader, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("second hello refused: %+v", err)
 	}
 
-	done := make(chan *protocol.Response, 1)
+	done := make(chan *api.Response, 1)
 	go func() { done <- h.H.Teardown(sess, ref, sp, nil) }()
 
 	select {
@@ -74,8 +74,8 @@ func TestSlowDriverDoesNotBlockOtherClients(t *testing.T) {
 	}
 
 	// The driver is still working. Another client's read must be served.
-	served := make(chan *protocol.Response, 1)
-	go func() { served <- h.Request(context.Background(), reader, verbList, &protocol.ListArgs{}) }()
+	served := make(chan *api.Response, 1)
+	go func() { served <- h.Request(context.Background(), reader, verbList, &api.ListArgs{}) }()
 	select {
 	case resp := <-served:
 		if resp.Error != nil {
@@ -97,7 +97,7 @@ func TestSecondOperationOnAClaimedEntryIsRefused(t *testing.T) {
 	blocker := &blockingDriver{entered: make(chan struct{}), release: make(chan struct{})}
 	h, sess, sp, ref := setupTeardown(t, driver.NewRegistry(blocker))
 
-	done := make(chan *protocol.Response, 1)
+	done := make(chan *api.Response, 1)
 	go func() { done <- h.H.Teardown(sess, ref, sp, nil) }()
 	select {
 	case <-blocker.entered:
@@ -105,7 +105,7 @@ func TestSecondOperationOnAClaimedEntryIsRefused(t *testing.T) {
 		t.Fatal("the teardown never reached the driver")
 	}
 
-	second := make(chan *protocol.Response, 1)
+	second := make(chan *api.Response, 1)
 	go func() { second <- h.H.Teardown(sess, ref, sp, nil) }()
 	select {
 	case resp := <-second:
@@ -130,9 +130,9 @@ func TestSecondOperationOnAClaimedEntryIsRefused(t *testing.T) {
 func TestClaimIsReleasedForTheNextOperation(t *testing.T) {
 	stub := &stubDriver{}
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	sess, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	sess, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
 	h.H.InstallDrivers(driver.NewRegistry(stub))
 	sp := teardownSpec(t)
@@ -140,7 +140,7 @@ func TestClaimIsReleasedForTheNextOperation(t *testing.T) {
 	if perr != nil {
 		t.Fatalf("allocation refused: %+v", perr)
 	}
-	ref := protocol.EntryRef{App: res.App, Slug: res.Slug}
+	ref := api.EntryRef{App: res.App, Slug: res.Slug}
 
 	if resp := h.H.Teardown(sess, ref, sp, nil); resp.Error != nil {
 		t.Fatalf("teardown refused: %+v", resp.Error)

@@ -11,24 +11,23 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 )
 
 // TestRunPortsScanJSON: `wt ports scan --json` prints exactly one JSON
 // object with the listeners sorted by port.
 func TestRunPortsScanJSON(t *testing.T) {
-	sock := shortSock(t, "s")
-	fakeCoordServer(t, sock, map[string]func(*protocol.Request) *protocol.Response{
-		"ports.scan": canned(&protocol.Response{Result: json.RawMessage(
+	ep := fakeCoordServer(t, map[string]func(*api.Request) *api.Response{
+		"ports.scan": canned(&api.Response{Result: json.RawMessage(
 			`{"listeners":[{"port":4200,"pid":123,"command":"compose-app-dev"},{"port":5319,"pid":456,"command":"compose-app-prod"}],"notes":["a note"]}`)}),
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", ep)
 
 	code, stdout, stderr := runCLI(t, "ports", "scan", "--json")
 	if code != ExitOK {
 		t.Fatalf("exit = %d; stderr: %s", code, stderr)
 	}
-	var res protocol.PortsScanResult
+	var res api.PortsScanResult
 	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &res); err != nil {
 		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
 	}
@@ -40,12 +39,11 @@ func TestRunPortsScanJSON(t *testing.T) {
 // TestRunPortsScanHuman: the text form lists port, pid and command, and
 // the bounded-coverage notes go to stderr.
 func TestRunPortsScanHuman(t *testing.T) {
-	sock := shortSock(t, "s")
-	fakeCoordServer(t, sock, map[string]func(*protocol.Request) *protocol.Response{
-		"ports.scan": canned(&protocol.Response{Result: json.RawMessage(
+	ep := fakeCoordServer(t, map[string]func(*api.Request) *api.Response{
+		"ports.scan": canned(&api.Response{Result: json.RawMessage(
 			`{"listeners":[{"port":4200,"pid":123,"command":"compose-app-dev"}],"notes":["this coordinator runs inside a container"]}`)}),
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", ep)
 
 	code, stdout, stderr := runCLI(t, "ports", "scan")
 	if code != ExitOK {
@@ -64,15 +62,14 @@ func TestRunPortsScanHuman(t *testing.T) {
 // TestRunPortsScanUnavailable: a scan that cannot see every listener
 // exits 4 with the remedy naming the missing discovery tool.
 func TestRunPortsScanUnavailable(t *testing.T) {
-	sock := shortSock(t, "s")
-	fakeCoordServer(t, sock, map[string]func(*protocol.Request) *protocol.Response{
-		"ports.scan": canned(&protocol.Response{Error: &protocol.Error{
+	ep := fakeCoordServer(t, map[string]func(*api.Request) *api.Response{
+		"ports.scan": canned(&api.Response{Error: &api.Error{
 			Code:   4,
 			Msg:    "listener discovery needs lsof, which is unavailable: it is not installed or not on PATH",
 			Remedy: "install the discovery tool the message names, then re-run: wt ports scan",
 		}}),
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", ep)
 
 	code, _, stderr := runCLI(t, "ports", "scan")
 	if code != ExitUnavailable {
@@ -86,7 +83,7 @@ func TestRunPortsScanUnavailable(t *testing.T) {
 // TestRunPortsScanUnreachableExits5: with the coordinator stopped, ports
 // scan exits 5 naming the start command.
 func TestRunPortsScanUnreachableExits5(t *testing.T) {
-	t.Setenv("WT_SOCKET", shortSock(t, "dead"))
+	t.Setenv("WT_ENDPOINT", "http://127.0.0.1:1")
 	code, _, stderr := runCLI(t, "ports", "scan")
 	if code != ExitUnreachable {
 		t.Errorf("exit = %d, want 5", code)
@@ -116,18 +113,17 @@ func TestRunPortsVerbUsage(t *testing.T) {
 // spec to the coordinator and prints the suggestions.
 func TestRunBandsSuggestJSON(t *testing.T) {
 	chdir(t, filepath.Join("..", "..", "testdata", "fixtures", "plain-app"))
-	sock := shortSock(t, "s")
-	var got protocol.SuggestBandArgs
-	fakeCoordServer(t, sock, map[string]func(*protocol.Request) *protocol.Response{
-		"bands.suggest": func(req *protocol.Request) *protocol.Response {
+	var got api.SuggestBandArgs
+	ep := fakeCoordServer(t, map[string]func(*api.Request) *api.Response{
+		"bands.suggest": func(req *api.Request) *api.Response {
 			if err := json.Unmarshal(req.Args, &got); err != nil {
 				t.Errorf("decoding the suggest request: %v", err)
 			}
-			return canned(&protocol.Response{Result: json.RawMessage(
+			return canned(&api.Response{Result: json.RawMessage(
 				`{"app":"plain-app","suggestions":[{"resource":"api","base":8200,"span":32,"low":8200,"high":8231}]}`)})(req)
 		},
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", ep)
 
 	code, stdout, stderr := runCLI(t, "bands", "suggest", "--json")
 	if code != ExitOK {
@@ -136,7 +132,7 @@ func TestRunBandsSuggestJSON(t *testing.T) {
 	if got.Spec.App != "plain-app" {
 		t.Errorf("request did not carry the committed spec: %+v", got.Spec)
 	}
-	var res protocol.SuggestBandResult
+	var res api.SuggestBandResult
 	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &res); err != nil {
 		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
 	}
@@ -155,12 +151,11 @@ func TestRunBandsSuggestExplicitSpec(t *testing.T) {
 		t.Fatalf("resolving the spec path: %v", err)
 	}
 	chdir(t, t.TempDir())
-	sock := shortSock(t, "s")
-	fakeCoordServer(t, sock, map[string]func(*protocol.Request) *protocol.Response{
-		"bands.suggest": canned(&protocol.Response{Result: json.RawMessage(
+	ep := fakeCoordServer(t, map[string]func(*api.Request) *api.Response{
+		"bands.suggest": canned(&api.Response{Result: json.RawMessage(
 			`{"app":"compose-app","suggestions":[{"resource":"api","base":1,"span":64,"low":1,"high":64}]}`)}),
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", ep)
 
 	code, stdout, stderr := runCLI(t, "bands", "suggest", "--spec", specPath)
 	if code != ExitOK {
@@ -177,7 +172,7 @@ func TestRunBandsSuggestExplicitSpec(t *testing.T) {
 // --spec reports not adopted with exit 4, never a socket error.
 func TestRunBandsSuggestNotAdopted(t *testing.T) {
 	chdir(t, t.TempDir())
-	t.Setenv("WT_SOCKET", shortSock(t, "dead"))
+	t.Setenv("WT_ENDPOINT", "http://127.0.0.1:1")
 	code, _, stderr := runCLI(t, "bands", "suggest")
 	if code != ExitUnavailable {
 		t.Errorf("exit = %d, want 4 (not adopted)", code)
@@ -191,7 +186,7 @@ func TestRunBandsSuggestNotAdopted(t *testing.T) {
 // suggest exits 5 naming the start command.
 func TestRunBandsSuggestUnreachableExits5(t *testing.T) {
 	chdir(t, filepath.Join("..", "..", "testdata", "fixtures", "plain-app"))
-	t.Setenv("WT_SOCKET", shortSock(t, "dead"))
+	t.Setenv("WT_ENDPOINT", "http://127.0.0.1:1")
 	code, _, stderr := runCLI(t, "bands", "suggest")
 	if code != ExitUnreachable {
 		t.Errorf("exit = %d, want 5", code)

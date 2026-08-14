@@ -67,15 +67,15 @@ func systemctl(args ...string) error {
 // Restart=always is the systemd analogue of launchd's KeepAlive. The
 // Requires/After pair ties the service to its socket unit, so the socket
 // exists whenever the service starts — including the login-time start.
-// With the opt-in loopback TCP surface configured, ExecStart also carries
-// --tcp and --tcp-token; each argument is quoted under systemd's rules, and
-// a unit that carries the token is written 0600 (systemd accepts it, and a
-// machine's other users cannot read the token out of the unit file — the
-// security pass, phase 9).
+// With the container token configured, ExecStart also carries
+// --addr and --container-token; each argument is quoted under systemd's
+// rules, and a unit that carries the token is written 0600 (systemd
+// accepts it, and a machine's other users cannot read the token out of
+// the unit file — the security pass, phase 9).
 func systemdServiceUnit(wtdPath, tcpAddr, tcpToken string) []byte {
 	exec := systemdEscapeExec(wtdPath) + " --activate"
 	if tcpAddr != "" {
-		exec += " --tcp " + systemdEscapeExec(tcpAddr) + " --tcp-token " + systemdEscapeExec(tcpToken)
+		exec += " --addr " + systemdEscapeExec(tcpAddr) + " --container-token " + systemdEscapeExec(tcpToken)
 	}
 	return []byte(fmt.Sprintf(`[Unit]
 Description=Worktree Manager coordinator (wtd)

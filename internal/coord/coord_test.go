@@ -1,18 +1,15 @@
 package coord
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
-	"net"
-	"os"
+	"net/http"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
 
@@ -29,21 +26,21 @@ func tempRoot(t *testing.T) string {
 }
 
 // TestHarnessFullRequest is exit criterion 4: the in-process harness runs a
-// full request — hello, negotiation, one request, one response — with no
-// socket, no supervisor and no container.
+// full request — identity resolution, one request, one response — with no
+// listener, no supervisor and no container.
 func TestHarnessFullRequest(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
 	ctx := context.Background()
 
-	sess, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	sess, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("connect refused: %+v", err)
 	}
-	if reply.Agreed != protocol.VersionMin {
-		t.Errorf("agreed version = %d, want %d", reply.Agreed, protocol.VersionMin)
+	if sess.Version != api.VersionMax {
+		t.Errorf("session version = %d, want %d", sess.Version, api.VersionMax)
 	}
-	if sess.Identity.Kind != protocol.KindHost || sess.Identity.Key != "4242" {
-		t.Errorf("host identity = %+v, want uid 4242", sess.Identity)
+	if sess.Identity.Kind != api.KindHost || sess.Identity.Key != "4242" {
+		t.Errorf("host identity = %+v, want the synthetic host key 4242", sess.Identity)
 	}
 
 	resp := h.Request(ctx, sess, "ping", nil)
@@ -57,17 +54,17 @@ func TestHarnessFullRequest(t *testing.T) {
 		t.Errorf("ping result = %s, want ok:true", resp.Result)
 	}
 
-	// The connection was observed: clients.json holds the host client with
-	// the coordinator's own last-seen time.
-	f, err := h.Store.ReadClients()
-	if err != nil {
-		t.Fatalf("ReadClients: %v", err)
+	// The connection was observed: the client table holds the host client
+	// with the coordinator's own last-seen time.
+	f, rerr := h.Store.ReadClients()
+	if rerr != nil {
+		t.Fatalf("ReadClients: %v", rerr)
 	}
 	if len(f.Clients) != 1 {
 		t.Fatalf("clients.json has %d entries, want 1", len(f.Clients))
 	}
 	c := f.Clients[0]
-	if c.Identity != "4242" || c.Kind != protocol.KindHost || c.Ephemeral {
+	if c.Identity != "4242" || c.Kind != api.KindHost || c.Ephemeral {
 		t.Errorf("recorded client = %+v", c)
 	}
 	if _, err := time.Parse(time.RFC3339, c.LastSeen); err != nil {
@@ -87,92 +84,63 @@ func mustParse(t *testing.T, s string) time.Time {
 	return ts
 }
 
-// TestVersionRefusalNamesUpgradeBothDirections is exit criterion 3 at the
-// coordinator: a client one protocol version ahead refuses to proceed, from
-// both directions, naming the upgrade.
+// TestVersionRefusalNamesUpgradeBothDirections is exit criterion 3: a
+// client one API version ahead refuses to proceed, from both directions,
+// naming the upgrade. The check lives in the api package (the client runs
+// it against GET /version); this pins the coordinator's half — the range
+// it advertises and the refusal the client would produce.
 func TestVersionRefusalNamesUpgradeBothDirections(t *testing.T) {
 	t.Run("client ahead of the coordinator", func(t *testing.T) {
-		h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-		peer := Peer{UID: 4242, Known: true}
-		_, reply := h.H.Begin(peer, &protocol.Hello{Kind: protocol.KindHost, MinVer: 2, MaxVer: 2})
-		if reply.Error == nil {
-			t.Fatal("hello with a non-overlapping range succeeded, want a refusal")
+		verr := api.CheckVersion(2, 2, api.VersionMin, api.VersionMax)
+		if verr == nil {
+			t.Fatal("non-overlapping ranges agreed, want a refusal")
 		}
-		if reply.Error.Code != 3 {
-			t.Errorf("refusal code = %d, want 3 (refused)", reply.Error.Code)
+		if verr.Code != 3 {
+			t.Errorf("refusal code = %d, want 3 (refused)", verr.Code)
 		}
-		if !strings.Contains(reply.Error.Msg, "upgrade the coordinator") {
-			t.Errorf("refusal does not name the coordinator upgrade: %s", reply.Error.Msg)
+		if !strings.Contains(verr.Msg, "upgrade the coordinator") {
+			t.Errorf("refusal does not name the coordinator upgrade: %s", verr.Msg)
 		}
-		if !strings.Contains(reply.Error.Remedy, "upgrade wtd") {
-			t.Errorf("remedy does not name the install: %s", reply.Error.Remedy)
+		if !strings.Contains(verr.Remedy, "upgrade wtd") {
+			t.Errorf("remedy does not name the install: %s", verr.Remedy)
 		}
 	})
 
 	t.Run("coordinator ahead of the client", func(t *testing.T) {
-		h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-		h.H.ProtocolMin, h.H.ProtocolMax = 2, 2
-		peer := Peer{UID: 4242, Known: true}
-		_, reply := h.H.Begin(peer, &protocol.Hello{Kind: protocol.KindHost, MinVer: 1, MaxVer: 1})
-		if reply.Error == nil {
-			t.Fatal("hello with a non-overlapping range succeeded, want a refusal")
+		verr := api.CheckVersion(api.VersionMin, api.VersionMax, 2, 2)
+		if verr == nil {
+			t.Fatal("non-overlapping ranges agreed, want a refusal")
 		}
-		if !strings.Contains(reply.Error.Msg, "upgrade the client") {
-			t.Errorf("refusal does not name the client upgrade: %s", reply.Error.Msg)
+		if !strings.Contains(verr.Msg, "upgrade the client") {
+			t.Errorf("refusal does not name the client upgrade: %s", verr.Msg)
 		}
-		if !strings.Contains(reply.Error.Remedy, "upgrade wt") {
-			t.Errorf("remedy does not name the install: %s", reply.Error.Remedy)
+		if !strings.Contains(verr.Remedy, "upgrade wt") {
+			t.Errorf("remedy does not name the install: %s", verr.Remedy)
 		}
 	})
-}
-
-// TestHostIdentityComesFromTheKernel: the coordinator enforces identity
-// itself and never trusts the caller's claim of being a host client — a
-// host hello's token field is ignored, and a host claim on a connection
-// with no peer credentials is refused.
-func TestHostIdentityComesFromTheKernel(t *testing.T) {
-	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	peer := Peer{UID: 1000, Known: true}
-	// The hello claims host and smuggles a token; the identity must still
-	// be the kernel's uid.
-	sess, reply := h.H.Begin(peer, &protocol.Hello{
-		Kind: protocol.KindHost, Token: "smuggled", MinVer: 1, MaxVer: 1,
-	})
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
-	}
-	if sess.Identity.Key != "1000" {
-		t.Errorf("host identity = %q, want the peer uid 1000 (claim ignored)", sess.Identity.Key)
-	}
-
-	// No peer credentials: a host claim is refused rather than trusted.
-	_, reply = h.H.Begin(Peer{Known: false}, &protocol.Hello{Kind: protocol.KindHost, MinVer: 1, MaxVer: 1})
-	if reply.Error == nil || reply.Error.Code != 3 {
-		t.Fatalf("host hello without peer credentials = %+v, want a refusal", reply.Error)
-	}
 }
 
 func TestNamedClientRequiresToken(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	_, reply := h.Connect(protocol.KindNamed, "")
-	if reply.Error == nil {
+	_, err := h.Connect(api.KindNamed, "")
+	if err == nil {
 		t.Fatal("a named client without a token succeeded, want a refusal")
 	}
-	sess, reply := h.Connect(protocol.KindNamed, "tok-abc")
-	if reply.Error != nil {
-		t.Fatalf("named hello refused: %+v", reply.Error)
+	sess, err := h.Connect(api.KindNamed, "tok-abc")
+	if err != nil {
+		t.Fatalf("named connect refused: %+v", err)
 	}
-	if sess.Identity.Kind != protocol.KindNamed || sess.Identity.Key != "tok-abc" {
+	if sess.Identity.Kind != api.KindNamed || sess.Identity.Key != "tok-abc" {
 		t.Errorf("named identity = %+v", sess.Identity)
 	}
 	if sess.Identity.Ephemeral {
 		t.Error("a named client is not ephemeral")
 	}
-	f, err := h.Store.ReadClients()
-	if err != nil {
-		t.Fatal(err)
+	f, rerr := h.Store.ReadClients()
+	if rerr != nil {
+		t.Fatal(rerr)
 	}
-	if len(f.Clients) != 1 || f.Clients[0].Identity != "tok-abc" || f.Clients[0].Kind != protocol.KindNamed {
+	if len(f.Clients) != 1 || f.Clients[0].Identity != "tok-abc" || f.Clients[0].Kind != api.KindNamed {
 		t.Errorf("clients.json = %+v", f.Clients)
 	}
 }
@@ -182,30 +150,30 @@ func TestNamedClientRequiresToken(t *testing.T) {
 // id that becomes its identity and marks its entries reclaimable.
 func TestEphemeralClientGetsASessionID(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	sess, reply := h.Connect(protocol.KindEphemeral, "")
-	if reply.Error != nil {
-		t.Fatalf("ephemeral hello refused: %+v", reply.Error)
+	sess, err := h.Connect(api.KindEphemeral, "")
+	if err != nil {
+		t.Fatalf("ephemeral connect refused: %+v", err)
 	}
-	if reply.SessionID == "" {
+	if sess.Identity.Key == "" {
 		t.Fatal("no session id issued to the ephemeral client")
 	}
-	if sess.Identity.Key != reply.SessionID || !sess.Identity.Ephemeral {
-		t.Errorf("session identity = %+v, session id = %q", sess.Identity, reply.SessionID)
+	if !sess.Identity.Ephemeral {
+		t.Errorf("session identity = %+v, session id = %q", sess.Identity, sess.Identity.Key)
 	}
 	// Two ephemeral connections get distinct identities.
-	sess2, _ := h.Connect(protocol.KindEphemeral, "")
+	sess2, _ := h.Connect(api.KindEphemeral, "")
 	if sess2.Identity.Key == sess.Identity.Key {
 		t.Errorf("two ephemeral clients share the session id %q", sess.Identity.Key)
 	}
-	f, err := h.Store.ReadClients()
-	if err != nil {
-		t.Fatal(err)
+	f, rerr := h.Store.ReadClients()
+	if rerr != nil {
+		t.Fatal(rerr)
 	}
 	if len(f.Clients) != 2 {
 		t.Fatalf("clients.json has %d entries, want 2", len(f.Clients))
 	}
 	for _, c := range f.Clients {
-		if !c.Ephemeral || c.Kind != protocol.KindEphemeral {
+		if !c.Ephemeral || c.Kind != api.KindEphemeral {
 			t.Errorf("ephemeral entry recorded wrong: %+v", c)
 		}
 	}
@@ -216,7 +184,7 @@ func TestEphemeralClientGetsASessionID(t *testing.T) {
 // partially honoured.
 func TestUnknownVerbNamesTheUpgrade(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	sess, _ := h.Connect(protocol.KindHost, "")
+	sess, _ := h.Connect(api.KindHost, "")
 	resp := h.Request(context.Background(), sess, "future-verb", nil)
 	if resp.Error == nil {
 		t.Fatal("unknown verb succeeded, want a refusal")
@@ -233,11 +201,11 @@ func TestUnknownVerbNamesTheUpgrade(t *testing.T) {
 // client moves its last_seen forward to the coordinator's clock.
 func TestLastSeenIsMeasuredNotWritten(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	sess, _ := h.Connect(protocol.KindHost, "")
+	sess, _ := h.Connect(api.KindHost, "")
 	_ = sess
 	first := mustParse(t, mustTable(t, h).Clients[0].LastSeen)
 	time.Sleep(5 * time.Millisecond)
-	h.Connect(protocol.KindHost, "")
+	h.Connect(api.KindHost, "")
 	f := mustTable(t, h)
 	if len(f.Clients) != 1 {
 		t.Fatalf("clients.json has %d entries, want 1 (upsert, not append)", len(f.Clients))
@@ -250,81 +218,100 @@ func TestLastSeenIsMeasuredNotWritten(t *testing.T) {
 
 func mustTable(t *testing.T, h *Harness) store.ClientsFile {
 	t.Helper()
-	f, err := h.Store.ReadClients()
-	if err != nil {
-		t.Fatalf("ReadClients: %v", err)
+	f, rerr := h.Store.ReadClients()
+	if rerr != nil {
+		t.Fatalf("ReadClients: %v", rerr)
 	}
 	return f
 }
 
-// TestServerGracefulShutdown runs the real server — listener, accept loop,
-// protocol loop — over a temp socket and pins the lifecycle: in-flight
-// requests finish after cancellation, Serve returns nil, and the socket
-// file is removed.
+// TestServerGracefulShutdown runs the real server — listener, HTTP loop —
+// over a loopback address and pins the lifecycle: requests are served,
+// cancellation shuts the server down gracefully, and Serve returns nil.
 func TestServerGracefulShutdown(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
 	ctx, cancel := context.WithCancel(context.Background())
-	sock := filepath.Join(tempRoot(t), "s")
 	srv := NewServer(h.H, nil)
 	done := make(chan error, 1)
-	go func() { done <- srv.Serve(ctx, sock) }()
+	go func() { done <- srv.Serve(ctx, "127.0.0.1:0") }()
 
-	// Wait for the socket to exist, then run one full exchange over it.
+	// The endpoint file appears once the listener is bound; its base_url
+	// is the server's actual address.
 	deadline := time.Now().Add(5 * time.Second)
+	epPath := api.EndpointPath(h.Store.Root())
+	var base string
 	for {
-		if _, err := os.Stat(sock); err == nil {
+		ep, err := api.ReadEndpoint(epPath)
+		if err == nil {
+			base = ep.BaseURL
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("server never bound the socket")
+			t.Fatal("server never wrote the endpoint file")
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	conn, err := net.Dial("unix", sock)
+
+	// One full exchange over HTTP: /version answers, and a request with
+	// the host token and X-Wt-Client reaches the handler.
+	client := &http.Client{Transport: &http.Transport{Proxy: nil}}
+	verReq, err := http.NewRequest("GET", base+api.VersionPath, nil)
 	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	bw := bufio.NewWriter(conn)
-	br := bufio.NewReader(conn)
-	hello := &protocol.Hello{Kind: protocol.KindHost, MinVer: 1, MaxVer: 1}
-	if err := protocol.WriteMessage(bw, hello); err != nil {
 		t.Fatal(err)
 	}
-	if err := bw.Flush(); err != nil {
+	verReq.Header.Set("X-Wt-Client", "1")
+	verResp, err := client.Do(verReq)
+	if err != nil {
+		t.Fatalf("GET /version: %v", err)
+	}
+	var info api.VersionInfo
+	if err := json.NewDecoder(verResp.Body).Decode(&info); err != nil {
+		t.Fatalf("decoding /version: %v", err)
+	}
+	verResp.Body.Close()
+	if info.Min != api.VersionMin || info.Max != api.VersionMax {
+		t.Errorf("/version = %+v", info)
+	}
+
+	pingPath, _ := api.PathForVerb(api.VerbPing)
+	pingReq, err := http.NewRequest("GET", base+pingPath, nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	var reply protocol.HelloReply
-	if err := protocol.ReadMessage(br, &reply); err != nil {
-		t.Fatalf("hello reply: %v", err)
+	pingReq.Header.Set("X-Wt-Client", "1")
+	pingReq.Header.Set("Authorization", "Bearer "+mustToken(t, epPath))
+	pingResp, err := client.Do(pingReq)
+	if err != nil {
+		t.Fatalf("ping: %v", err)
 	}
-	if reply.Error != nil || reply.Agreed != 1 {
-		t.Fatalf("hello reply = %+v", reply)
+	var resp api.Response
+	if err := json.NewDecoder(pingResp.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding ping: %v", err)
 	}
-	// The server observed the connection through real peer credentials.
-	f := mustTable(t, h)
-	if len(f.Clients) != 1 || f.Clients[0].Identity != strconv.Itoa(os.Getuid()) {
-		t.Errorf("server observed %+v, want the real uid %d", f.Clients, os.Getuid())
-	}
-	if err := protocol.WriteMessage(bw, &protocol.Request{Verb: "ping"}); err != nil {
-		t.Fatal(err)
-	}
-	bw.Flush()
-	var resp protocol.Response
-	if err := protocol.ReadMessage(br, &resp); err != nil {
-		t.Fatalf("ping reply: %v", err)
-	}
+	pingResp.Body.Close()
 	if resp.Error != nil || !strings.Contains(string(resp.Result), `"ok":true`) {
 		t.Fatalf("ping reply = %+v", resp)
 	}
 
-	// Cancel mid-connection: the server stops accepting, the in-flight
-	// exchange above has already finished, and Serve returns cleanly.
+	// The server observed the request with the host identity.
+	f := mustTable(t, h)
+	if len(f.Clients) != 1 || f.Clients[0].Identity != hostIdentityKey {
+		t.Errorf("server observed %+v, want the host identity", f.Clients)
+	}
+
+	// Cancel: in-flight requests finish and Serve returns cleanly.
 	cancel()
-	conn.Close()
 	if err := <-done; err != nil {
 		t.Fatalf("Serve returned %v, want nil", err)
 	}
-	if _, err := os.Stat(sock); !os.IsNotExist(err) {
-		t.Errorf("socket file survives shutdown: %v", err)
+}
+
+// mustToken reads the endpoint token for the HTTP-layer assertions.
+func mustToken(t *testing.T, path string) string {
+	t.Helper()
+	ep, err := api.ReadEndpoint(path)
+	if err != nil {
+		t.Fatalf("reading the endpoint file: %v", err)
 	}
+	return ep.Token
 }

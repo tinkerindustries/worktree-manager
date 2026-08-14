@@ -17,9 +17,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/coord"
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
@@ -73,12 +73,12 @@ func cleanupFixture(t *testing.T, sp *spec.Spec) (main, worktree string) {
 	return main, worktree
 }
 
-// cleanupCoord starts the real coordinator on a temp socket with the band
-// registered, and returns the socket path.
+// cleanupCoord starts the real coordinator on a loopback port with the
+// band registered, and returns the store root the client reads
+// endpoint.json from.
 func cleanupCoord(t *testing.T, sp *spec.Spec) string {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	sock := shortSock(t, "cln")
 	storeRoot := filepath.Join(t.TempDir(), "wt")
 	if err := os.MkdirAll(storeRoot, 0o700); err != nil {
 		t.Fatalf("store root: %v", err)
@@ -95,7 +95,7 @@ func cleanupCoord(t *testing.T, sp *spec.Spec) string {
 	h.InstallDrivers(driver.NewRegistry(&driver.Port{}, &driver.Namespace{}, &driver.StatePath{}))
 	srv := coord.NewServer(h, log)
 	serveDone := make(chan error, 1)
-	go func() { serveDone <- srv.Serve(ctx, sock) }()
+	go func() { serveDone <- srv.Serve(ctx, "127.0.0.1:0") }()
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -103,19 +103,16 @@ func cleanupCoord(t *testing.T, sp *spec.Spec) string {
 		default:
 		}
 	})
-	sess, reply := h.Begin(coord.Peer{UID: 4242, Known: true}, &protocol.Hello{
-		Kind: protocol.KindHost, MinVer: protocol.VersionMin, MaxVer: protocol.VersionMax,
-	})
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
-	}
-	if resp := h.Handle(context.Background(), sess, &protocol.Request{
+	t.Setenv("WT_HOME", storeRoot)
+	waitEndpoint(t, storeRoot)
+	sess := &coord.Session{Version: api.VersionMax, Identity: coord.Identity{Kind: api.KindHost, Key: "4242"}}
+	if resp := h.Handle(context.Background(), sess, &api.Request{
 		Verb: "bands.reserve",
-		Args: mustJSONT(&protocol.ReserveBandArgs{Spec: *sp, Bases: map[string]int{"api": 7400}}),
+		Args: mustJSONT(&api.ReserveBandArgs{Spec: *sp, Bases: map[string]int{"api": 7400}}),
 	}); resp.Error != nil {
 		t.Fatalf("bands.reserve refused: %+v", resp.Error)
 	}
-	return sock
+	return storeRoot
 }
 
 // mergedGh is the fake gh for the happy path: authenticated, and every PR
@@ -154,8 +151,7 @@ func cleanupRows(t *testing.T, stdout string) []cleanupRow {
 func TestRunCleanupDryRunPreviewsExactlyWhatTheRealRunDoes(t *testing.T) {
 	sp := cleanupSpec(t)
 	main, worktree := cleanupFixture(t, sp)
-	sock := cleanupCoord(t, sp)
-	t.Setenv("WT_SOCKET", sock)
+	_ = cleanupCoord(t, sp)
 	mergedGh(t)
 
 	// Init through the real client, so the registry holds the entry.
@@ -214,8 +210,7 @@ func TestRunCleanupDryRunPreviewsExactlyWhatTheRealRunDoes(t *testing.T) {
 func TestRunCleanupGhMissingCleansNothingExits4(t *testing.T) {
 	sp := cleanupSpec(t)
 	main, worktree := cleanupFixture(t, sp)
-	sock := cleanupCoord(t, sp)
-	t.Setenv("WT_SOCKET", sock)
+	_ = cleanupCoord(t, sp)
 	stripGh(t)
 
 	code, _, stderr := runCLI(t, "init", "--cwd", worktree, "--description", "the orphaned worktree")
@@ -244,8 +239,7 @@ func TestRunCleanupGhMissingCleansNothingExits4(t *testing.T) {
 func TestRunCleanupGhUnauthenticatedCleansNothingExits4(t *testing.T) {
 	sp := cleanupSpec(t)
 	main, worktree := cleanupFixture(t, sp)
-	sock := cleanupCoord(t, sp)
-	t.Setenv("WT_SOCKET", sock)
+	_ = cleanupCoord(t, sp)
 	fakeGh(t, `echo "gh: To get started with GitHub CLI, please run: gh auth login" >&2; exit 4`)
 
 	code, _, stderr := runCLI(t, "init", "--cwd", worktree, "--description", "the orphaned worktree")
@@ -310,26 +304,25 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
 fi
 echo "gh: unexpected call: $*" >&2; exit 1`)
 
-	sock := shortSock(t, "cln2")
-	entries := []protocol.ListEntry{}
+	entries := []api.ListEntry{}
 	for _, sh := range shapes {
-		entries = append(entries, protocol.ListEntry{
+		entries = append(entries, api.ListEntry{
 			App: sp.App, Slug: sh.slug, Slot: 1, State: "active",
 			Path: sh.dir, PathVisible: true,
 			Owner: "4242", OwnerKind: "host",
 		})
 	}
 	// An unverifiable entry: a container path the coordinator cannot stat.
-	entries = append(entries, protocol.ListEntry{
+	entries = append(entries, api.ListEntry{
 		App: sp.App, Slug: "wt-uv", Slot: 2, State: "active",
 		Path: "/container/wt-uv", PathVisible: false,
 		Owner: "s99", OwnerKind: "ephemeral", Ephemeral: true,
 		Flags: []string{"unverifiable", "foreign"},
 	})
-	fakeCoordServer(t, sock, map[string]func(*protocol.Request) *protocol.Response{
-		"list": cannedT(&protocol.ListResult{Entries: entries}),
+	ep := fakeCoordServer(t, map[string]func(*api.Request) *api.Response{
+		"list": cannedT(&api.ListResult{Entries: entries}),
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", ep)
 
 	code, stdout, stderr := runCLI(t, "cleanup", "--cwd", clean, "--dry-run", "--json")
 	if code != ExitOK {
@@ -375,15 +368,14 @@ func TestRunCleanupSkipsUnpushedBranch(t *testing.T) {
 	gitT(t, worktree, "add", ".")
 	gitT(t, worktree, "commit", "-m", "not pushed")
 
-	sock := shortSock(t, "cln3")
-	entries := []protocol.ListEntry{{
+	entries := []api.ListEntry{{
 		App: sp.App, Slug: "wt-1", Slot: 1, State: "active",
 		Path: worktree, PathVisible: true, Owner: "4242", OwnerKind: "host",
 	}}
-	fakeCoordServer(t, sock, map[string]func(*protocol.Request) *protocol.Response{
-		"list": cannedT(&protocol.ListResult{Entries: entries}),
+	ep := fakeCoordServer(t, map[string]func(*api.Request) *api.Response{
+		"list": cannedT(&api.ListResult{Entries: entries}),
 	})
-	t.Setenv("WT_SOCKET", sock)
+	t.Setenv("WT_ENDPOINT", ep)
 	mergedGh(t)
 
 	code, stdout, _ := runCLI(t, "cleanup", "--cwd", worktree, "--dry-run", "--json")

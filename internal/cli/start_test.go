@@ -75,7 +75,7 @@ func TestStartRefusesWithoutDescriptor(t *testing.T) {
 // coordinator column is "no").
 func TestStartNeverContactsTheCoordinator(t *testing.T) {
 	worktree, _ := startFixture(t)
-	t.Setenv("WT_SOCKET", shortSock(t, "nothing-listens"))
+	t.Setenv("WT_ENDPOINT", "http://127.0.0.1:1")
 	code, _, stderr := runCLI(t, "start", "--cwd", worktree)
 	if code != ExitOK {
 		t.Fatalf("start exit = %d with no coordinator; stderr: %s", code, stderr)

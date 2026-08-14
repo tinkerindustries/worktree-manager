@@ -1,14 +1,18 @@
 // Command wtd is the worktree-manager coordinator: a resident per-user
 // process owning the store and every privileged operation. It runs in the
-// foreground against a socket path given by --socket or WT_SOCKET — the
-// mode the tests and the CI gates use, and the reason the process lifecycle
-// is split from supervisor registration: a hosted Linux runner has no
-// launchd. Under a supervisor (a launchd LaunchAgent on macOS, the systemd
-// user unit on Linux, a scheduled task on Windows — written by
-// `wt daemon install`) it is the same binary started by someone else. On
-// Linux the systemd socket unit hands the listener over through
-// LISTEN_FDS, and --activate makes wtd consume that descriptor instead of
-// opening its own socket (systemd_linux.go).
+// foreground against a loopback TCP address given by --addr (default
+// 127.0.0.1:7833) — the mode the tests and the CI gates use, and the
+// reason the process lifecycle is split from supervisor registration: a
+// hosted Linux runner has no launchd. Under a supervisor (a launchd
+// LaunchAgent on macOS, the systemd user unit on Linux, a scheduled task
+// on Windows — written by `wt daemon install`) it is the same binary
+// started by someone else. On Linux the systemd socket unit hands the
+// listener over through LISTEN_FDS, and --activate makes wtd consume
+// that descriptor instead of opening its own listener (systemd_linux.go).
+//
+// At startup wtd writes <store>/endpoint.json — the base URL and the host
+// token, 0600 on unix — so the client can resolve and authenticate. The
+// token is generated on first start and reused thereafter.
 //
 // Lifecycle: SIGINT and SIGTERM cancel the serving context, in-flight
 // requests finish, and the process exits 0. Structured logging with
@@ -21,6 +25,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -43,10 +48,10 @@ func main() {
 func run(args []string) int {
 	fs := flag.NewFlagSet("wtd", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	socket := fs.String("socket", "", "socket path (default: WT_SOCKET, then the platform default)")
-	activate := fs.Bool("activate", false, "consume the listening socket systemd passed via LISTEN_FDS (the systemd unit passes this; mutually exclusive with --socket)")
-	tcp := fs.String("tcp", "", "also listen on this loopback TCP address (opt-in; requires --tcp-token)")
-	tcpToken := fs.String("tcp-token", "", "the token every TCP connection must present (required with --tcp; at least 16 characters)")
+	addr := fs.String("addr", "", "loopback TCP address to listen on (default: 127.0.0.1:7833)")
+	allowRemote := fs.Bool("allow-remote", false, "allow a non-loopback bind address (--addr off loopback is refused without this)")
+	activate := fs.Bool("activate", false, "consume the listening socket systemd passed via LISTEN_FDS (the systemd unit passes this; mutually exclusive with --addr)")
+	containerToken := fs.String("container-token", "", "the token that admits container clients (WT_CLIENT_TOKEN); 16+ characters; absent, only host clients are accepted")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -55,21 +60,12 @@ func run(args []string) int {
 		return 1
 	}
 
-	// The opt-in loopback TCP surface: it requires a token because peer
-	// credentials do not exist on a TCP connection, and the two flags are
-	// one decision — a TCP listener without a token, or a token without a
-	// listener, is refused rather than half-honoured (docs/ARCHITECTURE.md
-	// §4.1). A short token is refused: the listener must not be
-	// brute-forceable.
-	if (*tcp == "") != (*tcpToken == "") {
-		fmt.Fprintln(os.Stderr, "wtd: --tcp and --tcp-token must be given together (a TCP listener without a token would be unauthenticated)")
+	// Containers are opt-in exactly as the old TCP surface was: absent
+	// --container-token the coordinator accepts host clients only, and a
+	// token short enough to brute-force is refused (plan.md §5, phase R1).
+	if *containerToken != "" && len(*containerToken) < 16 {
+		fmt.Fprintln(os.Stderr, "wtd: --container-token must be at least 16 characters (a short token would be brute-forceable over the wire)")
 		return 1
-	}
-	if *tcp != "" {
-		if err := platform.ValidateTCPConfig(*tcp, *tcpToken); err != nil {
-			fmt.Fprintf(os.Stderr, "wtd: %v\n", err)
-			return 1
-		}
 	}
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -97,21 +93,12 @@ func run(args []string) int {
 			"inspect it and release anything still running, then remove the file")
 	}
 
-	socketPath := *socket
-	if socketPath == "" {
-		socketPath, err = platform.SocketPath()
-		if err != nil {
-			log.Error("resolving the socket path", "err", err)
-			return 1
-		}
-	}
-
 	h, err := coord.NewHandler(st, log)
 	if err != nil {
 		log.Error("building the coordinator", "err", err)
 		return 1
 	}
-	h.TCPToken = *tcpToken
+	h.ContainerToken = *containerToken
 	// The driver registry is the allocation probe and the teardown path.
 	// Phase 8 adds cidr and machine; the registry skips a type with no
 	// driver, which is how the earlier phases ran without them.
@@ -122,8 +109,8 @@ func run(args []string) int {
 	// pass tears those entries down by handle (or moves them to
 	// tearing-down with the note when teardown cannot complete), so an
 	// upgrade mid-operation is recoverable rather than wedged
-	// (docs/ARCHITECTURE.md §14.1 R1). It runs before the first connection
-	// is accepted, so no client can observe a half-recovered entry.
+	// (docs/ARCHITECTURE.md §14.1 R1). It runs before the first request
+	// is served, so no client can observe a half-recovered entry.
 	recovered, rerr := h.RecoverInterrupted()
 	if rerr != nil {
 		log.Error("recovering interrupted allocations", "err", rerr)
@@ -137,14 +124,10 @@ func run(args []string) int {
 
 	if *activate {
 		// The systemd socket-activation path: the listener comes from the
-		// .socket unit, never from --socket (the two cannot both decide
+		// .socket unit, never from --addr (the two cannot both decide
 		// where the coordinator listens).
-		if *socket != "" {
-			log.Error("--activate and --socket are mutually exclusive", "socket", *socket)
-			return 1
-		}
-		if *tcp != "" {
-			log.Error("--tcp is not available under socket activation; the systemd unit does not pass it (configure --tcp with 'wt daemon install --tcp')")
+		if *addr != "" {
+			log.Error("--activate and --addr are mutually exclusive", "addr", *addr)
 			return 1
 		}
 		ln, err := platform.ActivatedListener()
@@ -156,7 +139,7 @@ func run(args []string) int {
 			log.Error("--activate given but no activated socket (LISTEN_FDS is unset); run wtd in the foreground, or start it through the systemd socket unit")
 			return 1
 		}
-		log.Info("wtd starting", "version", version, "store", root, "socket", ln.Addr().String(), "activated", true)
+		log.Info("wtd starting", "version", version, "store", root, "addr", ln.Addr().String(), "activated", true)
 		if err := srv.ServeListener(ctx, ln); err != nil {
 			log.Error("coordinator stopped with an error", "err", err)
 			return 1
@@ -165,18 +148,28 @@ func run(args []string) int {
 		return 0
 	}
 
-	if *tcp != "" {
-		log.Info("wtd starting", "version", version, "store", root, "socket", socketPath, "tcp", *tcp, "tcp_token", true)
-		if err := srv.ServeWithTCP(ctx, socketPath, *tcp); err != nil {
-			log.Error("coordinator stopped with an error", "err", err)
+	listenAddr := *addr
+	if listenAddr == "" {
+		listenAddr = "127.0.0.1:7833"
+	}
+	if !*allowRemote {
+		// A non-loopback bind address requires --allow-remote: the
+		// coordinator is a per-user process holding the user's tokens, and
+		// opening it to the network needs an explicit decision. A wildcard
+		// bind (":7833", "0.0.0.0:7833") is off loopback too.
+		tcpAddr, rerr := net.ResolveTCPAddr("tcp", listenAddr)
+		if rerr != nil {
+			log.Error("refusing to listen on an unresolvable address", "addr", listenAddr, "err", rerr)
 			return 1
 		}
-		log.Info("wtd stopped")
-		return 0
+		if tcpAddr.IP == nil || !tcpAddr.IP.IsLoopback() {
+			log.Error("refusing to listen off loopback", "addr", listenAddr,
+				"err", "a non-loopback bind address requires --allow-remote; use 127.0.0.1:7833, or pass --allow-remote deliberately")
+			return 1
+		}
 	}
-
-	log.Info("wtd starting", "version", version, "store", root, "socket", socketPath)
-	if err := srv.Serve(ctx, socketPath); err != nil {
+	log.Info("wtd starting", "version", version, "store", root, "addr", listenAddr, "container_token", *containerToken != "")
+	if err := srv.Serve(ctx, listenAddr); err != nil {
 		log.Error("coordinator stopped with an error", "err", err)
 		return 1
 	}

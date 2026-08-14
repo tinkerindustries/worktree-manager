@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
@@ -25,13 +25,13 @@ import (
 // The security pass (phase 9) makes that boundary real: an ephemeral or
 // named container cannot move the machine's port space or declare a
 // co-resident production stack.
-func (h *Handler) reserveBand(s *Session, req *protocol.Request) *protocol.Response {
-	var args protocol.ReserveBandArgs
+func (h *Handler) reserveBand(s *Session, req *api.Request) *api.Response {
+	var args api.ReserveBandArgs
 	if err := json.Unmarshal(req.Args, &args); err != nil {
 		return respErr(1, fmt.Sprintf("malformed bands.reserve request: %v", err), "upgrade wt: this coordinator expects bases or host ports and a note")
 	}
-	if s.Identity.Kind != protocol.KindHost {
-		return &protocol.Response{Error: &protocol.Error{
+	if s.Identity.Kind != api.KindHost {
+		return &api.Response{Error: &api.Error{
 			Code:   3,
 			Msg:    fmt.Sprintf("bands.reserve changes machine-global policy (the port ledger) and only a host client may do that; this connection is a %s client, whose grant is limited to creating entries and mutating what it created (ARCHITECTURE.md §12.2)", s.Identity.Kind),
 			Remedy: "run 'wt bands reserve' on the host, as the owning user",
@@ -52,7 +52,7 @@ func (h *Handler) reserveBand(s *Session, req *protocol.Request) *protocol.Respo
 // ceiling — so the onboarding skill only chooses where the bases sit, not
 // how large they are. One app, one band: re-registration replaces in place,
 // which is how a re-run of onboarding fixes a bad band.
-func (h *Handler) reserveApp(s *Session, args *protocol.ReserveBandArgs) *protocol.Response {
+func (h *Handler) reserveApp(s *Session, args *api.ReserveBandArgs) *api.Response {
 	if err := spec.Validate(&args.Spec); err != nil {
 		return respErr(3, fmt.Sprintf("the spec sent with the registration is refused whole: %v", err),
 			"fix the spec, then re-run: wt bands reserve")
@@ -102,7 +102,7 @@ func (h *Handler) reserveApp(s *Session, args *protocol.ReserveBandArgs) *protoc
 	if err := h.st.UpsertBand(store.Band{App: app, Bases: args.Bases, Spans: spans}); err != nil {
 		return h.storeErr("writing the band ledger", err)
 	}
-	return &protocol.Response{Result: mustJSON(protocol.ReserveBandResult{
+	return &api.Response{Result: mustJSON(api.ReserveBandResult{
 		App: app, Bases: args.Bases, Spans: spans,
 	})}
 }
@@ -116,7 +116,7 @@ func (h *Handler) reserveApp(s *Session, args *protocol.ReserveBandArgs) *protoc
 // person declares the co-resident stack's compose project name once per
 // machine, and label-based teardown is refused when a resolved name matches
 // it.
-func (h *Handler) reserveHost(s *Session, args *protocol.ReserveBandArgs) *protocol.Response {
+func (h *Handler) reserveHost(s *Session, args *api.ReserveBandArgs) *api.Response {
 	if args.Note == "" {
 		return respErr(3, "a host reservation must carry a note naming what holds the range",
 			"re-run with --note, e.g. wt bands reserve --host --port 5319 --port 5320 --name compose-app-prod --note \"compose-app production stack\"")
@@ -163,23 +163,23 @@ func (h *Handler) reserveHost(s *Session, args *protocol.ReserveBandArgs) *proto
 	if err := h.st.AddReservation(store.Reservation{Ports: ports, Names: names, Note: args.Note}); err != nil {
 		return h.storeErr("writing the band ledger", err)
 	}
-	return &protocol.Response{Result: mustJSON(protocol.ReserveBandResult{
+	return &api.Response{Result: mustJSON(api.ReserveBandResult{
 		Host: true, Ports: ports, Names: names, Note: args.Note,
 	})}
 }
 
 // listBands implements the bands.list verb: the whole ledger, apps sorted
 // by name and reservations by their lowest port.
-func (h *Handler) listBands(s *Session, req *protocol.Request) *protocol.Response {
+func (h *Handler) listBands(s *Session, req *api.Request) *api.Response {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	bands, err := h.st.ReadBands()
 	if err != nil {
 		return h.storeErr("reading the band ledger", err)
 	}
-	out := protocol.BandsListResult{
-		Bands:        make([]protocol.BandInfo, 0, len(bands.Bands)),
-		Reservations: make([]protocol.ReservationInfo, 0, len(bands.Reservations)),
+	out := api.BandsListResult{
+		Bands:        make([]api.BandInfo, 0, len(bands.Bands)),
+		Reservations: make([]api.ReservationInfo, 0, len(bands.Reservations)),
 	}
 	apps := make([]string, 0, len(bands.Bands))
 	for _, b := range bands.Bands {
@@ -188,7 +188,7 @@ func (h *Handler) listBands(s *Session, req *protocol.Request) *protocol.Respons
 	sort.Strings(apps)
 	for _, app := range apps {
 		b := findBand(bands, app)
-		out.Bands = append(out.Bands, protocol.BandInfo{App: app, Bases: b.Bases})
+		out.Bands = append(out.Bands, api.BandInfo{App: app, Bases: b.Bases})
 	}
 	resv := make([]store.Reservation, len(bands.Reservations))
 	copy(resv, bands.Reservations)
@@ -202,9 +202,9 @@ func (h *Handler) listBands(s *Session, req *protocol.Request) *protocol.Respons
 		return firstReservedName(resv[i]) < firstReservedName(resv[j])
 	})
 	for _, r := range resv {
-		out.Reservations = append(out.Reservations, protocol.ReservationInfo{Ports: r.Ports, Names: r.Names, Note: r.Note})
+		out.Reservations = append(out.Reservations, api.ReservationInfo{Ports: r.Ports, Names: r.Names, Note: r.Note})
 	}
-	return &protocol.Response{Result: mustJSON(out)}
+	return &api.Response{Result: mustJSON(out)}
 }
 
 // firstPort is a reservation's lowest port, or a value that sorts name-only

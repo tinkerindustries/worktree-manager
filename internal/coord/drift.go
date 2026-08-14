@@ -22,9 +22,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/artefact"
 	"github.com/mrgeoffrich/worktree-manager/internal/managed"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
@@ -43,7 +43,7 @@ const (
 // given its main checkout path and the current band ledger. The spec is
 // found by the walk-up rule; a repo with no spec has nothing to compare
 // and is skipped.
-func (h *Handler) doctorDrift(main string, bands store.BandsFile, findings *[]protocol.DoctorFinding, notes *[]string) {
+func (h *Handler) doctorDrift(main string, bands store.BandsFile, findings *[]api.DoctorFinding, notes *[]string) {
 	specPath, err := spec.FindSpecPath(main)
 	if err != nil {
 		return // not adopted: nothing generated can be honest, and nothing is
@@ -108,7 +108,7 @@ func (h *Handler) doctorDrift(main string, bands store.BandsFile, findings *[]pr
 // the current spec and band. Every mismatch is one finding naming the
 // generated file and the field that moved — the two facts the phase-7
 // exit criterion demands (plan.md §5 phase 7).
-func (h *Handler) doctorDriftFile(file string, block *managed.Block, sp *spec.Spec, band map[string]int, findings *[]protocol.DoctorFinding) {
+func (h *Handler) doctorDriftFile(file string, block *managed.Block, sp *spec.Spec, band map[string]int, findings *[]api.DoctorFinding) {
 	current := artefact.FieldsFor(sp, band)
 
 	// Fields the file records that the current spec cannot produce: the
@@ -117,7 +117,7 @@ func (h *Handler) doctorDriftFile(file string, block *managed.Block, sp *spec.Sp
 	for _, f := range block.Fields {
 		want, known := current[f.Name]
 		if !known {
-			*findings = append(*findings, protocol.DoctorFinding{
+			*findings = append(*findings, api.DoctorFinding{
 				Level: "warning",
 				Message: fmt.Sprintf("the generated file %s records field %q as %q, but the spec no longer produces that field — a resource was renamed or removed, or the app changed",
 					file, f.Name, f.Value),
@@ -126,7 +126,7 @@ func (h *Handler) doctorDriftFile(file string, block *managed.Block, sp *spec.Sp
 			continue
 		}
 		if f.Value != want {
-			*findings = append(*findings, protocol.DoctorFinding{
+			*findings = append(*findings, api.DoctorFinding{
 				Level: "warning",
 				Message: fmt.Sprintf("the generated file %s records field %q as %q; it is now %q — the spec or the band ledger moved",
 					file, f.Name, f.Value, want),
@@ -140,7 +140,7 @@ func (h *Handler) doctorDriftFile(file string, block *managed.Block, sp *spec.Sp
 		if _, ok := block.Lookup(name); ok {
 			continue
 		}
-		*findings = append(*findings, protocol.DoctorFinding{
+		*findings = append(*findings, api.DoctorFinding{
 			Level: "warning",
 			Message: fmt.Sprintf("the generated file %s records no field %q (now %q) — the field was added after the file was generated",
 				file, name, value),

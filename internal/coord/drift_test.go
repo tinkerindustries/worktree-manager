@@ -16,10 +16,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/artefact"
 	"github.com/mrgeoffrich/worktree-manager/internal/descriptor"
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 )
 
@@ -32,11 +32,11 @@ func TestDoctorReportsMovedBandNamesFileAndField(t *testing.T) {
 	// The band at 8200, the worktree initialised.
 	sp := driftSpec(t, main)
 	ctx := context.Background()
-	sess, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	sess, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
-	if r := h.Request(ctx, sess, verbBandsReserve, &protocol.ReserveBandArgs{Spec: *sp, Bases: map[string]int{"api": 8200}}); r.Error != nil {
+	if r := h.Request(ctx, sess, verbBandsReserve, &api.ReserveBandArgs{Spec: *sp, Bases: map[string]int{"api": 8200}}); r.Error != nil {
 		t.Fatalf("bands.reserve refused: %+v", r.Error)
 	}
 	allocateEntry(t, h, sess, ctx, sp, wt)
@@ -47,7 +47,7 @@ func TestDoctorReportsMovedBandNamesFileAndField(t *testing.T) {
 	}
 
 	// The band moves: api from 8200 to 8300.
-	if r := h.Request(ctx, sess, verbBandsReserve, &protocol.ReserveBandArgs{Spec: *sp, Bases: map[string]int{"api": 8300}}); r.Error != nil {
+	if r := h.Request(ctx, sess, verbBandsReserve, &api.ReserveBandArgs{Spec: *sp, Bases: map[string]int{"api": 8300}}); r.Error != nil {
 		t.Fatalf("re-registering the band refused: %+v", r.Error)
 	}
 
@@ -77,11 +77,11 @@ func TestDoctorReportsRenamedResource(t *testing.T) {
 	h, main, wt := driftRepo(t)
 	sp := driftSpec(t, main)
 	ctx := context.Background()
-	sess, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	sess, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
-	if r := h.Request(ctx, sess, verbBandsReserve, &protocol.ReserveBandArgs{Spec: *sp, Bases: map[string]int{"api": 8200}}); r.Error != nil {
+	if r := h.Request(ctx, sess, verbBandsReserve, &api.ReserveBandArgs{Spec: *sp, Bases: map[string]int{"api": 8200}}); r.Error != nil {
 		t.Fatalf("bands.reserve refused: %+v", r.Error)
 	}
 	allocateEntry(t, h, sess, ctx, sp, wt)
@@ -91,9 +91,9 @@ func TestDoctorReportsRenamedResource(t *testing.T) {
 	// it by walking up from the main checkout).
 	renamed := *sp
 	renamed.Resources = []spec.Resource{{Type: "port", Name: "api2"}}
-	data, err := spec.EmitYAML(&renamed)
-	if err != nil {
-		t.Fatalf("emitting the renamed spec: %v", err)
+	data, rerr := spec.EmitYAML(&renamed)
+	if rerr != nil {
+		t.Fatalf("emitting the renamed spec: %v", rerr)
 	}
 	if err := os.WriteFile(filepath.Join(main, "wt.yaml"), data, 0o644); err != nil {
 		t.Fatalf("writing the renamed spec: %v", err)
@@ -102,7 +102,7 @@ func TestDoctorReportsRenamedResource(t *testing.T) {
 	gitT(t, main, "commit", "-m", "rename api to api2")
 	// The band now follows the new name; the generated file still records
 	// the old one.
-	if r := h.Request(ctx, sess, verbBandsReserve, &protocol.ReserveBandArgs{Spec: renamed, Bases: map[string]int{"api2": 8200}}); r.Error != nil {
+	if r := h.Request(ctx, sess, verbBandsReserve, &api.ReserveBandArgs{Spec: renamed, Bases: map[string]int{"api2": 8200}}); r.Error != nil {
 		t.Fatalf("re-registering the renamed band refused: %+v", r.Error)
 	}
 
@@ -123,7 +123,7 @@ func TestDoctorReportsRenamedResource(t *testing.T) {
 // initialised entry.
 func allocateEntry(t *testing.T, h *Harness, sess *Session, ctx context.Context, sp *spec.Spec, wt string) {
 	t.Helper()
-	if r := h.Request(ctx, sess, verbAllocate, &protocol.AllocateArgs{
+	if r := h.Request(ctx, sess, verbAllocate, &api.AllocateArgs{
 		Spec: *sp, Slug: "brisk-otter", Path: wt,
 		DescriptorPath: filepath.Join(wt, "wt-env.json"), Description: "the drift test's worktree",
 	}); r.Error != nil {
@@ -197,13 +197,13 @@ func driftSpec(t *testing.T, main string) *spec.Spec {
 }
 
 // runDoctorFindings runs doctor and returns its findings.
-func runDoctorFindings(t *testing.T, h *Harness, sess *Session, ctx context.Context) []protocol.DoctorFinding {
+func runDoctorFindings(t *testing.T, h *Harness, sess *Session, ctx context.Context) []api.DoctorFinding {
 	t.Helper()
 	resp := h.Request(ctx, sess, verbDoctor, nil)
 	if resp.Error != nil {
 		t.Fatalf("doctor refused: %+v", resp.Error)
 	}
-	var res protocol.DoctorResult
+	var res api.DoctorResult
 	if err := json.Unmarshal(resp.Result, &res); err != nil {
 		t.Fatalf("decoding doctor: %v", err)
 	}
@@ -211,7 +211,7 @@ func runDoctorFindings(t *testing.T, h *Harness, sess *Session, ctx context.Cont
 }
 
 // docFindings renders findings for a failure message.
-func docFindings(findings []protocol.DoctorFinding) string {
+func docFindings(findings []api.DoctorFinding) string {
 	data, err := json.MarshalIndent(findings, "", "  ")
 	if err != nil {
 		return strings.TrimSpace(strings.TrimSpace(fmt.Sprint(findings)))

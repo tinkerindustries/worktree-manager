@@ -36,8 +36,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/identity"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/treecheck"
 )
@@ -51,7 +51,7 @@ type rmResult struct {
 	// WorktreeRemoved reports whether the git worktree was removed.
 	WorktreeRemoved bool `json:"worktree_removed,omitempty"`
 	// Reap is the reaper's bounded-coverage statement.
-	Reap protocol.ReapReport `json:"reap"`
+	Reap api.ReapReport `json:"reap"`
 	// Notes are the bounded-coverage statements: skipped checks, skipped
 	// git removal, and what survived.
 	Notes []string `json:"notes,omitempty"`
@@ -243,15 +243,15 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 }
 
 // rmRequest runs one rm call and decodes the result.
-func rmRequest(sess *coordSession, sp *spec.Spec, slug string, keepProcesses, dryRun bool, purgeFlags, keepFlags []string) (*protocol.RmResult, *Error) {
-	raw, err := sess.request("rm", &protocol.RmArgs{
+func rmRequest(sess *coordClient, sp *spec.Spec, slug string, keepProcesses, dryRun bool, purgeFlags, keepFlags []string) (*api.RmResult, *Error) {
+	raw, err := sess.request("rm", &api.RmArgs{
 		App: sp.App, Slug: slug, Spec: *sp,
 		KeepProcesses: keepProcesses, DryRun: dryRun, PurgeFlags: purgeFlags, KeepFlags: keepFlags,
 	})
 	if err != nil {
 		return nil, err
 	}
-	var res protocol.RmResult
+	var res api.RmResult
 	if err := json.Unmarshal(raw, &res); err != nil {
 		return nil, New(ExitFailure, fmt.Sprintf("decoding the rm response: %v", err), "")
 	}
@@ -434,7 +434,7 @@ func isStandalone(root string) bool {
 }
 
 // rmPrintPreview prints what the real rm would do, changing nothing.
-func rmPrintPreview(stdout, stderr io.Writer, jsonOut bool, sp *spec.Spec, slug string, prep *protocol.RmResult, targetExists bool, notes []string) int {
+func rmPrintPreview(stdout, stderr io.Writer, jsonOut bool, sp *spec.Spec, slug string, prep *api.RmResult, targetExists bool, notes []string) int {
 	note := "dry run: nothing was changed."
 	for _, n := range notes {
 		fmt.Fprintf(stderr, "note: %s\n", n)
@@ -460,7 +460,7 @@ func rmPrintPreview(stdout, stderr io.Writer, jsonOut bool, sp *spec.Spec, slug 
 }
 
 // reapSummary renders the reaper's report as one diagnostic line.
-func reapSummary(r *protocol.ReapReport) string {
+func reapSummary(r *api.ReapReport) string {
 	switch {
 	case r.KeptProcesses:
 		return r.Note

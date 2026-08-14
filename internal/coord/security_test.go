@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 )
 
 // TestListRedactsForeignNamedOwnerKey: a named client's key is its token —
@@ -24,17 +24,17 @@ import (
 // redacted form. Ephemeral session ids are redacted the same way.
 func TestListRedactsForeignOwnerKeys(t *testing.T) {
 	h := fleetHarness(t)
-	named, reply := h.Connect(protocol.KindNamed, "named-token-0123456789abcdef")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	named, err := h.Connect(api.KindNamed, "named-token-0123456789abcdef")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
-	other, reply := h.ConnectPeer(Peer{UID: 5000, Known: true}, protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("second hello refused: %+v", reply.Error)
+	other, err := h.ConnectPeer(5000, api.KindHost, "")
+	if err != nil {
+		t.Fatalf("second hello refused: %+v", err)
 	}
 
 	e := baseFleetEntry(tempRoot(t), true)
-	e.Owner, e.OwnerKind = "named-token-0123456789abcdef", protocol.KindNamed
+	e.Owner, e.OwnerKind = "named-token-0123456789abcdef", api.KindNamed
 	fleetEntry(t, h, e)
 
 	// The owner's own listing carries the full key.
@@ -61,23 +61,23 @@ func TestListRedactsForeignOwnerKeys(t *testing.T) {
 // own full identity.
 func TestClientsListRedactsForeignIdentities(t *testing.T) {
 	h := fleetHarness(t)
-	named, reply := h.Connect(protocol.KindNamed, "named-token-0123456789abcdef")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	named, err := h.Connect(api.KindNamed, "named-token-0123456789abcdef")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
-	other, reply := h.ConnectPeer(Peer{UID: 5000, Known: true}, protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("second hello refused: %+v", reply.Error)
+	other, err := h.ConnectPeer(5000, api.KindHost, "")
+	if err != nil {
+		t.Fatalf("second hello refused: %+v", err)
 	}
 
 	resp := h.Request(context.Background(), other, verbClients, nil)
 	if resp.Error != nil {
 		t.Fatalf("clients.list refused: %+v", resp.Error)
 	}
-	var res protocol.ClientsListResult
+	var res api.ClientsListResult
 	mustUnmarshal(t, resp.Result, &res)
 	for _, c := range res.Clients {
-		if c.Kind != protocol.KindNamed {
+		if c.Kind != api.KindNamed {
 			continue
 		}
 		if c.Identity == "named-token-0123456789abcdef" {
@@ -95,7 +95,7 @@ func TestClientsListRedactsForeignIdentities(t *testing.T) {
 	}
 	mustUnmarshal(t, resp.Result, &res)
 	for _, c := range res.Clients {
-		if c.Kind == protocol.KindNamed && c.Identity != "named-token-0123456789abcdef" {
+		if c.Kind == api.KindNamed && c.Identity != "named-token-0123456789abcdef" {
 			t.Errorf("the named client does not see its own full identity: %q", c.Identity)
 		}
 	}
@@ -106,15 +106,15 @@ func TestClientsListRedactsForeignIdentities(t *testing.T) {
 // must not carry the token it would need to become the owner.
 func TestOwnershipRefusalNeverLeaksTheToken(t *testing.T) {
 	h := fleetHarness(t)
-	other, reply := h.ConnectPeer(Peer{UID: 5000, Known: true}, protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	other, err := h.ConnectPeer(5000, api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
 	e := baseFleetEntry(tempRoot(t), true)
-	e.Owner, e.OwnerKind = "named-token-0123456789abcdef", protocol.KindNamed
+	e.Owner, e.OwnerKind = "named-token-0123456789abcdef", api.KindNamed
 	fleetEntry(t, h, e)
 
-	resp := h.Request(context.Background(), other, verbActivate, &protocol.EntryRef{App: e.App, Slug: e.Slug})
+	resp := h.Request(context.Background(), other, verbActivate, &api.EntryRef{App: e.App, Slug: e.Slug})
 	if resp.Error == nil || resp.Error.Code != 3 {
 		t.Fatalf("foreign activate = %+v, want a refusal", resp.Error)
 	}
@@ -141,16 +141,16 @@ func TestBandsReserveIsHostClientOnly(t *testing.T) {
 		kind  string
 		token string
 	}{
-		{"named", protocol.KindNamed, "named-token-0123456789abcdef"},
-		{"ephemeral", protocol.KindEphemeral, ""},
+		{"named", api.KindNamed, "named-token-0123456789abcdef"},
+		{"ephemeral", api.KindEphemeral, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sess, reply := h.Connect(tc.kind, tc.token)
-			if reply.Error != nil {
-				t.Fatalf("hello refused: %+v", reply.Error)
+			sess, err := h.Connect(tc.kind, tc.token)
+			if err != nil {
+				t.Fatalf("hello refused: %+v", err)
 			}
 			resp := h.Request(context.Background(), sess, verbBandsReserve,
-				&protocol.ReserveBandArgs{Spec: *sp, Bases: map[string]int{"api": 4200}})
+				&api.ReserveBandArgs{Spec: *sp, Bases: map[string]int{"api": 4200}})
 			if resp.Error == nil || resp.Error.Code != 3 {
 				t.Fatalf("bands.reserve by a %s client = %+v, want a refusal", tc.kind, resp.Error)
 			}
@@ -161,12 +161,12 @@ func TestBandsReserveIsHostClientOnly(t *testing.T) {
 	}
 
 	// The host client can still register the band.
-	host, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	host, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
 	resp := h.Request(context.Background(), host, verbBandsReserve,
-		&protocol.ReserveBandArgs{Spec: *sp, Bases: map[string]int{"api": 4200}})
+		&api.ReserveBandArgs{Spec: *sp, Bases: map[string]int{"api": 4200}})
 	if resp.Error != nil {
 		t.Fatalf("bands.reserve by the host client refused: %+v", resp.Error)
 	}

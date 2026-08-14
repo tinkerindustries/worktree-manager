@@ -1,7 +1,7 @@
 // Package coord is the coordinator's request core and resident process:
-// the handler that turns protocol messages into responses, the socket
-// server that runs it per connection, and the in-process harness phases 3
-// to 6 lean on (ARCHITECTURE.md §13.3).
+// the handler that turns API requests into responses, the HTTP server
+// that serves them, and the in-process harness phases 3 to 6 lean on
+// (ARCHITECTURE.md §13.3).
 //
 // One writer serialises here: there is no lock file, no generation
 // counter, no view identity and no view scoping (revision 2 deleted all
@@ -18,55 +18,48 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"sync"
 	"time"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
 	"github.com/mrgeoffrich/worktree-manager/internal/platform"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
 
-// Identity is the coordinator's identity for one client, assigned from
-// kernel data or declared data — never from the caller's claim of being a
-// host client (ARCHITECTURE.md §10.2). Key is the uid for a host client,
-// the token for a named container, and the issued session id for an
-// ephemeral one.
+// Identity is the coordinator's identity for one client, resolved per
+// request from the bearer token — never from a claim in the request
+// (ARCHITECTURE.md §10.2). Key is "host" for a host client, the token for
+// a named container, and the issued session id for an ephemeral one.
 type Identity struct {
 	Kind      string
 	Key       string
 	Ephemeral bool
 }
 
-// Session is one connected client: the negotiated protocol version and the
-// identity the coordinator assigned.
+// hostIdentityKey is the identity key of every host client. Reading the
+// 0600 endpoint.json in one's own home is the proof of host identity now
+// that peer credentials are gone (plan.md §7, "Host identity is weaker
+// than SO_PEERCRED"): the key is the same for every host process of the
+// user, which is the whole of what the old uid check proved.
+const hostIdentityKey = "host"
+
+// Session is one request's identity context: the API version the
+// coordinator speaks and the identity resolved from the request's bearer
+// token. It is per request now — there is no connection to hold it.
 type Session struct {
 	Version  int
 	Identity Identity
 }
 
-// Peer is what the kernel reports about a connection. Only host identity
-// uses it; Known is false where the platform cannot report peer
-// credentials, and a host claim is then refused. TCP marks a connection
-// that arrived on the opt-in loopback TCP listener: peer credentials do
-// not exist there, so the token is the whole of identity and the TCP
-// listener refuses every connection that does not present the configured
-// token (docs/ARCHITECTURE.md §4.1, §12.2).
-type Peer struct {
-	UID   int
-	Known bool
-	TCP   bool
-}
-
-// Handler is the coordinator's request core: protocol messages in,
-// protocol responses out, a store path, and no socket, supervisor or
-// container — exactly the in-process harness of ARCHITECTURE.md §13.3.
+// Handler is the coordinator's request core: API requests in, API
+// responses out, a store path, and no listener, supervisor or container —
+// exactly the in-process harness of ARCHITECTURE.md §13.3.
 type Handler struct {
-	// ProtocolMin/ProtocolMax are the coordinator's advertised version
-	// range, the protocol package's constants by default. They are fields
-	// so the refusal path is testable from both directions (a coordinator
+	// ProtocolMin/ProtocolMax are the coordinator's advertised API version
+	// range, the api package's constants by default. They are fields so
+	// the refusal path is testable from both directions (a coordinator
 	// ahead of its client) without rebuilding.
 	ProtocolMin int
 	ProtocolMax int
@@ -121,13 +114,20 @@ type Handler struct {
 	// fakes.
 	Gh func(dir string, args ...string) ([]byte, error)
 
-	// TCPToken is the token the opt-in loopback TCP listener requires on
-	// every connection (docs/ARCHITECTURE.md §4.1: loopback TCP needs an
-	// authentication token because peer credentials do not exist on a TCP
-	// connection). Empty means no TCP listener is configured — wtd refuses
-	// to start one without a token, and a handler with an empty token
-	// refuses every TCP hello rather than accepting one.
-	TCPToken string
+	// Token is the host token, the bearer that authenticates a host
+	// client: the token from the 0600 endpoint.json, generated on first
+	// start and reused thereafter. The server loads or creates it before
+	// serving; a handler with an empty token refuses every host bearer.
+	Token string
+
+	// ContainerToken is the token wtd was started with (--container-token,
+	// 16+ characters), the admission credential for containers: a bearer
+	// equal to it is a named client whose identity key is the token, and
+	// it is what POST /v1/session accepts to issue an ephemeral session
+	// id. Empty means containers are not admitted at all — the coordinator
+	// accepts host clients only, exactly as the old TCP surface was
+	// opt-in (plan.md §5, phase R1).
+	ContainerToken string
 
 	st  *store.Store
 	log *slog.Logger
@@ -157,8 +157,8 @@ func NewHandler(st *store.Store, log *slog.Logger) (*Handler, error) {
 		log = slog.Default()
 	}
 	return &Handler{
-		ProtocolMin: protocol.VersionMin,
-		ProtocolMax: protocol.VersionMax,
+		ProtocolMin: api.VersionMin,
+		ProtocolMax: api.VersionMax,
 		Probe:       noProbe,
 		claims:      map[entryKey]bool{},
 		st:          st,
@@ -169,49 +169,100 @@ func NewHandler(st *store.Store, log *slog.Logger) (*Handler, error) {
 // Store returns the handler's store.
 func (h *Handler) Store() *store.Store { return h.st }
 
-// Begin handles a connection's first exchange: version negotiation, the
-// identity assignment (peer credentials for a host client — the claim is
-// ignored; the token for a named container; an issued session id for an
-// ephemeral one), and the clients.json observation. The reply carries the
-// agreed version and, for an ephemeral client, the session id; a refusal's
-// error names the upgrade in whichever direction the ranges do not overlap
-// (plan.md §3's refuse-rather-than-partially-honour rule).
-func (h *Handler) Begin(peer Peer, hello *protocol.Hello) (*Session, *protocol.HelloReply) {
-	agreed, err := protocol.Agree(hello.MinVer, hello.MaxVer, h.ProtocolMin, h.ProtocolMax)
-	if err != nil {
-		return nil, &protocol.HelloReply{Error: versionRefusal(err)}
+// ResolveIdentity is the per-request identity resolution, replacing the
+// old hello's assignIdentity: the bearer token is the whole of identity
+// over HTTP, because peer credentials do not exist on a TCP connection
+// (plan.md §5, phase R1). A host bearer is the token from the 0600
+// endpoint.json, a named bearer the coordinator's --container-token, and
+// an ephemeral bearer an issued session id — a clients row, so the
+// identity survives a wtd restart mid-init and reclamation deleting the
+// row is what revokes it. Missing, wrong and wrong-kind are one identical
+// refusal, compared in constant time: the API must not be an oracle that
+// distinguishes them.
+func (h *Handler) ResolveIdentity(bearer string) (Identity, *api.Error) {
+	switch {
+	case h.Token != "" && subtle.ConstantTimeCompare([]byte(bearer), []byte(h.Token)) == 1:
+		return Identity{Kind: api.KindHost, Key: hostIdentityKey}, nil
+	case h.ContainerToken != "" && subtle.ConstantTimeCompare([]byte(bearer), []byte(h.ContainerToken)) == 1:
+		// The token is the identity key: it names the client in the
+		// registry and is what the ownership check compares (the key is a
+		// credential and is redacted everywhere it is served — redact.go).
+		return Identity{Kind: api.KindNamed, Key: bearer}, nil
+	case h.ephemeralSession(bearer):
+		return Identity{Kind: api.KindEphemeral, Key: bearer, Ephemeral: true}, nil
+	default:
+		return Identity{}, authRefusal()
 	}
-	id, herr := h.assignIdentity(peer, hello)
-	if herr != nil {
-		return nil, &protocol.HelloReply{Error: herr}
-	}
+}
+
+// OpenSession issues an ephemeral session: a clients row whose identity
+// is a 32-byte random value, returned to the client as its bearer for
+// every later request. Session ids are rows, not memory — they survive a
+// wtd restart, and reclamation deleting the row is what revokes them
+// (plan.md §5, phase R1). The caller (the HTTP layer) has already
+// verified the container token.
+func (h *Handler) OpenSession() (Identity, *api.Error) {
+	id := Identity{Kind: api.KindEphemeral, Key: newSessionID(), Ephemeral: true}
 	if err := h.observe(id); err != nil {
-		h.log.Error("recording the client in clients.json", "kind", id.Kind, "identity", id.Key, "err", err)
-		return nil, &protocol.HelloReply{Error: &protocol.Error{
-			Code:   4, // required context unavailable: the coordinator's own store is broken
-			Msg:    fmt.Sprintf("the coordinator cannot record the client: %v", err),
-			Remedy: "check the coordinator's store (WT_HOME) is writable, then re-run",
-		}}
+		return Identity{}, h.observeFailure(err)
 	}
-	sess := &Session{Version: agreed, Identity: id}
-	reply := &protocol.HelloReply{Agreed: agreed}
-	if id.Ephemeral {
-		reply.SessionID = id.Key
+	return id, nil
+}
+
+// observeFailure is the refusal when the coordinator's own store cannot
+// record a client: required context unavailable, naming the store.
+func (h *Handler) observeFailure(err error) *api.Error {
+	h.log.Error("recording the client in the store", "err", err)
+	return &api.Error{
+		Code:   4, // required context unavailable: the coordinator's own store is broken
+		Msg:    fmt.Sprintf("the coordinator cannot record the client: %v", err),
+		Remedy: "check the coordinator's store (WT_HOME) is writable, then re-run",
 	}
-	return sess, reply
+}
+
+// ephemeralSession reports whether bearer is a live ephemeral session id:
+// a clients row of kind ephemeral. The table is small — clients, not
+// entries — and the lookup is the whole of the ephemeral identity check.
+func (h *Handler) ephemeralSession(bearer string) bool {
+	if bearer == "" {
+		return false
+	}
+	clients, err := h.st.ReadClients()
+	if err != nil {
+		return false
+	}
+	for _, c := range clients.Clients {
+		if c.Kind == api.KindEphemeral && c.Identity == bearer {
+			return true
+		}
+	}
+	return false
+}
+
+// authRefusal is the single refusal for a missing, wrong or wrong-kind
+// bearer: one message, so the API cannot be used as an oracle to test
+// tokens one at a time, and the remedy names the command that fixes it
+// (plan.md §3's every-error-names-the-command rule).
+func authRefusal() *api.Error {
+	return &api.Error{
+		Code: 3,
+		Msg:  "authentication refused: this request must present the coordinator's bearer token",
+		Remedy: "start wtd (wt daemon install, or wtd --addr 127.0.0.1:7833) so it writes endpoint.json, and re-run as the host user; " +
+			"a container sets WT_CLIENT_TOKEN to the coordinator's --container-token instead",
+	}
 }
 
 // Handle runs one request and returns its response. The response carries
 // either a result or an error with the exit code the client should use, so
 // codes 3, 4 and 5 originate here and reach the process exit status
 // unchanged (ARCHITECTURE.md §11.3).
-func (h *Handler) Handle(ctx context.Context, s *Session, req *protocol.Request) *protocol.Response {
+func (h *Handler) Handle(ctx context.Context, s *Session, req *api.Request) *api.Response {
 	switch req.Verb {
 	case "ping":
 		// The protocol plumbing's one verb: a full request round trip with
 		// nothing behind it. Not a wt command — later phases add the real
 		// verbs on the same dispatch.
-		return &protocol.Response{Result: json.RawMessage(`{"ok":true}`)}
+		return &api.Response{Result: json.RawMessage(`{"ok":true}`)}
 	case verbAllocate:
 		return h.allocate(s, req)
 	case verbMaterialise:
@@ -239,7 +290,7 @@ func (h *Handler) Handle(ctx context.Context, s *Session, req *protocol.Request)
 	case verbClients:
 		return h.clientsList(s, req)
 	default:
-		return &protocol.Response{Error: &protocol.Error{
+		return &api.Response{Error: &api.Error{
 			Code: 1,
 			Msg:  fmt.Sprintf("unknown verb %q", req.Verb),
 			// The system refuses rather than partially honouring: an
@@ -250,113 +301,12 @@ func (h *Handler) Handle(ctx context.Context, s *Session, req *protocol.Request)
 	}
 }
 
-// versionRefusal maps a non-overlapping pair to the wire refusal: exit
-// code 3 (refused), a message naming the upgrade in the direction the
-// ranges imply, and the install command for whichever binary must move.
-func versionRefusal(err error) *protocol.Error {
-	var ue *protocol.UpgradeError
-	if !errors.As(err, &ue) {
-		return &protocol.Error{Code: 3, Msg: err.Error(), Remedy: "check the client and coordinator builds, then re-run"}
-	}
-	remedy := fmt.Sprintf("upgrade wtd to speak protocol %d, then re-run", ue.Need)
-	if ue.Side == "client" {
-		remedy = fmt.Sprintf("upgrade wt to speak protocol %d, then re-run", ue.Need)
-	}
-	return &protocol.Error{Code: 3, Msg: ue.Error(), Remedy: remedy}
-}
-
-// assignIdentity decides who the client is. A host client's identity is
-// the kernel's uid through peer credentials and any claim in the hello is
-// ignored; only the named token and the ephemeral declaration are things a
-// client asserts. On the opt-in loopback TCP listener the token is the
-// whole of identity: peer credentials do not exist there, so the listener
-// requires the configured token on every connection and accepts named
-// clients only (the token is compared in constant time, and a wrong token
-// and a missing one get the same refusal, so the listener is neither an
-// oracle nor brute-forceable — the security pass, phase 9).
-func (h *Handler) assignIdentity(peer Peer, hello *protocol.Hello) (Identity, *protocol.Error) {
-	switch hello.Kind {
-	case protocol.KindHost:
-		if peer.TCP {
-			return Identity{}, &protocol.Error{
-				Code:   3,
-				Msg:    "host identity cannot be verified over TCP: peer credentials do not exist on a TCP connection",
-				Remedy: "present the configured token instead (WT_CLIENT_TOKEN), or use the socket",
-			}
-		}
-		if !peer.Known {
-			return Identity{}, &protocol.Error{
-				Code:   3,
-				Msg:    "host identity cannot be verified: peer credentials are unavailable on this connection",
-				Remedy: "run the client on the host, or declare itself ephemeral (WT_CLIENT_EPHEMERAL=1) or named (a token) instead",
-			}
-		}
-		return Identity{Kind: protocol.KindHost, Key: strconv.Itoa(peer.UID)}, nil
-	case protocol.KindNamed:
-		if peer.TCP {
-			// The token is the whole of identity over TCP. Missing and
-			// wrong are the same refusal, and the compare is constant-time:
-			// the listener must not leak whether a guess was close, and a
-			// token of the enforced minimum length is not brute-forceable
-			// over the wire.
-			if h.TCPToken == "" {
-				return Identity{}, &protocol.Error{
-					Code:   3,
-					Msg:    "authentication refused: this coordinator has no TCP token configured",
-					Remedy: "start wtd with --tcp-token set, or use the socket",
-				}
-			}
-			if subtle.ConstantTimeCompare([]byte(hello.Token), []byte(h.TCPToken)) != 1 {
-				return Identity{}, tcpAuthRefusal()
-			}
-			return Identity{Kind: protocol.KindNamed, Key: hello.Token}, nil
-		}
-		if hello.Token == "" {
-			return Identity{}, &protocol.Error{
-				Code:   3,
-				Msg:    "a named container client must present a token",
-				Remedy: "configure the token into the image and present it in the hello",
-			}
-		}
-		return Identity{Kind: protocol.KindNamed, Key: hello.Token}, nil
-	case protocol.KindEphemeral:
-		if peer.TCP {
-			// The TCP surface is token-authenticated as a whole; the
-			// client cannot declare itself both named and ephemeral, so an
-			// ephemeral client cannot authenticate over TCP. A disposable
-			// container configures the token (named) instead.
-			return Identity{}, &protocol.Error{
-				Code:   3,
-				Msg:    "the TCP listener accepts the configured token only: ephemeral clients cannot authenticate over TCP",
-				Remedy: "configure the token into the image (WT_CLIENT_TOKEN) and connect as the named client",
-			}
-		}
-		return Identity{Kind: protocol.KindEphemeral, Key: newSessionID(), Ephemeral: true}, nil
-	default:
-		return Identity{}, &protocol.Error{
-			Code:   3,
-			Msg:    fmt.Sprintf("unknown client kind %q", hello.Kind),
-			Remedy: "upgrade wt: this coordinator knows the kinds host, named and ephemeral",
-		}
-	}
-}
-
-// tcpAuthRefusal is the single refusal for a missing or wrong TCP token:
-// one message, so the listener cannot be used as an oracle to test tokens
-// one at a time.
-func tcpAuthRefusal() *protocol.Error {
-	return &protocol.Error{
-		Code:   3,
-		Msg:    "authentication refused: this connection must present the coordinator's configured token",
-		Remedy: "set WT_CLIENT_TOKEN to the token wtd was started with (--tcp-token), then re-run",
-	}
-}
-
-// observe records one connection in the client table. Last-seen is the
+// observe records one request in the client table. Last-seen is the
 // coordinator's own clock — a measured time, never something a client
 // wrote (ARCHITECTURE.md §10.2). The upsert is the whole operation: a
 // returning client's row is refreshed in place, a new client's row is
-// inserted, in one statement.
+// inserted, in one statement. It runs per request now that there is no
+// connection to observe once.
 func (h *Handler) observe(id Identity) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -369,14 +319,15 @@ func (h *Handler) observe(id Identity) error {
 }
 
 // newSessionID issues the session id the coordinator gives an ephemeral
-// client — random, unforgeable, and the identity its entries are marked
-// reclaimable under.
+// client — 32 random bytes, unforgeable, and the identity its entries are
+// marked reclaimable under (plan.md §5, phase R1: a 32-byte random
+// identity).
 func newSessionID() string {
-	b := make([]byte, 16)
+	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		// crypto/rand cannot fail on the platforms this project targets;
 		// a fixed fallback would make session ids guessable.
 		panic(fmt.Sprintf("coord: crypto/rand failed: %v", err))
 	}
-	return "s" + hex.EncodeToString(b)
+	return hex.EncodeToString(b)
 }

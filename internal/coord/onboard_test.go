@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 )
 
@@ -24,14 +24,14 @@ import (
 func TestPortsScanReportsFacts(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
 	ctx := context.Background()
-	sess, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	sess, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("opening a test listener: %v", err)
+	ln, lerr := net.Listen("tcp", "127.0.0.1:0")
+	if lerr != nil {
+		t.Fatalf("opening a test listener: %v", lerr)
 	}
 	defer ln.Close()
 	port := ln.Addr().(*net.TCPAddr).Port
@@ -40,7 +40,7 @@ func TestPortsScanReportsFacts(t *testing.T) {
 	if resp.Error != nil {
 		t.Fatalf("ports.scan refused: %+v", resp.Error)
 	}
-	var res protocol.PortsScanResult
+	var res api.PortsScanResult
 	if err := json.Unmarshal(resp.Result, &res); err != nil {
 		t.Fatalf("decoding the scan: %v", err)
 	}
@@ -74,17 +74,17 @@ func TestPortsScanReportsFacts(t *testing.T) {
 func TestBandsSuggestFindsLowestFreeBase(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
 	ctx := context.Background()
-	sess, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	sess, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
 
 	sp := plainSuggestSpec(t, 8, []spec.Resource{{Type: "port", Name: "api"}})
-	resp := h.Request(ctx, sess, verbBandsSuggest, &protocol.SuggestBandArgs{Spec: *sp})
+	resp := h.Request(ctx, sess, verbBandsSuggest, &api.SuggestBandArgs{Spec: *sp})
 	if resp.Error != nil {
 		t.Fatalf("bands.suggest refused: %+v", resp.Error)
 	}
-	var res protocol.SuggestBandResult
+	var res api.SuggestBandResult
 	if err := json.Unmarshal(resp.Result, &res); err != nil {
 		t.Fatalf("decoding the suggestion: %v", err)
 	}
@@ -103,21 +103,21 @@ func TestBandsSuggestFindsLowestFreeBase(t *testing.T) {
 func TestBandsSuggestSkipsBandsAndReservations(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
 	ctx := context.Background()
-	sess, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	sess, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
 
 	// An existing app's band at 100..115 (span 16) and a host reservation
 	// at 200.
 	other := plainSuggestSpec(t, 16, []spec.Resource{{Type: "port", Name: "web"}})
-	reserve := h.Request(ctx, sess, verbBandsReserve, &protocol.ReserveBandArgs{
+	reserve := h.Request(ctx, sess, verbBandsReserve, &api.ReserveBandArgs{
 		Spec: *other, Bases: map[string]int{"web": 100},
 	})
 	if reserve.Error != nil {
 		t.Fatalf("bands.reserve refused: %+v", reserve.Error)
 	}
-	host := h.Request(ctx, sess, verbBandsReserve, &protocol.ReserveBandArgs{
+	host := h.Request(ctx, sess, verbBandsReserve, &api.ReserveBandArgs{
 		Host: true, Ports: []int{200}, Note: "the test's production stack",
 	})
 	if host.Error != nil {
@@ -125,11 +125,11 @@ func TestBandsSuggestSkipsBandsAndReservations(t *testing.T) {
 	}
 
 	sp := plainSuggestSpec(t, 8, []spec.Resource{{Type: "port", Name: "api"}})
-	resp := h.Request(ctx, sess, verbBandsSuggest, &protocol.SuggestBandArgs{Spec: *sp})
+	resp := h.Request(ctx, sess, verbBandsSuggest, &api.SuggestBandArgs{Spec: *sp})
 	if resp.Error != nil {
 		t.Fatalf("bands.suggest refused: %+v", resp.Error)
 	}
-	var res protocol.SuggestBandResult
+	var res api.SuggestBandResult
 	if err := json.Unmarshal(resp.Result, &res); err != nil {
 		t.Fatalf("decoding the suggestion: %v", err)
 	}
@@ -144,12 +144,12 @@ func TestBandsSuggestSkipsBandsAndReservations(t *testing.T) {
 	// Now the low ranges are busy: a band occupying 1..16 forces the
 	// suggestion higher.
 	first := plainSuggestSpec(t, 16, []spec.Resource{{Type: "port", Name: "other"}})
-	if r := h.Request(ctx, sess, verbBandsReserve, &protocol.ReserveBandArgs{
+	if r := h.Request(ctx, sess, verbBandsReserve, &api.ReserveBandArgs{
 		Spec: *first, Bases: map[string]int{"other": 1},
 	}); r.Error != nil {
 		t.Fatalf("bands.reserve refused: %+v", r.Error)
 	}
-	resp = h.Request(ctx, sess, verbBandsSuggest, &protocol.SuggestBandArgs{Spec: *sp})
+	resp = h.Request(ctx, sess, verbBandsSuggest, &api.SuggestBandArgs{Spec: *sp})
 	if resp.Error != nil {
 		t.Fatalf("bands.suggest refused: %+v", resp.Error)
 	}
@@ -167,20 +167,20 @@ func TestBandsSuggestSkipsBandsAndReservations(t *testing.T) {
 func TestBandsSuggestGroupSharesOneBase(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
 	ctx := context.Background()
-	sess, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	sess, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
 
 	sp := plainSuggestSpec(t, 8, []spec.Resource{
 		{Type: "port", Name: "proxy", Form: sptr("group"), Size: iptr(2), Offset: iptr(0)},
 		{Type: "port", Name: "api", Form: sptr("group"), Size: iptr(2), Offset: iptr(1)},
 	})
-	resp := h.Request(ctx, sess, verbBandsSuggest, &protocol.SuggestBandArgs{Spec: *sp})
+	resp := h.Request(ctx, sess, verbBandsSuggest, &api.SuggestBandArgs{Spec: *sp})
 	if resp.Error != nil {
 		t.Fatalf("bands.suggest refused: %+v", resp.Error)
 	}
-	var res protocol.SuggestBandResult
+	var res api.SuggestBandResult
 	if err := json.Unmarshal(resp.Result, &res); err != nil {
 		t.Fatalf("decoding the suggestion: %v", err)
 	}
@@ -201,20 +201,20 @@ func TestBandsSuggestGroupSharesOneBase(t *testing.T) {
 func TestBandsSuggestIndependentStridesGetDisjointBases(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
 	ctx := context.Background()
-	sess, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	sess, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
 
 	sp := plainSuggestSpec(t, 8, []spec.Resource{
 		{Type: "port", Name: "api"},
 		{Type: "port", Name: "web"},
 	})
-	resp := h.Request(ctx, sess, verbBandsSuggest, &protocol.SuggestBandArgs{Spec: *sp})
+	resp := h.Request(ctx, sess, verbBandsSuggest, &api.SuggestBandArgs{Spec: *sp})
 	if resp.Error != nil {
 		t.Fatalf("bands.suggest refused: %+v", resp.Error)
 	}
-	var res protocol.SuggestBandResult
+	var res api.SuggestBandResult
 	if err := json.Unmarshal(resp.Result, &res); err != nil {
 		t.Fatalf("decoding the suggestion: %v", err)
 	}
@@ -234,9 +234,9 @@ func TestBandsSuggestIndependentStridesGetDisjointBases(t *testing.T) {
 func TestBandsSuggestRefusesInvalidSpec(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
 	ctx := context.Background()
-	sess, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	sess, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
 	// A port resource carrying a cidr-only field is refused whole by
 	// validation (a field that is not valid for the declared type).
@@ -246,7 +246,7 @@ func TestBandsSuggestRefusesInvalidSpec(t *testing.T) {
 			{Type: "port", Name: "api", Pool: sptr("172.30.0.0/16")},
 		},
 	}
-	resp := h.Request(ctx, sess, verbBandsSuggest, &protocol.SuggestBandArgs{Spec: *bad})
+	resp := h.Request(ctx, sess, verbBandsSuggest, &api.SuggestBandArgs{Spec: *bad})
 	if resp.Error == nil || resp.Error.Code != 3 {
 		t.Fatalf("refusal = %+v, want exit 3 (refused whole)", resp.Error)
 	}

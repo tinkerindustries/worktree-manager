@@ -8,7 +8,28 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 )
+
+// waitEndpoint waits for an in-process server to write endpoint.json
+// into its store root (the server writes it once the listener is bound)
+// and returns its base URL — the race-free way a test learns the port of
+// a 127.0.0.1:0 listener.
+func waitEndpoint(t *testing.T, storeRoot string) string {
+	t.Helper()
+	path := api.EndpointPath(storeRoot)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if ep, err := api.ReadEndpoint(path); err == nil {
+			return ep.BaseURL
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("the coordinator never wrote the endpoint file")
+	return ""
+}
 
 // runCLI runs the client with the given args and returns the exit code plus
 // the two streams.

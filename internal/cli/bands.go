@@ -12,7 +12,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 )
 
@@ -111,12 +111,12 @@ func runBandsSuggest(args []string, stdout, stderr io.Writer) int {
 		return cerr.Code
 	}
 	defer sess.Close()
-	raw, rerr := sess.request("bands.suggest", &protocol.SuggestBandArgs{Spec: *parsed})
+	raw, rerr := sess.request("bands.suggest", &api.SuggestBandArgs{Spec: *parsed})
 	if rerr != nil {
 		WriteError(stderr, rerr)
 		return rerr.Code
 	}
-	var res protocol.SuggestBandResult
+	var res api.SuggestBandResult
 	if err := json.Unmarshal(raw, &res); err != nil {
 		WriteError(stderr, New(ExitFailure, fmt.Sprintf("decoding the bands.suggest response: %v", err), ""))
 		return ExitFailure
@@ -153,7 +153,7 @@ func runBandsList(args []string, stdout, stderr io.Writer) int {
 
 // writeBandsTable prints the ledger in text form: one line per app band,
 // one per host reservation, both sorted.
-func writeBandsTable(stdout, stderr io.Writer, res *protocol.BandsListResult) int {
+func writeBandsTable(stdout, stderr io.Writer, res *api.BandsListResult) int {
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "BANDS\t")
 	fmt.Fprintln(w, "APP\tBASE")
@@ -240,7 +240,7 @@ func runBandsReserve(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 
-	var reqArgs protocol.ReserveBandArgs
+	var reqArgs api.ReserveBandArgs
 	if *host {
 		if len(bases) > 0 {
 			WriteError(stderr, UsageError(
@@ -260,7 +260,7 @@ func runBandsReserve(args []string, stdout, stderr io.Writer) int {
 				"--host requires --note; an unlabelled reservation is one nobody can later judge"))
 			return ExitUsage
 		}
-		reqArgs = protocol.ReserveBandArgs{Host: true, Ports: []int(ports), Names: []string(names), Note: *note}
+		reqArgs = api.ReserveBandArgs{Host: true, Ports: []int(ports), Names: []string(names), Note: *note}
 	} else {
 		if len(ports) > 0 || len(names) > 0 {
 			WriteError(stderr, UsageError(
@@ -319,7 +319,7 @@ func runBandsReserve(args []string, stdout, stderr io.Writer) int {
 			WriteError(stderr, err)
 			return ExitUsage
 		}
-		reqArgs = protocol.ReserveBandArgs{Spec: *parsed, Bases: baseMap}
+		reqArgs = api.ReserveBandArgs{Spec: *parsed, Bases: baseMap}
 	}
 
 	sess, err := dialCoordinator()
@@ -333,7 +333,7 @@ func runBandsReserve(args []string, stdout, stderr io.Writer) int {
 		WriteError(stderr, err)
 		return err.Code
 	}
-	var res protocol.ReserveBandResult
+	var res api.ReserveBandResult
 	if err := json.Unmarshal(raw, &res); err != nil {
 		WriteError(stderr, New(ExitFailure, fmt.Sprintf("decoding the bands.reserve response: %v", err), ""))
 		return ExitFailure
@@ -351,7 +351,7 @@ func runBandsReserve(args []string, stdout, stderr io.Writer) int {
 
 // writeReserveTable prints the registration result: the app's bases with
 // the span each must cover, or the host reservation with its note.
-func writeReserveTable(stdout io.Writer, res *protocol.ReserveBandResult) int {
+func writeReserveTable(stdout io.Writer, res *api.ReserveBandResult) int {
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	if res.Host {
 		fmt.Fprintf(w, "reserved:\t%s\n", joinPorts(res.Ports))

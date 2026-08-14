@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
-	"github.com/mrgeoffrich/worktree-manager/internal/protocol"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
@@ -43,7 +43,7 @@ func testSpec(t *testing.T, app string, slotMax int, reserved ...int) *spec.Spec
 // stride base.
 func registerBand(t *testing.T, h *Harness, sess *Session, s *spec.Spec, base int) {
 	t.Helper()
-	resp := h.Request(context.Background(), sess, verbBandsReserve, &protocol.ReserveBandArgs{
+	resp := h.Request(context.Background(), sess, verbBandsReserve, &api.ReserveBandArgs{
 		Spec: *s, Bases: map[string]int{"api": base},
 	})
 	if resp.Error != nil {
@@ -52,15 +52,15 @@ func registerBand(t *testing.T, h *Harness, sess *Session, s *spec.Spec, base in
 }
 
 // allocate runs one allocate request and returns the decoded result.
-func allocate(t *testing.T, h *Harness, sess *Session, s *spec.Spec, slug string) (protocol.AllocateResult, *protocol.Error) {
+func allocate(t *testing.T, h *Harness, sess *Session, s *spec.Spec, slug string) (api.AllocateResult, *api.Error) {
 	t.Helper()
-	resp := h.Request(context.Background(), sess, verbAllocate, &protocol.AllocateArgs{
+	resp := h.Request(context.Background(), sess, verbAllocate, &api.AllocateArgs{
 		Spec: *s, Slug: slug, Path: filepath.Join("/tmp/wt", slug),
 	})
 	if resp.Error != nil {
-		return protocol.AllocateResult{}, resp.Error
+		return api.AllocateResult{}, resp.Error
 	}
-	var res protocol.AllocateResult
+	var res api.AllocateResult
 	if err := json.Unmarshal(resp.Result, &res); err != nil {
 		t.Fatalf("decoding allocate result: %v\n%s", err, resp.Result)
 	}
@@ -75,13 +75,13 @@ func allocate(t *testing.T, h *Harness, sess *Session, s *spec.Spec, slug string
 // concurrency design (no lock file, no generation counter).
 func TestConcurrentAllocationsGetDistinctSlots(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	s1, reply := h.Connect(protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	s1, err := h.Connect(api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
-	s2, reply := h.ConnectPeer(Peer{UID: 5000, Known: true}, protocol.KindHost, "")
-	if reply.Error != nil {
-		t.Fatalf("hello refused: %+v", reply.Error)
+	s2, err := h.ConnectPeer(5000, api.KindHost, "")
+	if err != nil {
+		t.Fatalf("hello refused: %+v", err)
 	}
 	sp := testSpec(t, "compose-app", 8)
 	registerBand(t, h, s1, sp, 4200)
@@ -89,23 +89,23 @@ func TestConcurrentAllocationsGetDistinctSlots(t *testing.T) {
 	ctx := context.Background()
 	start := make(chan struct{})
 	slots := make([]int, 2)
-	errs := make([]*protocol.Error, 2)
+	errs := make([]*api.Error, 2)
 	var wg sync.WaitGroup
 	for i, sess := range []*Session{s1, s2} {
 		wg.Add(1)
 		go func(i int, sess *Session) {
 			defer wg.Done()
 			<-start
-			resp := h.Request(ctx, sess, verbAllocate, &protocol.AllocateArgs{
+			resp := h.Request(ctx, sess, verbAllocate, &api.AllocateArgs{
 				Spec: *sp, Slug: fmt.Sprintf("wt-%d", i), Path: fmt.Sprintf("/tmp/wt/wt-%d", i),
 			})
 			if resp.Error != nil {
 				errs[i] = resp.Error
 				return
 			}
-			var res protocol.AllocateResult
+			var res api.AllocateResult
 			if err := json.Unmarshal(resp.Result, &res); err != nil {
-				errs[i] = &protocol.Error{Code: 1, Msg: fmt.Sprintf("decoding: %v", err), Remedy: "test defect"}
+				errs[i] = &api.Error{Code: 1, Msg: fmt.Sprintf("decoding: %v", err), Remedy: "test defect"}
 				return
 			}
 			slots[i] = res.Slot
@@ -131,9 +131,9 @@ func TestConcurrentAllocationsGetDistinctSlots(t *testing.T) {
 		t.Errorf("slots = %v, want 1 and 2 (lowest free)", slots)
 	}
 	// Both entries are committed in the registry.
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatal(err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatal(rerr)
 	}
 	if len(reg.Entries) != 2 {
 		t.Errorf("registry holds %d entries, want 2", len(reg.Entries))
@@ -150,8 +150,8 @@ func TestConcurrentAllocationsGetDistinctSlots(t *testing.T) {
 // its last-seen time, with exit code 3.
 func TestForeignEntryMutationRefused(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	owner, _ := h.Connect(protocol.KindHost, "") // uid 4242
-	other, _ := h.ConnectPeer(Peer{UID: 5000, Known: true}, protocol.KindHost, "")
+	owner, _ := h.Connect(api.KindHost, "") // uid 4242
+	other, _ := h.ConnectPeer(5000, api.KindHost, "")
 	sp := testSpec(t, "compose-app", 8)
 	registerBand(t, h, owner, sp, 4200)
 
@@ -160,9 +160,9 @@ func TestForeignEntryMutationRefused(t *testing.T) {
 	}
 
 	// The owner's last-seen is measured in clients.json by the coordinator.
-	clients, err := h.Store.ReadClients()
-	if err != nil {
-		t.Fatal(err)
+	clients, rerr := h.Store.ReadClients()
+	if rerr != nil {
+		t.Fatal(rerr)
 	}
 	var ownerLastSeen string
 	for _, c := range clients.Clients {
@@ -175,7 +175,7 @@ func TestForeignEntryMutationRefused(t *testing.T) {
 	}
 
 	// activate: the mutating call the foreign client attempts.
-	resp := h.Request(context.Background(), other, verbActivate, &protocol.EntryRef{App: "compose-app", Slug: "alpha"})
+	resp := h.Request(context.Background(), other, verbActivate, &api.EntryRef{App: "compose-app", Slug: "alpha"})
 	if resp.Error == nil {
 		t.Fatal("a foreign activate succeeded, want a refusal")
 	}
@@ -193,22 +193,22 @@ func TestForeignEntryMutationRefused(t *testing.T) {
 	}
 
 	// release is refused the same way.
-	resp = h.Request(context.Background(), other, verbRelease, &protocol.EntryRef{App: "compose-app", Slug: "alpha"})
+	resp = h.Request(context.Background(), other, verbRelease, &api.EntryRef{App: "compose-app", Slug: "alpha"})
 	if resp.Error == nil || resp.Error.Code != 3 {
 		t.Fatalf("foreign release = %+v, want a refusal", resp.Error)
 	}
 
 	// The entry survives both refusals, still in reserving, still owned.
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatal(err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatal(rerr)
 	}
 	if len(reg.Entries) != 1 || reg.Entries[0].State != store.StateReserving || reg.Entries[0].Owner != "4242" {
 		t.Errorf("registry after refusals = %+v", reg.Entries)
 	}
 
 	// The owner can still mutate it.
-	resp = h.Request(context.Background(), owner, verbActivate, &protocol.EntryRef{App: "compose-app", Slug: "alpha"})
+	resp = h.Request(context.Background(), owner, verbActivate, &api.EntryRef{App: "compose-app", Slug: "alpha"})
 	if resp.Error != nil {
 		t.Fatalf("owner activate refused: %+v", resp.Error)
 	}
@@ -219,7 +219,7 @@ func TestForeignEntryMutationRefused(t *testing.T) {
 // command.
 func TestAllocationRequiresRegisteredBand(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	sess, _ := h.Connect(protocol.KindHost, "")
+	sess, _ := h.Connect(api.KindHost, "")
 	sp := testSpec(t, "compose-app", 8)
 
 	_, perr := allocate(t, h, sess, sp, "alpha")
@@ -236,9 +236,9 @@ func TestAllocationRequiresRegisteredBand(t *testing.T) {
 		t.Errorf("remedy does not name the registration command: %s", perr.Remedy)
 	}
 	// Nothing was written.
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatal(err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatal(rerr)
 	}
 	if len(reg.Entries) != 0 {
 		t.Errorf("refused allocation wrote %d entries", len(reg.Entries))
@@ -252,8 +252,8 @@ func TestAllocationRequiresRegisteredBand(t *testing.T) {
 func TestSlotExhaustionNamesRangeCleanupAndForeignCount(t *testing.T) {
 	t.Run("mixed ownership", func(t *testing.T) {
 		h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-		alice, _ := h.Connect(protocol.KindHost, "") // uid 4242
-		bob, _ := h.ConnectPeer(Peer{UID: 5000, Known: true}, protocol.KindHost, "")
+		alice, _ := h.Connect(api.KindHost, "") // uid 4242
+		bob, _ := h.ConnectPeer(5000, api.KindHost, "")
 		sp := testSpec(t, "compose-app", 2)
 		registerBand(t, h, alice, sp, 4200)
 
@@ -287,7 +287,7 @@ func TestSlotExhaustionNamesRangeCleanupAndForeignCount(t *testing.T) {
 
 	t.Run("all slots are the caller's own", func(t *testing.T) {
 		h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-		sess, _ := h.Connect(protocol.KindHost, "")
+		sess, _ := h.Connect(api.KindHost, "")
 		sp := testSpec(t, "compose-app", 1)
 		registerBand(t, h, sess, sp, 4200)
 		if res, perr := allocate(t, h, sess, sp, "alpha"); perr != nil || res.Slot != 1 {
@@ -307,7 +307,7 @@ func TestSlotExhaustionNamesRangeCleanupAndForeignCount(t *testing.T) {
 
 	t.Run("every slot excluded leaves nothing to clean up", func(t *testing.T) {
 		h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-		sess, _ := h.Connect(protocol.KindHost, "")
+		sess, _ := h.Connect(api.KindHost, "")
 		// The spec reserves the ports both slots would derive (4201, 4202):
 		// exhaustion here is an exclusion problem, not an occupancy one, and
 		// the message must not promise that cleanup would help.
@@ -336,7 +336,7 @@ func TestSlotExhaustionNamesRangeCleanupAndForeignCount(t *testing.T) {
 func TestReservedPortsNeverAllocated(t *testing.T) {
 	t.Run("spec reserved block", func(t *testing.T) {
 		h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-		sess, _ := h.Connect(protocol.KindHost, "")
+		sess, _ := h.Connect(api.KindHost, "")
 		// Slot 1 would derive 4201; the spec's committed defaults reserve it.
 		sp := testSpec(t, "compose-app", 8, 4201)
 		registerBand(t, h, sess, sp, 4200)
@@ -354,12 +354,12 @@ func TestReservedPortsNeverAllocated(t *testing.T) {
 
 	t.Run("ledger host reservation", func(t *testing.T) {
 		h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-		sess, _ := h.Connect(protocol.KindHost, "")
+		sess, _ := h.Connect(api.KindHost, "")
 		sp := testSpec(t, "compose-app", 8)
 		registerBand(t, h, sess, sp, 4200)
 		// The host-global reservation covers the ports slots 1 and 2 would
 		// derive (4201, 4202); the note names what holds the range.
-		resp := h.Request(context.Background(), sess, verbBandsReserve, &protocol.ReserveBandArgs{
+		resp := h.Request(context.Background(), sess, verbBandsReserve, &api.ReserveBandArgs{
 			Host: true, Ports: []int{4202, 4201}, Note: "compose-app production stack",
 		})
 		if resp.Error != nil {
@@ -380,11 +380,11 @@ func TestReservedPortsNeverAllocated(t *testing.T) {
 
 	t.Run("both exclusion sources together", func(t *testing.T) {
 		h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-		sess, _ := h.Connect(protocol.KindHost, "")
+		sess, _ := h.Connect(api.KindHost, "")
 		// Spec reserves 4201 (slot 1); the ledger reserves 4202 (slot 2).
 		sp := testSpec(t, "compose-app", 8, 4201)
 		registerBand(t, h, sess, sp, 4200)
-		resp := h.Request(context.Background(), sess, verbBandsReserve, &protocol.ReserveBandArgs{
+		resp := h.Request(context.Background(), sess, verbBandsReserve, &api.ReserveBandArgs{
 			Host: true, Ports: []int{4202}, Note: "the machine's second stack",
 		})
 		if resp.Error != nil {
@@ -407,7 +407,7 @@ func TestNewerRegistryListsButDoesNotWrite(t *testing.T) {
 	// The session and the band are set up first: against a newer-schema
 	// database every strict read and mutation is refused, so the setup
 	// itself would fail after the stamp.
-	sess, _ := h.Connect(protocol.KindHost, "")
+	sess, _ := h.Connect(api.KindHost, "")
 	sp := testSpec(t, "compose-app", 8)
 	registerBand(t, h, sess, sp, 4200)
 	// The future entry, written through the store as today's build would.
@@ -427,16 +427,16 @@ func TestNewerRegistryListsButDoesNotWrite(t *testing.T) {
 
 	// Lists: the lenient read decodes the future entry and reports the
 	// database's own version.
-	f, err := h.Store.ReadRegistryList()
-	if err != nil {
-		t.Fatalf("ReadRegistryList: %v", err)
+	f, rerr := h.Store.ReadRegistryList()
+	if rerr != nil {
+		t.Fatalf("ReadRegistryList: %v", rerr)
 	}
 	if f.SchemaVersion != 2 || len(f.Entries) != 1 || f.Entries[0].App != "future-app" {
 		t.Errorf("listed registry = %+v, want the future entry at schema 2", f)
 	}
 
 	// Does not write: a mutating call refuses, naming the upgrade.
-	resp := h.Request(context.Background(), sess, verbAllocate, &protocol.AllocateArgs{
+	resp := h.Request(context.Background(), sess, verbAllocate, &api.AllocateArgs{
 		Spec: *sp, Slug: "alpha", Path: "/tmp/wt/alpha",
 	})
 	if resp.Error == nil {
@@ -451,9 +451,9 @@ func TestNewerRegistryListsButDoesNotWrite(t *testing.T) {
 
 	// And the database is untouched: it still reports the newer version and
 	// the entry it held.
-	after, err := h.Store.ReadRegistryList()
-	if err != nil {
-		t.Fatal(err)
+	after, rerr := h.Store.ReadRegistryList()
+	if rerr != nil {
+		t.Fatal(rerr)
 	}
 	if after.SchemaVersion != 2 || len(after.Entries) != 1 || after.Entries[0].App != "future-app" {
 		t.Error("the newer database was written back; it must list but never write")
@@ -466,7 +466,7 @@ func TestNewerRegistryListsButDoesNotWrite(t *testing.T) {
 // reallocates.
 func TestAllocateIsIdempotentForExistingSlug(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	sess, _ := h.Connect(protocol.KindHost, "")
+	sess, _ := h.Connect(api.KindHost, "")
 	sp := testSpec(t, "compose-app", 8)
 	registerBand(t, h, sess, sp, 4200)
 
@@ -481,9 +481,9 @@ func TestAllocateIsIdempotentForExistingSlug(t *testing.T) {
 	if second.Slot != first.Slot {
 		t.Errorf("re-allocation moved the slot from %d to %d; an entry's slot is authoritative", first.Slot, second.Slot)
 	}
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatal(err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatal(rerr)
 	}
 	if len(reg.Entries) != 1 {
 		t.Errorf("re-allocation wrote %d entries, want 1", len(reg.Entries))
@@ -491,7 +491,7 @@ func TestAllocateIsIdempotentForExistingSlug(t *testing.T) {
 
 	// A second client re-running init on the same worktree is refused: it
 	// would mutate an entry it does not own.
-	other, _ := h.ConnectPeer(Peer{UID: 5000, Known: true}, protocol.KindHost, "")
+	other, _ := h.ConnectPeer(5000, api.KindHost, "")
 	_, perr = allocate(t, h, other, sp, "alpha")
 	if perr == nil || perr.Code != 3 {
 		t.Fatalf("foreign re-allocation = %+v, want a refusal", perr)
@@ -510,13 +510,13 @@ func TestReservingEntryAgedOutOnTimer(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
 	// Ageing out is a teardown by handle, so the timer needs the drivers.
 	h.H.InstallDrivers(driver.NewRegistry(&driver.Port{}, &driver.Namespace{}, &driver.StatePath{}))
-	sess, _ := h.Connect(protocol.KindHost, "")
+	sess, _ := h.Connect(api.KindHost, "")
 	sp := testSpec(t, "compose-app", 8)
 	registerBand(t, h, sess, sp, 4200)
 
 	allocate(t, h, sess, sp, "stale")
 	allocate(t, h, sess, sp, "fresh")
-	activateResp := h.Request(context.Background(), sess, verbActivate, &protocol.EntryRef{App: "compose-app", Slug: "fresh"})
+	activateResp := h.Request(context.Background(), sess, verbActivate, &api.EntryRef{App: "compose-app", Slug: "fresh"})
 	if activateResp.Error != nil {
 		t.Fatalf("activate refused: %+v", activateResp.Error)
 	}
@@ -524,12 +524,12 @@ func TestReservingEntryAgedOutOnTimer(t *testing.T) {
 	now := time.Now().UTC()
 	// An old reserving entry is aged out; a fresh one is not; an old active
 	// entry is never aged out.
-	if n, err := h.H.AgeReserving(now.Add(11*time.Minute), ReservingTimeout); err != nil || n != 1 {
-		t.Fatalf("AgeReserving = %d, %v; want 1 aged out", n, err)
+	if n, rerr := h.H.AgeReserving(now.Add(11*time.Minute), ReservingTimeout); rerr != nil || n != 1 {
+		t.Fatalf("AgeReserving = %d, %v; want 1 aged out", n, rerr)
 	}
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatal(err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatal(rerr)
 	}
 	if len(reg.Entries) != 1 || reg.Entries[0].Slug != "fresh" || reg.Entries[0].State != store.StateActive {
 		t.Errorf("registry after ageing = %+v, want only the active fresh entry", reg.Entries)
@@ -553,7 +553,7 @@ func TestReservingEntryAgedOutOnTimer(t *testing.T) {
 func TestAllocatorProbeSeam(t *testing.T) {
 	t.Run("held skips the slot", func(t *testing.T) {
 		h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-		sess, _ := h.Connect(protocol.KindHost, "")
+		sess, _ := h.Connect(api.KindHost, "")
 		sp := testSpec(t, "compose-app", 8)
 		registerBand(t, h, sess, sp, 4200)
 		h.H.Probe = func(s *spec.Spec, slot int, resources map[string]spec.Resolved) ProbeResult {
@@ -579,7 +579,7 @@ func TestAllocatorProbeSeam(t *testing.T) {
 
 	t.Run("unavailable does not block allocation", func(t *testing.T) {
 		h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-		sess, _ := h.Connect(protocol.KindHost, "")
+		sess, _ := h.Connect(api.KindHost, "")
 		sp := testSpec(t, "compose-app", 8)
 		registerBand(t, h, sess, sp, 4200)
 		h.H.Probe = func(s *spec.Spec, slot int, resources map[string]spec.Resolved) ProbeResult {
@@ -604,7 +604,7 @@ func TestAllocatorProbeSeam(t *testing.T) {
 		if h.H.Probe == nil {
 			t.Fatal("the handler has no probe at all; the no-probe case must be explicit")
 		}
-		sess, _ := h.Connect(protocol.KindHost, "")
+		sess, _ := h.Connect(api.KindHost, "")
 		sp := testSpec(t, "compose-app", 8)
 		registerBand(t, h, sess, sp, 4200)
 		res, perr := allocate(t, h, sess, sp, "alpha")
@@ -620,18 +620,18 @@ func TestAllocatorProbeSeam(t *testing.T) {
 // counted as stale.
 func TestPathVisibleIsTheCoordinatorStat(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	sess, _ := h.Connect(protocol.KindHost, "")
+	sess, _ := h.Connect(api.KindHost, "")
 	sp := testSpec(t, "compose-app", 8)
 	registerBand(t, h, sess, sp, 4200)
 
 	real := tempRoot(t)
-	resp := h.Request(context.Background(), sess, verbAllocate, &protocol.AllocateArgs{
+	resp := h.Request(context.Background(), sess, verbAllocate, &api.AllocateArgs{
 		Spec: *sp, Slug: "visible", Path: real,
 	})
 	if resp.Error != nil {
 		t.Fatalf("allocation refused: %+v", resp.Error)
 	}
-	var res protocol.AllocateResult
+	var res api.AllocateResult
 	if err := json.Unmarshal(resp.Result, &res); err != nil {
 		t.Fatal(err)
 	}
@@ -639,7 +639,7 @@ func TestPathVisibleIsTheCoordinatorStat(t *testing.T) {
 		t.Errorf("path_visible = false for a path the coordinator can stat (%s)", real)
 	}
 
-	resp = h.Request(context.Background(), sess, verbAllocate, &protocol.AllocateArgs{
+	resp = h.Request(context.Background(), sess, verbAllocate, &api.AllocateArgs{
 		Spec: *sp, Slug: "container-only", Path: filepath.Join(real, "inside-a-container"),
 	})
 	if resp.Error != nil {
@@ -651,9 +651,9 @@ func TestPathVisibleIsTheCoordinatorStat(t *testing.T) {
 	if res.PathVisible {
 		t.Error("path_visible = true for a path the coordinator cannot stat")
 	}
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatal(err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatal(rerr)
 	}
 	// The registry is read back sorted by (app, slug), so the container-only
 	// entry is found by slug, not by position.
@@ -672,7 +672,7 @@ func TestPathVisibleIsTheCoordinatorStat(t *testing.T) {
 // recorded in the registry, and the owner's last-seen moving on mutation.
 func TestEntryLifecycle(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	sess, _ := h.Connect(protocol.KindHost, "")
+	sess, _ := h.Connect(api.KindHost, "")
 	sp := testSpec(t, "compose-app", 8)
 	registerBand(t, h, sess, sp, 4200)
 
@@ -685,11 +685,11 @@ func TestEntryLifecycle(t *testing.T) {
 		t.Errorf("state = %q, want reserving", reg.Entries[0].State)
 	}
 
-	resp := h.Request(context.Background(), sess, verbActivate, &protocol.EntryRef{App: "compose-app", Slug: "alpha"})
+	resp := h.Request(context.Background(), sess, verbActivate, &api.EntryRef{App: "compose-app", Slug: "alpha"})
 	if resp.Error != nil {
 		t.Fatalf("activate refused: %+v", resp.Error)
 	}
-	var act protocol.ActivateResult
+	var act api.ActivateResult
 	if err := json.Unmarshal(resp.Result, &act); err != nil || act.State != store.StateActive {
 		t.Errorf("activate result = %+v / %v, want state active", act, err)
 	}
@@ -703,7 +703,7 @@ func TestEntryLifecycle(t *testing.T) {
 		t.Errorf("entry last_seen %v did not advance past created_at %v", seen, created)
 	}
 
-	resp = h.Request(context.Background(), sess, verbRelease, &protocol.EntryRef{App: "compose-app", Slug: "alpha"})
+	resp = h.Request(context.Background(), sess, verbRelease, &api.EntryRef{App: "compose-app", Slug: "alpha"})
 	if resp.Error != nil {
 		t.Fatalf("release refused: %+v", resp.Error)
 	}
@@ -713,7 +713,7 @@ func TestEntryLifecycle(t *testing.T) {
 	}
 
 	// Activating a released entry names the missing entry.
-	resp = h.Request(context.Background(), sess, verbActivate, &protocol.EntryRef{App: "compose-app", Slug: "alpha"})
+	resp = h.Request(context.Background(), sess, verbActivate, &api.EntryRef{App: "compose-app", Slug: "alpha"})
 	if resp.Error == nil || resp.Error.Code != 1 {
 		t.Fatalf("activate after release = %+v, want a failure", resp.Error)
 	}
@@ -724,17 +724,17 @@ func TestEntryLifecycle(t *testing.T) {
 // of the ledger sorted.
 func TestBandReserveAndList(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	sess, _ := h.Connect(protocol.KindHost, "")
+	sess, _ := h.Connect(api.KindHost, "")
 	sp := testSpec(t, "compose-app", 8)
 	registerBand(t, h, sess, sp, 4200)
 
-	resp := h.Request(context.Background(), sess, verbBandsReserve, &protocol.ReserveBandArgs{
+	resp := h.Request(context.Background(), sess, verbBandsReserve, &api.ReserveBandArgs{
 		Host: true, Ports: []int{5320, 5319}, Note: "compose-app production stack",
 	})
 	if resp.Error != nil {
 		t.Fatalf("host reservation refused: %+v", resp.Error)
 	}
-	var hostRes protocol.ReserveBandResult
+	var hostRes api.ReserveBandResult
 	if err := json.Unmarshal(resp.Result, &hostRes); err != nil {
 		t.Fatal(err)
 	}
@@ -747,9 +747,9 @@ func TestBandReserveAndList(t *testing.T) {
 
 	// Re-registration replaces the app's band in place: one app, one band.
 	registerBand(t, h, sess, sp, 4300)
-	reg, err := h.Store.ReadBands()
-	if err != nil {
-		t.Fatal(err)
+	reg, rerr := h.Store.ReadBands()
+	if rerr != nil {
+		t.Fatal(rerr)
 	}
 	if len(reg.Bands) != 1 || reg.Bands[0].Bases["api"] != 4300 {
 		t.Errorf("bands after re-registration = %+v, want one band at 4300", reg.Bands)
@@ -760,7 +760,7 @@ func TestBandReserveAndList(t *testing.T) {
 	if resp.Error != nil {
 		t.Fatalf("bands.list refused: %+v", resp.Error)
 	}
-	var list protocol.BandsListResult
+	var list api.BandsListResult
 	if err := json.Unmarshal(resp.Result, &list); err != nil {
 		t.Fatal(err)
 	}
@@ -778,11 +778,11 @@ func TestBandReserveAndList(t *testing.T) {
 // refused while the skill is choosing bases.
 func TestBandReserveValidations(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	sess, _ := h.Connect(protocol.KindHost, "")
+	sess, _ := h.Connect(api.KindHost, "")
 	sp := testSpec(t, "compose-app", 8)
 
 	t.Run("host reservation requires a note", func(t *testing.T) {
-		resp := h.Request(context.Background(), sess, verbBandsReserve, &protocol.ReserveBandArgs{
+		resp := h.Request(context.Background(), sess, verbBandsReserve, &api.ReserveBandArgs{
 			Host: true, Ports: []int{5319},
 		})
 		if resp.Error == nil || resp.Error.Code != 3 {
@@ -798,7 +798,7 @@ func TestBandReserveValidations(t *testing.T) {
 	})
 
 	t.Run("base for a non-port resource is refused", func(t *testing.T) {
-		resp := h.Request(context.Background(), sess, verbBandsReserve, &protocol.ReserveBandArgs{
+		resp := h.Request(context.Background(), sess, verbBandsReserve, &api.ReserveBandArgs{
 			Spec: *sp, Bases: map[string]int{"not-a-resource": 4200},
 		})
 		if resp.Error == nil || !strings.Contains(resp.Error.Msg, "not-a-resource") {
@@ -807,7 +807,7 @@ func TestBandReserveValidations(t *testing.T) {
 	})
 
 	t.Run("a port resource without a base is refused", func(t *testing.T) {
-		resp := h.Request(context.Background(), sess, verbBandsReserve, &protocol.ReserveBandArgs{
+		resp := h.Request(context.Background(), sess, verbBandsReserve, &api.ReserveBandArgs{
 			Spec: *sp, Bases: map[string]int{},
 		})
 		if resp.Error == nil || !strings.Contains(resp.Error.Msg, `"api"`) {
@@ -816,7 +816,7 @@ func TestBandReserveValidations(t *testing.T) {
 	})
 
 	t.Run("a band whose span leaves the port space is refused", func(t *testing.T) {
-		resp := h.Request(context.Background(), sess, verbBandsReserve, &protocol.ReserveBandArgs{
+		resp := h.Request(context.Background(), sess, verbBandsReserve, &api.ReserveBandArgs{
 			Spec: *sp, Bases: map[string]int{"api": 65535},
 		})
 		// slots.max 8: the top slot derives 65535 + 7 = 65542.
@@ -826,13 +826,13 @@ func TestBandReserveValidations(t *testing.T) {
 	})
 
 	t.Run("the span is the slot ceiling times ports per slot", func(t *testing.T) {
-		resp := h.Request(context.Background(), sess, verbBandsReserve, &protocol.ReserveBandArgs{
+		resp := h.Request(context.Background(), sess, verbBandsReserve, &api.ReserveBandArgs{
 			Spec: *sp, Bases: map[string]int{"api": 4200},
 		})
 		if resp.Error != nil {
 			t.Fatalf("registration refused: %+v", resp.Error)
 		}
-		var res protocol.ReserveBandResult
+		var res api.ReserveBandResult
 		if err := json.Unmarshal(resp.Result, &res); err != nil {
 			t.Fatal(err)
 		}
@@ -851,13 +851,13 @@ func TestBandReserveValidations(t *testing.T) {
 		if err := spec.Validate(groupSpec); err != nil {
 			t.Fatalf("group spec does not validate: %v", err)
 		}
-		resp := h.Request(context.Background(), sess, verbBandsReserve, &protocol.ReserveBandArgs{
+		resp := h.Request(context.Background(), sess, verbBandsReserve, &api.ReserveBandArgs{
 			Spec: *groupSpec, Bases: map[string]int{"api": 5000},
 		})
 		if resp.Error != nil {
 			t.Fatalf("group registration refused: %+v", resp.Error)
 		}
-		var res protocol.ReserveBandResult
+		var res api.ReserveBandResult
 		if err := json.Unmarshal(resp.Result, &res); err != nil {
 			t.Fatal(err)
 		}
@@ -872,7 +872,7 @@ func TestBandReserveValidations(t *testing.T) {
 // ledger — there is nothing to collide with.
 func TestAllocationWithoutPortResourcesNeedsNoBand(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	sess, _ := h.Connect(protocol.KindHost, "")
+	sess, _ := h.Connect(api.KindHost, "")
 	app := "vm-app"
 	max := 4
 	s := &spec.Spec{
@@ -887,13 +887,13 @@ func TestAllocationWithoutPortResourcesNeedsNoBand(t *testing.T) {
 	if err := spec.Validate(s); err != nil {
 		t.Fatalf("spec does not validate: %v", err)
 	}
-	resp := h.Request(context.Background(), sess, verbAllocate, &protocol.AllocateArgs{
+	resp := h.Request(context.Background(), sess, verbAllocate, &api.AllocateArgs{
 		Spec: *s, Slug: "alpha", Path: "/tmp/wt/alpha",
 	})
 	if resp.Error != nil {
 		t.Fatalf("allocation for a portless app refused: %+v", resp.Error)
 	}
-	var res protocol.AllocateResult
+	var res api.AllocateResult
 	if err := json.Unmarshal(resp.Result, &res); err != nil {
 		t.Fatal(err)
 	}
@@ -909,19 +909,19 @@ func TestAllocationWithoutPortResourcesNeedsNoBand(t *testing.T) {
 // fewer, enforced at the coordinator.
 func TestDescriptionWordBound(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	sess, _ := h.Connect(protocol.KindHost, "")
+	sess, _ := h.Connect(api.KindHost, "")
 	sp := testSpec(t, "compose-app", 8)
 	registerBand(t, h, sess, sp, 4200)
 
 	ten := "one two three four five six seven eight nine ten"
-	resp := h.Request(context.Background(), sess, verbAllocate, &protocol.AllocateArgs{
+	resp := h.Request(context.Background(), sess, verbAllocate, &api.AllocateArgs{
 		Spec: *sp, Slug: "alpha", Path: "/tmp/wt/alpha", Description: ten,
 	})
 	if resp.Error != nil {
 		t.Fatalf("ten-word description refused: %+v", resp.Error)
 	}
 	eleven := ten + " eleven"
-	resp = h.Request(context.Background(), sess, verbAllocate, &protocol.AllocateArgs{
+	resp = h.Request(context.Background(), sess, verbAllocate, &api.AllocateArgs{
 		Spec: *sp, Slug: "beta", Path: "/tmp/wt/beta", Description: eleven,
 	})
 	if resp.Error == nil || resp.Error.Code != 3 || !strings.Contains(resp.Error.Msg, "ten words or fewer") {
@@ -933,27 +933,27 @@ func TestDescriptionWordBound(t *testing.T) {
 // and serves them back to the owning client alone in the allocate result.
 func TestSecretsAreRecordedForTheOwner(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	sess, _ := h.Connect(protocol.KindHost, "")
+	sess, _ := h.Connect(api.KindHost, "")
 	sp := testSpec(t, "compose-app", 8)
 	registerBand(t, h, sess, sp, 4200)
 
-	resp := h.Request(context.Background(), sess, verbAllocate, &protocol.AllocateArgs{
+	resp := h.Request(context.Background(), sess, verbAllocate, &api.AllocateArgs{
 		Spec: *sp, Slug: "alpha", Path: "/tmp/wt/alpha",
 		Secrets: map[string]string{"admin_password": "hunter2"},
 	})
 	if resp.Error != nil {
 		t.Fatalf("allocation refused: %+v", resp.Error)
 	}
-	var res protocol.AllocateResult
+	var res api.AllocateResult
 	if err := json.Unmarshal(resp.Result, &res); err != nil {
 		t.Fatal(err)
 	}
 	if res.Secrets["admin_password"] != "hunter2" {
 		t.Errorf("secrets were not served back to the owner: %+v", res.Secrets)
 	}
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatal(err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatal(rerr)
 	}
 	if reg.Entries[0].Secrets["admin_password"] != "hunter2" {
 		t.Errorf("secrets were not recorded: %+v", reg.Entries[0].Secrets)
@@ -966,27 +966,27 @@ func TestSecretsAreRecordedForTheOwner(t *testing.T) {
 // (phase 9's security pass — a container's grant is entry-scoped).
 func TestEphemeralEntryRecorded(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	host, _ := h.Connect(protocol.KindHost, "")
+	host, _ := h.Connect(api.KindHost, "")
 	sp := testSpec(t, "compose-app", 8)
 	registerBand(t, h, host, sp, 4200)
 
-	sess, _ := h.Connect(protocol.KindEphemeral, "")
+	sess, _ := h.Connect(api.KindEphemeral, "")
 
-	resp := h.Request(context.Background(), sess, verbAllocate, &protocol.AllocateArgs{
+	resp := h.Request(context.Background(), sess, verbAllocate, &api.AllocateArgs{
 		Spec: *sp, Slug: "alpha", Path: "/tmp/wt/alpha",
 	})
 	if resp.Error != nil {
 		t.Fatalf("allocation refused: %+v", resp.Error)
 	}
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatal(err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatal(rerr)
 	}
 	e := reg.Entries[0]
 	if !e.Ephemeral {
 		t.Error("ephemeral flag not recorded on the entry")
 	}
-	if e.Owner != sess.Identity.Key || e.OwnerKind != protocol.KindEphemeral {
+	if e.Owner != sess.Identity.Key || e.OwnerKind != api.KindEphemeral {
 		t.Errorf("owner = %s/%s, want the ephemeral session id", e.OwnerKind, e.Owner)
 	}
 }
@@ -998,7 +998,7 @@ func ptr[T any](v T) *T { return &v }
 // own resolution (02-coordination.md §5.1).
 func TestAllocationAcrossAppsSharesNothing(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	sess, _ := h.Connect(protocol.KindHost, "")
+	sess, _ := h.Connect(api.KindHost, "")
 	ca := testSpec(t, "compose-app", 8)
 	pa := testSpec(t, "plain-app", 8)
 	registerBand(t, h, sess, ca, 4200)
@@ -1024,7 +1024,7 @@ func TestAllocationAcrossAppsSharesNothing(t *testing.T) {
 // failure naming the problem, never a panic.
 func TestMalformedRequestsAreRefused(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	sess, _ := h.Connect(protocol.KindHost, "")
+	sess, _ := h.Connect(api.KindHost, "")
 	ctx := context.Background()
 	for _, verb := range []string{verbAllocate, verbActivate, verbRelease, verbBandsReserve} {
 		resp := h.Request(ctx, sess, verb, "not an object")
@@ -1042,7 +1042,7 @@ func TestMalformedRequestsAreRefused(t *testing.T) {
 // (ARCHITECTURE.md §8.3).
 func TestAllocationEntryIsDenormalised(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	sess, _ := h.Connect(protocol.KindHost, "")
+	sess, _ := h.Connect(api.KindHost, "")
 	sp := testSpec(t, "compose-app", 8)
 	registerBand(t, h, sess, sp, 4200)
 
@@ -1050,9 +1050,9 @@ func TestAllocationEntryIsDenormalised(t *testing.T) {
 	if perr != nil {
 		t.Fatalf("allocation refused: %+v", perr)
 	}
-	reg, err := h.Store.ReadRegistry()
-	if err != nil {
-		t.Fatal(err)
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatal(rerr)
 	}
 	e := reg.Entries[0]
 	if len(e.Resources) != 1 || e.Resources["api"].Value != res.Slot+4200 {
@@ -1067,12 +1067,12 @@ func TestAllocationEntryIsDenormalised(t *testing.T) {
 // schema_version envelope through the coordinator's writes.
 func TestVersionedStoreFiles(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
-	sess, _ := h.Connect(protocol.KindHost, "")
+	sess, _ := h.Connect(api.KindHost, "")
 	sp := testSpec(t, "compose-app", 8)
 	registerBand(t, h, sess, sp, 4200)
-	bands, err := h.Store.ReadBands()
-	if err != nil {
-		t.Fatal(err)
+	bands, rerr := h.Store.ReadBands()
+	if rerr != nil {
+		t.Fatal(rerr)
 	}
 	if bands.SchemaVersion != store.SchemaVersion {
 		t.Errorf("bands schema_version = %d, want %d", bands.SchemaVersion, store.SchemaVersion)
