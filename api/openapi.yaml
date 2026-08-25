@@ -928,6 +928,8 @@ components:
           $ref: "#/components/schemas/Hooks"
         Reaper:
           $ref: "#/components/schemas/Reaper"
+        Removal:
+          $ref: "#/components/schemas/Removal"
         Emit:
           $ref: "#/components/schemas/Emit"
       required:
@@ -939,6 +941,7 @@ components:
       - Shared
       - Hooks
       - Reaper
+      - Removal
       - Emit
     Slots:
       type: object
@@ -1160,6 +1163,26 @@ components:
             type: string
       required:
       - Binaries
+    Removal:
+      type: object
+      description: Removal is the repository's policy on `wt rm`'s three tree-reading safety checks. Each check is either "refuse" (a hit stops rm with exit 3) or "warn" (a hit is printed on stderr, recorded as a note, and rm continues).
+      properties:
+        Uncommitted:
+          type:
+          - string
+          - "null"
+        Unpushed:
+          type:
+          - string
+          - "null"
+        OpenPR:
+          type:
+          - string
+          - "null"
+      required:
+      - Uncommitted
+      - Unpushed
+      - OpenPR
     Emit:
       type: object
       description: "Emit declares the three delivery channels (05-delivery.md §1): the descriptor, the optional .env block and the optional generated reader."

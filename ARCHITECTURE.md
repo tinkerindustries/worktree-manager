@@ -147,14 +147,20 @@ internal/driver  M3: the six-operation driver contract, the port,
               sequencing (apply in dependency order with machine forced
               first among its dependents, teardown in reverse continuing
               past failures)
-internal/treecheck  the checks that must pass before a worktree is
+internal/treecheck  the checks that run before a worktree is
               destroyed: uncommitted changes, unpushed commits (an
               absent upstream is its own answer), what gh reports about
               the branch's pull request, and the never-forced `git
               worktree remove`. Three callers run them — `wt rm`, `wt
               cleanup` and the coordinator's sweep — each keeping its own
               policy over one mechanism, so they cannot disagree about
-              what git and gh said. Both binaries link it
+              what git and gh said. rm's policy is the repository's, from
+              the spec's `removal:` block: refuse (exit 3, or 4 when the
+              check could not run) or warn (say it and continue),
+              defaulting to refuse on uncommitted changes and warn on the
+              other two. cleanup and the sweep are unaffected — they
+              destroy trees with nobody at the keyboard and keep
+              requiring a merged pull request. Both binaries link it
 ```
 
 Import rules, fixed for the whole plan:

@@ -64,14 +64,22 @@ configuration; neither binary branches on repo identity.
   evaluator, the walk-up `wt.yaml` finder, and the quoted YAML emitter.
   It owns the accessors every other package used to copy:
   `ResourceByName`, `NamespaceKind`, `HookByName`, `HookNames`,
-  `WorktreePath` and the IPv4 block arithmetic.
-- `internal/treecheck` — the checks that must pass before a worktree is
+  `WorktreePath` and the IPv4 block arithmetic, and the `removal:` block —
+  rm's per-check safety policy and its defaults, through `RemovalPolicy`.
+- `internal/treecheck` — the checks that run before a worktree is
   destroyed: uncommitted changes, unpushed commits (an absent upstream is
   its own answer), what gh reports about the branch's pull request, and
   the never-forced `git worktree remove`. `wt rm`, `wt cleanup` and the
-  coordinator's sweep each keep their own policy over this one mechanism
-  — rm refuses an open PR, cleanup and the sweep require a merged one.
-  git and gh reach it through a runner function.
+  coordinator's sweep each keep their own policy over this one mechanism.
+  rm's policy is the repository's, from the spec's `removal:` block: each
+  check either refuses (exit 3, or 4 when it could not run) or warns and
+  lets rm continue, defaulting to refuse on uncommitted changes and warn
+  on the other two, so a personal project with local-only branches and no
+  gh is removable out of the box. `wt rm --strict` and `wt rm --force`
+  override the block for one run, in the two directions, and neither
+  reaches `git worktree remove`, which is still never forced. cleanup and
+  the sweep ignore the block and require a merged PR. git and gh reach it
+  through a runner function.
 - `internal/driver` — the six-operation contract, the port, namespace,
   state-path, cidr and machine drivers, the docker CLI seam, and the
   sequencing: apply in dependency order with machine forced first among

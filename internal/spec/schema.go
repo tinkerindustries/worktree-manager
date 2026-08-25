@@ -116,7 +116,85 @@ type Spec struct {
 	Shared    []Shared   `yaml:"shared"`
 	Hooks     Hooks      `yaml:"hooks"`
 	Reaper    Reaper     `yaml:"reaper"`
+	Removal   Removal    `yaml:"removal"`
 	Emit      Emit       `yaml:"emit"`
+}
+
+// Removal is the repository's policy on `wt rm`'s three tree-reading
+// safety checks. Each check is either "refuse" (a hit stops rm with exit 3)
+// or "warn" (a hit is printed on stderr, recorded as a note, and rm
+// continues).
+//
+// The defaults are deliberately lenient — refuse on uncommitted changes,
+// warn on the other two — because the checks are a repository's policy, not
+// a property of the tool: a personal project with local-only branches and
+// no gh installed is the ordinary case, and a check that cannot run there
+// should not make the worktree unremovable. A repository that wants the
+// rails back names them, which is the no-inference rule applied to
+// destruction: the spec decides, never the binary.
+//
+// Uncommitted defaults to refuse because uncommitted changes are the one
+// hit nothing else can recover. It is still settable, because the caller
+// standing outside a tree whose contents they know is a judgment the spec
+// is allowed to make.
+//
+// The policy governs `wt rm` alone. `wt cleanup` and the coordinator's
+// scheduled sweep destroy trees with nobody at the keyboard, so they keep
+// requiring a merged pull request whatever this says.
+type Removal struct {
+	Uncommitted *string `yaml:"uncommitted,omitempty"` // refuse (default) | warn
+	Unpushed    *string `yaml:"unpushed,omitempty"`    // warn (default) | refuse
+	OpenPR      *string `yaml:"open_pr,omitempty"`     // warn (default) | refuse
+}
+
+// The two removal policy values, and the check names they are set against.
+const (
+	RemovalRefuse = "refuse"
+	RemovalWarn   = "warn"
+)
+
+// RemovalChecks names the three checks in the order rm runs them, which is
+// the order a refusal is reported in.
+var RemovalChecks = []string{"uncommitted", "unpushed", "open_pr"}
+
+// Removal policy defaults, one per check.
+const (
+	// DefaultRemovalUncommitted is refuse: uncommitted changes are the
+	// one hit that nothing else can recover, and `git worktree remove`
+	// would refuse anyway.
+	DefaultRemovalUncommitted = RemovalRefuse
+
+	// DefaultRemovalUnpushed is warn: a local-only branch with no
+	// upstream is the ordinary shape of a personal project, and the
+	// commits are still in the repository's object store until git
+	// prunes them.
+	DefaultRemovalUnpushed = RemovalWarn
+
+	// DefaultRemovalOpenPR is warn: the check needs gh, and a machine
+	// without gh installed or authenticated would otherwise be unable to
+	// remove any worktree at all.
+	DefaultRemovalOpenPR = RemovalWarn
+)
+
+// RemovalPolicy returns the effective policy for one check name, applying
+// the defaults. An unknown name returns refuse, which is the safe
+// direction; validation is what makes an unknown name unreachable.
+func RemovalPolicy(r *Removal, check string) string {
+	pick := func(v *string, def string) string {
+		if v == nil {
+			return def
+		}
+		return *v
+	}
+	switch check {
+	case "uncommitted":
+		return pick(r.Uncommitted, DefaultRemovalUncommitted)
+	case "unpushed":
+		return pick(r.Unpushed, DefaultRemovalUnpushed)
+	case "open_pr":
+		return pick(r.OpenPR, DefaultRemovalOpenPR)
+	}
+	return RemovalRefuse
 }
 
 // Reaper is the coordinator-side reaper's configuration (04-lifecycle.md

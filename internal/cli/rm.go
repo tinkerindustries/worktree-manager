@@ -8,10 +8,22 @@ package cli
 //
 // The three safety checks read the working tree and run before anything is
 // destroyed: uncommitted changes; unpushed commits via `git log @{u}..HEAD`
-// — an absent upstream is itself a stop, not a pass; and an open PR, which
-// needs gh. When gh is missing or unauthenticated the check reports
-// unavailable and rm stops with exit 4: a safety check that cannot run
-// fails closed.
+// — an absent upstream is itself a hit, not a pass; and an open PR, which
+// needs gh.
+//
+// What a hit means is the repository's policy, not the tool's: the spec's
+// `removal:` block sets each check to refuse (stop with exit 3, or exit 4
+// when the check could not run) or warn (print it, record it as a note,
+// continue). The defaults are refuse on uncommitted changes and warn on the
+// other two, so a personal project with local-only branches and no gh
+// installed can still remove a worktree, while the one hit nothing can
+// recover still stops. `--strict` makes every check refuse for one run and
+// `--force` makes every check warn for one run; they are the per-invocation
+// override of a committed spec, and they cannot be given together.
+//
+// Neither flag reaches `git worktree remove`, which is never passed
+// --force: the checks are advice about the tree, and git refusing is a fact
+// about it.
 //
 // rm accepts a slug rather than only inferring its target from cwd, because
 // the routine case is that the directory is already gone. It never picks a
@@ -54,10 +66,16 @@ type rmResult struct {
 	// Notes are the bounded-coverage statements: skipped checks, skipped
 	// git removal, and what survived.
 	Notes []string `json:"notes,omitempty"`
+	// Warnings are the safety checks that hit and were warned past
+	// because the removal policy said warn. They are printed as they
+	// happen, before anything is destroyed, and carried here so --json
+	// sees them too.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // runRm implements `wt rm [--json] [--dry-run] [--cwd <dir>] [--slug <s>]
-// [--keep-processes] [--purge <flag>]... [--keep-vm]`. The keep flags are
+// [--keep-processes] [--strict|--force] [--purge <flag>]... [--keep-vm]`.
+// The keep flags are
 // the machine resources' keep_flag names from the spec (B4.3), so they are
 // registered after the spec loads; a spec that declares keep_flag:
 // "--keep-vm" makes `wt rm --keep-vm` legal, and a spec without one
@@ -70,6 +88,8 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 	cwd := fs.String("cwd", "", "classify this directory (default: the process cwd)")
 	slug := fs.String("slug", "", "the worktree's slug (default: the cwd's basename when cwd is a worktree)")
 	keepProcesses := fs.Bool("keep-processes", false, "do not signal processes bound to the worktree's ports")
+	strict := fs.Bool("strict", false, "run every safety check as a refusal for this run, whatever the spec says")
+	force := fs.Bool("force", false, "downgrade every safety check to a warning for this run; git worktree remove is still never forced")
 	var purgeFlags []string
 	fs.Var(stringList(&purgeFlags), "purge", "purge this state-path resource on teardown (repeatable)")
 
@@ -132,6 +152,14 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 			"unexpected arguments: %v", fs.Args()))
 		return ExitUsage
 	}
+	if *strict && *force {
+		WriteError(stderr, UsageError(
+			"give one of --strict or --force, not both",
+			"--strict makes every safety check refuse and --force makes every one warn: the two ask for opposite things"))
+		return ExitUsage
+	}
+	pol := removalPolicy{spec: &sp.Removal, strict: *strict, force: *force}
+
 	keepPassed := []string{}
 	for _, kf := range keepFlags {
 		if flagValue(fs, strings.TrimPrefix(kf, "--")) {
@@ -168,7 +196,7 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 		return perr.Code
 	}
 	if !prep.EntryFound {
-		return rmNoEntry(stdout, stderr, *jsonOut, sp, targetSlug, absDir)
+		return rmNoEntry(stdout, stderr, *jsonOut, sp, targetSlug, absDir, pol)
 	}
 
 	// Never delete the worktree the caller is standing in (B11.11): the
@@ -187,6 +215,7 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 	// already gone has nothing to protect, and the checks are skipped with
 	// the bound stated. Otherwise any hit stops with exit 3.
 	var notes []string
+	var warnings []string
 	targetRoot := prep.Path
 	targetExists := false
 	if targetRoot != "" {
@@ -197,9 +226,11 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 	if !targetExists {
 		notes = append(notes, fmt.Sprintf("the worktree directory %s is already gone; the tree-reading safety checks were skipped, and the teardown is registry-and-label-only", targetRoot))
 	} else {
-		if code := rmSafetyChecks(targetRoot, stderr); code != ExitOK {
+		code, warned := rmSafetyChecks(targetRoot, stderr, pol)
+		if code != ExitOK {
 			return code
 		}
+		warnings = warned
 	}
 
 	// Phase two: the real thing — reap and teardown in the coordinator.
@@ -212,10 +243,6 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 		WriteError(stderr, rerr)
 		return rerr.Code
 	}
-	for _, n := range notes {
-		fmt.Fprintf(stderr, "note: %s\n", n)
-	}
-
 	// Teardown done: the git half — `git worktree remove`, never --force.
 	// A standalone clone is not a git worktree and has no registration to
 	// remove; its directory is left in place and the note says so.
@@ -228,6 +255,11 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 		} else {
 			// git refusing is signal that a check missed something
 			// (B11.11): the error is reported as itself, never forced.
+			// The notes still have to be said: this is the one exit
+			// between the teardown and the report.
+			for _, n := range notes {
+				fmt.Fprintf(stderr, "note: %s\n", n)
+			}
 			return code
 		}
 	}
@@ -237,6 +269,7 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 		WorktreeRemoved: worktreeRemoved,
 		Reap:            res.Reap,
 		Notes:           notes,
+		Warnings:        warnings,
 	})
 	return ExitOK
 }
@@ -256,7 +289,7 @@ func rmRequest(sess *coordClient, sp *spec.Spec, slug string, keepProcesses, dry
 // rmNoEntry handles the two no-entry paths of 04-lifecycle.md §7.3:
 // directory present (a `git worktree remove` and nothing to deallocate) or
 // neither (a message and a stop).
-func rmNoEntry(stdout, stderr io.Writer, jsonOut bool, sp *spec.Spec, slug, callerDir string) int {
+func rmNoEntry(stdout, stderr io.Writer, jsonOut bool, sp *spec.Spec, slug, callerDir string, pol removalPolicy) int {
 	// Locate the tree by slug from the caller's repository: the slug is
 	// the directory basename, and `git worktree list` names every tree.
 	root := ""
@@ -285,7 +318,8 @@ func rmNoEntry(stdout, stderr io.Writer, jsonOut bool, sp *spec.Spec, slug, call
 	// Directory present, no entry: the safety checks still run — a tree is
 	// about to be removed — then `git worktree remove`, nothing to
 	// deallocate.
-	if code := rmSafetyChecks(root, stderr); code != ExitOK {
+	code, warned := rmSafetyChecks(root, stderr, pol)
+	if code != ExitOK {
 		return code
 	}
 	if code := gitWorktreeRemove(root, stderr); code != ExitOK {
@@ -294,7 +328,9 @@ func rmNoEntry(stdout, stderr io.Writer, jsonOut bool, sp *spec.Spec, slug, call
 	writeRmReport(stdout, stderr, jsonOut, rmResult{
 		App: sp.App, Slug: slug, Removed: false,
 		WorktreeRemoved: true,
-		Notes:           []string{fmt.Sprintf("no registry entry for %s/%s: the git worktree was removed and nothing was deallocated", sp.App, slug)},
+		Warnings:        warned,
+		Notes: []string{
+			fmt.Sprintf("no registry entry for %s/%s: the git worktree was removed and nothing was deallocated", sp.App, slug)},
 	})
 	return ExitOK
 }
@@ -303,72 +339,115 @@ func rmNoEntry(stdout, stderr io.Writer, jsonOut bool, sp *spec.Spec, slug, call
 // names.
 const rmMaxLines = 5
 
-// rmSafetyChecks runs the three tree-reading checks, in order, and returns
-// the exit code: 0 when all pass, 3 on any hit, 4 when the PR check cannot
-// run (gh missing or unauthenticated — a safety check that cannot run
-// fails closed). The checks themselves live in internal/treecheck; what is
-// here is rm's policy on each answer.
-func rmSafetyChecks(root string, stderr io.Writer) int {
-	// 1. Uncommitted changes.
-	res, err := treecheck.Uncommitted(root, treecheck.Git)
-	if err != nil {
-		e := New(ExitUnavailable,
-			fmt.Sprintf("the uncommitted-changes check could not run in %s: %v", root, err),
-			"fix git, then re-run rm")
-		WriteError(stderr, e)
-		return e.Code
+// removalPolicy answers, for one check, whether a hit refuses or warns. The
+// spec is the repository's committed policy; --strict and --force are the
+// caller's per-invocation override of it, in the two directions.
+type removalPolicy struct {
+	spec   *spec.Removal
+	strict bool
+	force  bool
+}
+
+// refuses reports whether a hit on the named check stops rm.
+func (p removalPolicy) refuses(check string) bool {
+	switch {
+	case p.strict:
+		return true
+	case p.force:
+		return false
 	}
-	if !res.OK() {
-		e := New(ExitRefused,
-			fmt.Sprintf("refusing to remove %s: it has uncommitted changes (%d changed path(s), first: %s)",
-				root, len(res.Lines), res.First(rmMaxLines)),
-			"commit or stash the changes, then re-run rm")
-		WriteError(stderr, e)
-		return e.Code
+	return spec.RemovalPolicy(p.spec, check) == spec.RemovalRefuse
+}
+
+// rmSafetyChecks runs the three tree-reading checks, in order, and returns
+// the exit code and the warnings the warned-past checks left: 0 when
+// nothing refused, 3 on a hit against a refusing check, 4 when a refusing
+// check could not run (git broken, or gh missing or unauthenticated — a
+// safety check that cannot run fails closed). The checks themselves live in
+// internal/treecheck; what is here is rm's policy on each answer, and the
+// policy is the repository's (see removalPolicy).
+//
+// A warned check prints "warning: ..." on stderr as it happens, so it is
+// visible before anything is destroyed, and returns the same sentence so
+// --json carries it too. Bounded coverage is stated either way: a check
+// that warned is a check whose answer was ignored.
+func rmSafetyChecks(root string, stderr io.Writer, pol removalPolicy) (int, []string) {
+	var warnings []string
+	// hit records one check's finding. fact is what the check found, in
+	// neutral words, so the refusal and the warning can each frame it.
+	// It returns false when rm must stop.
+	hit := func(check string, code int, fact, remedy string) bool {
+		if pol.refuses(check) {
+			WriteError(stderr, New(code, fmt.Sprintf("refusing to remove %s: %s", root, fact), remedy))
+			return false
+		}
+		w := fmt.Sprintf("%s: %s — removing it anyway, because removal.%s is %q", root, fact, check, spec.RemovalWarn)
+		fmt.Fprintf(stderr, "warning: %s\n", w)
+		warnings = append(warnings, w)
+		return true
+	}
+
+	// 1. Uncommitted changes. Refusing is the default: uncommitted changes
+	// are the one hit nothing else can recover, and `git worktree remove`
+	// will refuse anyway, since it is never forced.
+	res, err := treecheck.Uncommitted(root, treecheck.Git)
+	switch {
+	case err != nil:
+		if !hit("uncommitted", ExitUnavailable,
+			fmt.Sprintf("the uncommitted-changes check could not run (%v)", err),
+			"fix git, then re-run rm") {
+			return ExitUnavailable, nil
+		}
+	case !res.OK():
+		if !hit("uncommitted", ExitRefused,
+			fmt.Sprintf("it has uncommitted changes (%d changed path(s), first: %s)", len(res.Lines), res.First(rmMaxLines)),
+			"commit or stash the changes, then re-run rm (or 'wt rm --force' to warn past every check for one run)") {
+			return ExitRefused, nil
+		}
 	}
 
 	// 2. Unpushed commits: `git log @{u}..HEAD`. An absent upstream is
-	// itself a stop, not a pass (B11.10).
+	// itself a hit, not a pass (B11.10) — a local-only branch is the
+	// ordinary shape of a personal project, which is why the default
+	// policy warns rather than refuses.
 	res, err = treecheck.Unpushed(root, treecheck.Git)
-	if errors.Is(err, treecheck.ErrNoUpstream) {
-		e := New(ExitRefused,
-			fmt.Sprintf("refusing to remove %s: the branch has no upstream, and an absent upstream is itself a stop, not a pass", root),
-			"push the branch (git push -u origin <branch>) or set an upstream, then re-run rm")
-		WriteError(stderr, e)
-		return e.Code
-	}
-	if err != nil {
-		e := New(ExitUnavailable,
-			fmt.Sprintf("the unpushed-commits check could not run in %s: %v", root, err),
-			"fix git, then re-run rm")
-		WriteError(stderr, e)
-		return e.Code
-	}
-	if !res.OK() {
-		e := New(ExitRefused,
-			fmt.Sprintf("refusing to remove %s: it has %d unpushed commit(s), first: %s",
-				root, len(res.Lines), res.First(rmMaxLines)),
-			"push the commits, then re-run rm")
-		WriteError(stderr, e)
-		return e.Code
+	switch {
+	case errors.Is(err, treecheck.ErrNoUpstream):
+		if !hit("unpushed", ExitRefused,
+			"the branch has no upstream, and an absent upstream is itself a stop, not a pass",
+			"push the branch (git push -u origin <branch>) or set an upstream, then re-run rm") {
+			return ExitRefused, nil
+		}
+	case err != nil:
+		if !hit("unpushed", ExitUnavailable,
+			fmt.Sprintf("the unpushed-commits check could not run (%v)", err),
+			"fix git, then re-run rm") {
+			return ExitUnavailable, nil
+		}
+	case !res.OK():
+		if !hit("unpushed", ExitRefused,
+			fmt.Sprintf("it has %d unpushed commit(s), first: %s", len(res.Lines), res.First(rmMaxLines)),
+			"push the commits, then re-run rm") {
+			return ExitRefused, nil
+		}
 	}
 
-	// 3. An open PR. gh missing or unauthenticated is exit 4: the check
-	// cannot run, and rm fails closed.
-	code, detail := checkOpenPR(root)
-	if code != ExitOK {
-		e := New(code, detail, ghRemedy(code, detail))
-		WriteError(stderr, e)
-		return e.Code
+	// 3. An open PR. gh missing or unauthenticated is a check that cannot
+	// run, and under a refusing policy rm fails closed with exit 4.
+	if code, fact := checkOpenPR(root); code != ExitOK {
+		if !hit("open_pr", code, fact, ghRemedy(code, fact)) {
+			return code, nil
+		}
 	}
-	return ExitOK
+	return ExitOK, warnings
 }
 
 // checkOpenPR asks gh whether the branch has an open PR. It returns
 // (ExitOK, "") when there is none and when the PR has already merged or
 // closed — that is the end of a branch's life, and rm is how the worktree
-// goes with it. Otherwise the exit code and the message: 3 when a PR is
-// open, 4 when the check could not run.
+// goes with it. Otherwise the exit code and what it found, in neutral
+// words the caller frames: 3 when a PR is open, 4 when the check could not
+// run.
 func checkOpenPR(root string) (int, string) {
 	pr, err := treecheck.PRState(root, treecheck.Gh)
 	if err != nil {
@@ -380,12 +459,12 @@ func checkOpenPR(root string) (int, string) {
 			case ue.NotAuthenticated:
 				return ExitUnavailable, fmt.Sprintf("the open-PR check could not run: gh is not authenticated (%s)", ue.Detail)
 			}
-			return ExitUnavailable, fmt.Sprintf("the open-PR check could not run in %s: gh failed (%s)", root, ue.Detail)
+			return ExitUnavailable, fmt.Sprintf("the open-PR check could not run: gh failed (%s)", ue.Detail)
 		}
-		return ExitUnavailable, fmt.Sprintf("the open-PR check could not run in %s: %v", root, err)
+		return ExitUnavailable, fmt.Sprintf("the open-PR check could not run: %v", err)
 	}
 	if pr.Open() {
-		return ExitRefused, fmt.Sprintf("refusing to remove %s: branch has an open PR #%d (%s); the PR points at the branch, and the remote branch is never deleted", root, pr.Number, pr.State)
+		return ExitRefused, fmt.Sprintf("the branch has an open PR #%d (%s); the PR points at the branch, and the remote branch is never deleted", pr.Number, pr.State)
 	}
 	return ExitOK, ""
 }
@@ -397,10 +476,10 @@ func ghRemedy(code int, detail string) string {
 		return "close or merge the PR, then re-run rm"
 	case ExitUnavailable:
 		if strings.Contains(detail, "not installed") {
-			return "install the GitHub CLI (brew install gh / apt install gh), then re-run rm"
+			return "install the GitHub CLI (brew install gh / apt install gh), then re-run rm — or set removal.open_pr: warn in wt.yaml if this repository has no pull requests"
 		}
 		if strings.Contains(detail, "not authenticated") {
-			return "run 'gh auth login', then re-run rm"
+			return "run 'gh auth login', then re-run rm — or set removal.open_pr: warn in wt.yaml"
 		}
 		return "fix gh (the error above names the problem), then re-run rm"
 	}

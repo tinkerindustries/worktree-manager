@@ -94,6 +94,9 @@ func validateStatic(s *Spec) error {
 	if err := validateReaper(&s.Reaper); err != nil {
 		return err
 	}
+	if err := validateRemoval(&s.Removal); err != nil {
+		return err
+	}
 	return validateEmit(&s.Emit, resourceSet)
 }
 
@@ -538,6 +541,34 @@ func validateReaper(r *Reaper) error {
 		}
 		if strings.ContainsAny(b, " \t/\\") {
 			return &FieldError{Field: field, Reason: fmt.Sprintf("%q is not a binary name: names are matched against the holder's command base name, so no path or whitespace is allowed", b)}
+		}
+	}
+	return nil
+}
+
+// validateRemoval refuses any value that is not one of the two policies.
+// A misspelt policy is refused rather than defaulted, because the default
+// is the lenient direction and a typo would silently disarm a check the
+// repository meant to arm.
+func validateRemoval(r *Removal) error {
+	for _, check := range RemovalChecks {
+		var v *string
+		switch check {
+		case "uncommitted":
+			v = r.Uncommitted
+		case "unpushed":
+			v = r.Unpushed
+		case "open_pr":
+			v = r.OpenPR
+		}
+		if v == nil {
+			continue
+		}
+		if *v != RemovalRefuse && *v != RemovalWarn {
+			return &FieldError{
+				Field:  "removal." + check,
+				Reason: fmt.Sprintf("%q is not a removal policy; the values are %q (a hit stops rm) and %q (a hit is printed and rm continues)", *v, RemovalRefuse, RemovalWarn),
+			}
 		}
 	}
 	return nil

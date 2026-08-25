@@ -122,6 +122,26 @@ phase-2 answers. Then:
   inventory. This is the conversation made concrete: two tables side by
   side is what surfaces a missed collision before anything is built.
 
+One judgment call belongs here and nowhere else: the `removal:` block,
+which decides what each of `wt rm`'s three safety checks does on a hit —
+`refuse` or `warn`. The defaults suit a personal repository (refuse on
+uncommitted changes, warn on unpushed commits and an open pull request),
+because a branch that was never pushed and a machine without `gh` are
+ordinary there and should not make a worktree unremovable. Ask instead
+whether this repository's branches always carry a pull request and always
+have an upstream. When the answer is yes, write it down:
+
+```yaml
+removal:
+  unpushed: refuse
+  open_pr: refuse
+```
+
+That is a policy call about the repository, which is why it is spec
+configuration and not something either binary infers. `wt cleanup` and
+the coordinator's sweep are not affected by the block: they require a
+merged pull request whatever it says.
+
 ## Phase 5 — Generate
 
 The artefacts (07-agent-surface.md), generated per repo — they name this

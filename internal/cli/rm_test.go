@@ -24,7 +24,16 @@ import (
 // bare remote.
 func rmFixture(t *testing.T) (main, worktree, remote string) {
 	t.Helper()
+	return rmFixtureRemoval(t, spec.Removal{})
+}
+
+// rmFixtureRemoval is rmFixture with a removal policy committed in the
+// wt.yaml, which is how a repository states that a check it cares about
+// must refuse rather than warn.
+func rmFixtureRemoval(t *testing.T, rem spec.Removal) (main, worktree, remote string) {
+	t.Helper()
 	sp := lifecycleSpec(t)
+	sp.Removal = rem
 	base := t.TempDir()
 	main = filepath.Join(base, "main")
 	remote = filepath.Join(base, "remote.git")
@@ -104,10 +113,98 @@ func TestRmStopsOnUncommittedChanges(t *testing.T) {
 	}
 }
 
-// TestRmStopsOnUnpushedCommits: commits ahead of the upstream stop rm with
-// exit 3, naming them.
-func TestRmStopsOnUnpushedCommits(t *testing.T) {
+// TestRmUncommittedWarnStillMeetsGitsRefusal: a repository may set
+// removal.uncommitted: warn, and rm then says its piece and continues — but
+// `git worktree remove` is never forced, so git is the one that stops it.
+// The two rails are separate on purpose: the checks are advice about the
+// tree, git's refusal is a fact about it.
+func TestRmUncommittedWarnStillMeetsGitsRefusal(t *testing.T) {
+	warn := spec.RemovalWarn
+	main, worktree, _ := rmFixtureRemoval(t, spec.Removal{Uncommitted: &warn})
+	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
+	fakeGh(t, `echo '{"number":0}'`)
+	writeT(t, filepath.Join(worktree, "dirty.txt"), "uncommitted\n")
+
+	code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1")
+	if code != ExitFailure {
+		t.Fatalf("exit = %d, want %d; stderr: %s", code, ExitFailure, stderr)
+	}
+	if !strings.Contains(stderr, "warning:") || !strings.Contains(stderr, "uncommitted changes") {
+		t.Errorf("stderr = %q, want the dirty tree warned about", stderr)
+	}
+	if !strings.Contains(stderr, "nothing was forced") {
+		t.Errorf("stderr = %q, want git's refusal reported as itself", stderr)
+	}
+}
+
+// TestRmJSONCarriesTheWarnings: a warned-past check is bounded coverage, so
+// --json states it too rather than reporting a clean removal.
+func TestRmJSONCarriesTheWarnings(t *testing.T) {
 	main, worktree, _ := rmFixture(t)
+	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
+	fakeGh(t, `echo '{"number":42,"state":"OPEN"}'`)
+
+	code, stdout, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1", "--json")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want %d; stderr: %s", code, ExitOK, stderr)
+	}
+	var got rmResult
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("decoding %q: %v", stdout, err)
+	}
+	if len(got.Warnings) != 1 || !strings.Contains(got.Warnings[0], "PR #42") {
+		t.Errorf("warnings = %v, want the open PR named", got.Warnings)
+	}
+}
+
+// TestRmWarnsPastUnpushedCommits: the default policy for the unpushed
+// check is warn, so commits ahead of the upstream are printed and rm
+// continues — a local-only branch is the ordinary shape of a personal
+// project.
+func TestRmWarnsPastUnpushedCommits(t *testing.T) {
+	main, worktree, _ := rmFixture(t)
+	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
+	fakeGh(t, `echo '{"number":0}'`)
+	writeT(t, filepath.Join(worktree, "extra.txt"), "extra\n")
+	gitT(t, worktree, "add", ".")
+	gitT(t, worktree, "commit", "-m", "unpushed work")
+
+	code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want %d; stderr: %s", code, ExitOK, stderr)
+	}
+	if !strings.Contains(stderr, "warning:") || !strings.Contains(stderr, "unpushed") {
+		t.Errorf("stderr = %q, want the unpushed commits warned about", stderr)
+	}
+	if _, err := os.Stat(worktree); err == nil {
+		t.Errorf("the worktree %s survived rm", worktree)
+	}
+}
+
+// TestRmStrictStopsOnUnpushedCommits: --strict makes every check refuse for
+// one run, whatever the spec says.
+func TestRmStrictStopsOnUnpushedCommits(t *testing.T) {
+	main, worktree, _ := rmFixture(t)
+	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
+	fakeGh(t, `echo '{"number":0}'`)
+	writeT(t, filepath.Join(worktree, "extra.txt"), "extra\n")
+	gitT(t, worktree, "add", ".")
+	gitT(t, worktree, "commit", "-m", "unpushed work")
+
+	code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1", "--strict")
+	if code != ExitRefused {
+		t.Fatalf("exit = %d, want %d; stderr: %s", code, ExitRefused, stderr)
+	}
+	if !strings.Contains(stderr, "unpushed") {
+		t.Errorf("stderr = %q, want the unpushed-commits refusal", stderr)
+	}
+}
+
+// TestRmSpecStopsOnUnpushedCommits: the committed spec is the repository's
+// policy, and removal.unpushed: refuse restores the rail with no flag.
+func TestRmSpecStopsOnUnpushedCommits(t *testing.T) {
+	refuse := spec.RemovalRefuse
+	main, worktree, _ := rmFixtureRemoval(t, spec.Removal{Unpushed: &refuse})
 	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
 	fakeGh(t, `echo '{"number":0}'`)
 	writeT(t, filepath.Join(worktree, "extra.txt"), "extra\n")
@@ -123,9 +220,46 @@ func TestRmStopsOnUnpushedCommits(t *testing.T) {
 	}
 }
 
-// TestRmStopsOnAbsentUpstream: a branch with no upstream is itself a stop,
-// not a pass (B11.10).
-func TestRmStopsOnAbsentUpstream(t *testing.T) {
+// TestRmForceOverridesAStrictSpec: --force warns past every check for one
+// run, including one the spec set to refuse.
+func TestRmForceOverridesAStrictSpec(t *testing.T) {
+	refuse := spec.RemovalRefuse
+	main, worktree, _ := rmFixtureRemoval(t, spec.Removal{Unpushed: &refuse})
+	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
+	fakeGh(t, `echo '{"number":0}'`)
+	writeT(t, filepath.Join(worktree, "extra.txt"), "extra\n")
+	gitT(t, worktree, "add", ".")
+	gitT(t, worktree, "commit", "-m", "unpushed work")
+
+	code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1", "--force")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want %d; stderr: %s", code, ExitOK, stderr)
+	}
+	if !strings.Contains(stderr, "warning:") {
+		t.Errorf("stderr = %q, want the warned-past check stated", stderr)
+	}
+}
+
+// TestRmStrictAndForceTogetherIsUsage: the two ask for opposite things, so
+// giving both is a usage error rather than a silent precedence rule.
+func TestRmStrictAndForceTogetherIsUsage(t *testing.T) {
+	main, worktree, _ := rmFixture(t)
+	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
+	fakeGh(t, `echo '{"number":0}'`)
+
+	code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1", "--strict", "--force")
+	if code != ExitUsage {
+		t.Fatalf("exit = %d, want %d; stderr: %s", code, ExitUsage, stderr)
+	}
+	if !strings.Contains(stderr, "--strict") || !strings.Contains(stderr, "--force") {
+		t.Errorf("stderr = %q, want both flags named", stderr)
+	}
+}
+
+// TestRmWarnsPastAnAbsentUpstream: an absent upstream is still a hit, but
+// under the default policy it is a warning rather than a stop — a branch
+// that was never pushed is what a personal project looks like.
+func TestRmWarnsPastAnAbsentUpstream(t *testing.T) {
 	main, worktree, _ := rmFixture(t)
 	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
 	fakeGh(t, `echo '{"number":0}'`)
@@ -133,6 +267,23 @@ func TestRmStopsOnAbsentUpstream(t *testing.T) {
 	gitT(t, worktree, "branch", "--unset-upstream")
 
 	code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want %d; stderr: %s", code, ExitOK, stderr)
+	}
+	if !strings.Contains(stderr, "warning:") || !strings.Contains(stderr, "no upstream") {
+		t.Errorf("stderr = %q, want the absent upstream warned about", stderr)
+	}
+}
+
+// TestRmStrictStopsOnAbsentUpstream: under a refusing policy an absent
+// upstream is itself a stop, not a pass (B11.10).
+func TestRmStrictStopsOnAbsentUpstream(t *testing.T) {
+	main, worktree, _ := rmFixture(t)
+	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
+	fakeGh(t, `echo '{"number":0}'`)
+	gitT(t, worktree, "branch", "--unset-upstream")
+
+	code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1", "--strict")
 	if code != ExitRefused {
 		t.Fatalf("exit = %d, want %d; stderr: %s", code, ExitRefused, stderr)
 	}
@@ -141,10 +292,29 @@ func TestRmStopsOnAbsentUpstream(t *testing.T) {
 	}
 }
 
-// TestRmStopsOnOpenPR: an open PR stops rm with exit 3 — the PR points at
-// the branch, and the remote branch is never deleted.
-func TestRmStopsOnOpenPR(t *testing.T) {
+// TestRmWarnsPastAnOpenPR: the default policy for the PR check is warn, so
+// an open PR is printed and rm continues. The remote branch is still never
+// deleted, so the PR keeps pointing at something.
+func TestRmWarnsPastAnOpenPR(t *testing.T) {
 	main, worktree, _ := rmFixture(t)
+	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
+	fakeGh(t, `echo '{"number":42,"state":"OPEN"}'`)
+
+	code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want %d; stderr: %s", code, ExitOK, stderr)
+	}
+	if !strings.Contains(stderr, "warning:") || !strings.Contains(stderr, "PR #42") {
+		t.Errorf("stderr = %q, want the open PR warned about by number", stderr)
+	}
+}
+
+// TestRmSpecStopsOnOpenPR: a repository whose branches always carry a PR
+// says so, and then an open PR stops rm with exit 3 — the PR points at the
+// branch, and the remote branch is never deleted.
+func TestRmSpecStopsOnOpenPR(t *testing.T) {
+	refuse := spec.RemovalRefuse
+	main, worktree, _ := rmFixtureRemoval(t, spec.Removal{OpenPR: &refuse})
 	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
 	fakeGh(t, `echo '{"number":42,"state":"OPEN"}'`)
 
@@ -179,14 +349,14 @@ func TestRmProceedsPastAFinishedPR(t *testing.T) {
 	}
 }
 
-// TestRmStopsOnADraftPR: a draft PR still points at the branch, so it is an
-// open PR for rm's purposes.
-func TestRmStopsOnADraftPR(t *testing.T) {
+// TestRmStrictStopsOnADraftPR: a draft PR still points at the branch, so it
+// is an open PR for rm's purposes.
+func TestRmStrictStopsOnADraftPR(t *testing.T) {
 	main, worktree, _ := rmFixture(t)
 	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
 	fakeGh(t, `echo '{"number":43,"state":"DRAFT"}'`)
 
-	code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1")
+	code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1", "--strict")
 	if code != ExitRefused {
 		t.Fatalf("exit = %d, want %d; stderr: %s", code, ExitRefused, stderr)
 	}
@@ -195,11 +365,29 @@ func TestRmStopsOnADraftPR(t *testing.T) {
 	}
 }
 
-// TestRmGhMissingExitsFour is exit criterion 6: a safety check that cannot
-// run fails closed — with gh absent from PATH, rm stops with exit 4 naming
-// the check.
-func TestRmGhMissingExitsFour(t *testing.T) {
+// TestRmGhMissingWarnsByDefault: gh absent from PATH is a check that
+// cannot run. Under the default policy that is a warning, not a stop —
+// otherwise a machine without gh could remove no worktree at all.
+func TestRmGhMissingWarnsByDefault(t *testing.T) {
 	main, worktree, _ := rmFixture(t)
+	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
+	setPathWithoutGh(t)
+
+	code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want %d; stderr: %s", code, ExitOK, stderr)
+	}
+	if !strings.Contains(stderr, "warning:") || !strings.Contains(stderr, "open-PR check") {
+		t.Errorf("stderr = %q, want the check that could not run named", stderr)
+	}
+}
+
+// TestRmGhMissingExitsFourWhenStrict is exit criterion 6 under a refusing
+// policy: a safety check that cannot run fails closed — with gh absent from
+// PATH, rm stops with exit 4 naming the check.
+func TestRmGhMissingExitsFourWhenStrict(t *testing.T) {
+	refuse := spec.RemovalRefuse
+	main, worktree, _ := rmFixtureRemoval(t, spec.Removal{OpenPR: &refuse})
 	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
 	setPathWithoutGh(t)
 
@@ -212,14 +400,14 @@ func TestRmGhMissingExitsFour(t *testing.T) {
 	}
 }
 
-// TestRmGhUnauthenticatedExitsFour: an unauthenticated gh is the same
-// fail-closed exit 4, naming the remedy.
-func TestRmGhUnauthenticatedExitsFour(t *testing.T) {
+// TestRmGhUnauthenticatedExitsFourWhenStrict: an unauthenticated gh is the
+// same fail-closed exit 4, naming the remedy.
+func TestRmGhUnauthenticatedExitsFourWhenStrict(t *testing.T) {
 	main, worktree, _ := rmFixture(t)
 	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
 	fakeGh(t, `echo "gh: To get started with GitHub CLI, please run: gh auth login" >&2; exit 4`)
 
-	code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1")
+	code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1", "--strict")
 	if code != ExitUnavailable {
 		t.Fatalf("exit = %d, want %d; stderr: %s", code, ExitUnavailable, stderr)
 	}

@@ -10,14 +10,20 @@ live in the binary; this skill's job is to not fight them.
 
 ## The rule that matters
 
-`wt rm` exits 3 when a safety check refuses — uncommitted changes,
-unpushed commits, an open pull request. On exit 3, stop and ask the user.
-Never reach for `--force`: an agent that responds to a refusal by adding
-`--force` has defeated the check rather than satisfied it.
+`wt rm` runs three safety checks — uncommitted changes, unpushed commits,
+an open pull request — and this repository's `wt.yaml` decides what a hit
+means. A hit on a check set to refuse is exit 3 — or exit 4 when the
+check could not run at all (for example `gh` is missing). On either exit,
+stop and ask the user.
 
-`wt rm` exits 4 when a check could not run at all (for example `gh` is
-missing). Report what could not be checked; do not proceed on a missing
-safety check.
+Never reach for `wt rm --force` or `git worktree remove --force`: an agent
+that responds to a refusal by forcing past it has defeated the check rather
+than satisfied it. The flag exists for a person who has looked at the tree
+and decided; that is not a decision to make on their behalf.
+
+A check set to warn prints `warning:` and lets the removal proceed. That is
+the repository's choice, not a failure — but the warning is still a fact
+about what was destroyed, so repeat it when reporting what happened.
 
 ## Rails
 

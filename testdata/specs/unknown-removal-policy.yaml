@@ -1,0 +1,14 @@
+# Invalid: "ignore" is not one of the two removal policies. A misspelt
+# policy is refused rather than defaulted, because the default is the
+# lenient direction and a typo would silently disarm a check the repository
+# meant to arm. Rejected at validation naming removal.open_pr.
+version: 1
+app: removal-app
+slots:
+  max: 4
+removal:
+  open_pr: ignore
+emit:
+  descriptor:
+    filename: wt-env.yaml
+    format: yaml

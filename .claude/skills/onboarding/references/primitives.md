@@ -73,12 +73,21 @@ repairs. The slug defaults to the directory basename.
 Run the bring-up hooks (start, seed, health). No allocation, no
 emission, no coordinator — local.
 
-### `wt rm --slug <s> [--cwd <dir>]`
+### `wt rm --slug <s> [--cwd <dir>] [--strict|--force]`
 
 Safety checks (uncommitted changes, unpushed commits, open PR via `gh`),
 then reap, tear down and deallocate in the coordinator, then `git
-worktree remove`. Exit 3 = a check refused; the remove skill stops and
-asks. Exit 4 = a check could not run (`gh` missing); fail closed.
+worktree remove`. Exit 3 = a refusing check hit; the remove skill stops
+and asks. Exit 4 = a refusing check could not run (`gh` missing); fail
+closed.
+
+What each check does on a hit is the repository's policy, from the spec's
+`removal:` block — `refuse` or `warn`, defaulting to refuse on
+uncommitted changes and warn on the other two, so a repository with
+local-only branches and no `gh` is removable out of the box. `--strict`
+and `--force` override the spec for one run, in the two directions.
+`wt cleanup` and the coordinator's sweep ignore the block entirely: they
+still require a merged pull request.
 
 ### `wt show [--json] [--cwd <dir>]`
 
