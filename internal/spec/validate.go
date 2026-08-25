@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -95,6 +96,9 @@ func validateStatic(s *Spec) error {
 		return err
 	}
 	if err := validateRemoval(&s.Removal); err != nil {
+		return err
+	}
+	if err := validateWorktrees(&s.Worktrees); err != nil {
 		return err
 	}
 	return validateEmit(&s.Emit, resourceSet)
@@ -634,4 +638,51 @@ func effectiveSlotMax(s *Spec) int {
 		return DefaultSlotMax
 	}
 	return *s.Slots.Max
+}
+
+// validateWorktrees checks the path template a repository puts its
+// worktrees at. The refusals are the ones that would otherwise surface as
+// a collision much later: a template with no {slug} names one directory
+// for every worktree, and an unknown variable would resolve to nothing at
+// all.
+func validateWorktrees(w *Worktrees) error {
+	if w.Path == nil {
+		return nil
+	}
+	t := *w.Path
+	const field = "worktrees.path"
+	if t == "" {
+		return &FieldError{Field: field, Reason: fmt.Sprintf("must not be empty; remove the key for the default (%q)", DefaultWorktreePath)}
+	}
+	if strings.Contains(t, `\`) {
+		return &FieldError{Field: field, Reason: `must use forward slashes: the template is one committed value read on every platform, and the separator is applied when it is resolved`}
+	}
+	if strings.HasPrefix(t, "~") {
+		return &FieldError{Field: field, Reason: "must not start with ~: the home directory is {home}, which is the one spelling every template in this spec uses"}
+	}
+	vars, err := templateVars(t)
+	if err != nil {
+		return &FieldError{Field: field, Reason: err.Error()}
+	}
+	seen := map[string]bool{}
+	for _, v := range vars {
+		if !slices.Contains(WorktreePathVars, v) {
+			return &FieldError{Field: field, Reason: fmt.Sprintf("unknown template variable {%s}; a worktree path may reference %s (a slot is allocated after the tree exists, and {worktree} is the path being named)", v, strings.Join(braced(WorktreePathVars), ", "))}
+		}
+		seen[v] = true
+	}
+	if !seen["slug"] {
+		return &FieldError{Field: field, Reason: "must reference {slug}: without it every worktree of this repository resolves to the same directory"}
+	}
+	return nil
+}
+
+// braced renders variable names as they are written in a template, for a
+// refusal that can be copied straight into the spec.
+func braced(names []string) []string {
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		out = append(out, "{"+n+"}")
+	}
+	return out
 }

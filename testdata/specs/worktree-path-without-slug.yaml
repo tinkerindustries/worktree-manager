@@ -1,0 +1,17 @@
+# Invalid: worktrees.path names no {slug}, so every worktree of this
+# repository would resolve to the same directory — the collision the whole
+# tool exists to prevent, in the one place it is not allocated.
+version: 1
+app: no-slug
+
+resources:
+  - type: port
+    name: api
+
+worktrees:
+  path: ".claude/worktrees/{app}"
+
+emit:
+  descriptor:
+    filename: wt-env.json
+    format: json

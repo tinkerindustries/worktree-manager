@@ -109,16 +109,18 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 
-	// A worktree nested inside another worktree is refused: the two trees
-	// are indistinguishable in every listing the user reads afterwards
-	// (04-lifecycle.md §7, deferred from phase 1 for want of a real-repo
-	// fixture).
-	if enclosing, err := identity.NestedInside(cls.WorktreeRoot); err != nil {
-		WriteError(stderr, New(ExitFailure, fmt.Sprintf("checking whether %s is nested inside another worktree: %v", cls.WorktreeRoot, err), ""))
+	// A worktree nested inside a tree of another repository is refused: the
+	// two trees are indistinguishable in every listing the user reads
+	// afterwards (04-lifecycle.md §7, deferred from phase 1 for want of a
+	// real-repo fixture). A tree of this repository is not that case —
+	// `.claude/worktrees/<slug>`, the default `worktrees.path`, is inside
+	// the main checkout by design.
+	if enclosing, err := identity.NestedInside(cls.WorktreeRoot, cls.GitCommonDir); err != nil {
+		WriteError(stderr, New(ExitFailure, fmt.Sprintf("checking whether %s is nested inside another repository's working tree: %v", cls.WorktreeRoot, err), ""))
 		return ExitFailure
 	} else if enclosing != "" {
 		e := New(ExitRefused,
-			fmt.Sprintf("refusing to initialise %s: it is nested inside another git working tree at %s, and the two trees would be indistinguishable in every listing",
+			fmt.Sprintf("refusing to initialise %s: it is nested inside another repository's git working tree at %s, and the two trees would be indistinguishable in every listing",
 				cls.WorktreeRoot, enclosing),
 			"move the worktree out of the enclosing tree (or delete it and create it elsewhere), then re-run wt init")
 		WriteError(stderr, e)
@@ -350,6 +352,15 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 		if writeErr == nil {
 			if _, ierr := descriptor.EnsureIgnored(cls.WorktreeRoot, cls.GitCommonDir, sp.Emit.Descriptor.Filename); ierr != nil {
 				fmt.Fprintf(stderr, "warning: making git ignore the descriptor failed: %v; the descriptor may show as untracked\n", ierr)
+			}
+			// The worktree directory itself, when the repository puts its
+			// trees inside the repository (the default). Without the line
+			// the main checkout is untracked-dirty from the first worktree
+			// on, and the create skill's pre-flight never passes again.
+			if line, ok := spec.WorktreeIgnoreLine(sp); ok {
+				if _, ierr := descriptor.EnsureIgnoredLine(cls.WorktreeRoot, cls.GitCommonDir, line); ierr != nil {
+					fmt.Fprintf(stderr, "warning: making git ignore %s failed: %v; worktrees may show as untracked in the main checkout\n", line, ierr)
+				}
 			}
 		}
 	}

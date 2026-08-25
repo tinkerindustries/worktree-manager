@@ -142,6 +142,27 @@ configuration and not something either binary infers. `wt cleanup` and
 the coordinator's sweep are not affected by the block: they require a
 merged pull request whatever it says.
 
+The second call here is `worktrees:`, where this repository's worktrees
+go. Say nothing and they go to `.claude/worktrees/<slug>` — the directory
+Claude Code's own `isolation: "worktree"` creates trees in, so the manual
+flow and the automatic one land in one place. Override it only for a
+repository with a reason: a heavy tree the developer wants out of the
+repository directory, or a house convention that predates the tooling.
+
+```yaml
+worktrees:
+  path: "../{app}-worktrees/{slug}"
+```
+
+The template takes `{slug}` (required — without it every worktree
+resolves to the same directory), `{app}` and `{home}`; a relative path
+resolves against the main checkout, never cwd. Check it with `wt spec
+path --slug <slug>`, which is what the generated create skill runs. A
+repository keeping its trees inside itself needs the directory
+gitignored, or the main checkout is untracked-dirty from the first
+worktree on — `wt init` writes the line to `info/exclude` itself, and
+adoption's phase 6 is where it is committed to `.gitignore` instead.
+
 ## Phase 5 — Generate
 
 The artefacts (07-agent-surface.md), generated per repo — they name this
@@ -173,7 +194,9 @@ Rules that bind every generated file:
 - Commit the `.gitignore` line for the descriptor (`wt-env.yaml` or
   whatever `emit.descriptor.filename` names, plus the build hook's output
   and the `.env` if the repo does not already ignore it) — this phase's
-  job precisely so that `wt init` never has to touch a tracked file.
+  job precisely so that `wt init` never has to touch a tracked file. When
+  the worktrees live inside the repository (the default), the directory
+  holding them goes in too, anchored: `/.claude/worktrees/`.
 - Commit everything generated: the adopted surface is part of the repo.
 
 The generated artefacts:
@@ -224,7 +247,9 @@ is delayed: it shows up weeks later as a bug that looks unrelated.
 Two worktrees, side by side, at the same time.
 
 - Make two worktrees by whatever normally makes them (the create skill's
-  mechanism, or `git worktree add` by hand).
+  mechanism, or `git worktree add` by hand), at the paths `wt spec path
+  --slug <slug>` gives — proving the repository's own convention, not a
+  path chosen for the test.
 - `wt init` both; `wt start` both.
 - Confirm both healthy simultaneously, and the two resource tables
   disjoint (`wt show --json` in each).

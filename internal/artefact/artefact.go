@@ -163,6 +163,7 @@ func FieldsFor(sp *spec.Spec, band map[string]int) map[string]string {
 	fields := map[string]string{
 		"app":        sp.App,
 		"descriptor": sp.Emit.Descriptor.Filename,
+		"worktrees":  spec.WorktreePathTemplate(sp),
 	}
 	names := make([]string, 0, len(sp.Resources))
 	for i := range sp.Resources {
@@ -207,6 +208,7 @@ func factSheet(sp *spec.Spec, band map[string]int) []string {
 	lines := []string{
 		"This repository's facts, recorded when these artefacts were generated:",
 		fmt.Sprintf("- descriptor: %s (%s)", sp.Emit.Descriptor.Filename, sp.Emit.Descriptor.Format),
+		fmt.Sprintf("- worktrees: %s (resolve one with 'wt spec path --slug <slug>')", spec.WorktreePathTemplate(sp)),
 	}
 	for i := range sp.Resources {
 		r := &sp.Resources[i]

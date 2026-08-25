@@ -28,6 +28,7 @@ func TestInvalidSpecsRejected(t *testing.T) {
 		{"ipv6-pool.yaml", "resources[0].pool", "is not an IPv4 CIDR"},
 		{"cycle-with-referenced-leaf.yaml", "resources[1].template", "template cycle: aa → bb → aa"},
 		{"unknown-removal-policy.yaml", "removal.open_pr", `"ignore" is not a removal policy`},
+		{"worktree-path-without-slug.yaml", "worktrees.path", "must reference {slug}"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.file, func(t *testing.T) {

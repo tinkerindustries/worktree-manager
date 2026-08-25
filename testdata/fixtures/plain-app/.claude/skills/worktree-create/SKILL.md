@@ -43,13 +43,19 @@ edits to this text.
 
 ## Making the worktree
 
+- The path is the repo's, not this skill's: run `wt spec path --slug
+  <slug>` from the main checkout and use what it prints. The template it
+  resolves is `worktrees.path` in `wt.yaml`, recorded as `worktrees` in
+  the managed block below; the default is `.claude/worktrees/<slug>`,
+  which is where Claude Code's own isolation puts a tree. Never derive
+  the path by hand, and never resolve a relative template against the
+  cwd — a worktree made from inside a worktree would land underneath it.
 - Prefer the mechanism this session already uses for isolation
   (`isolation: "worktree"` in Claude Code); otherwise `git worktree add
   -b <branch> <path> <base>`.
-- Branch and directory follow the repo's convention: bare `<slug>`,
+- Branch names follow the repo's convention: bare `<slug>`,
   `claude/<slug>` to namespace agent-created branches, or
-  `manual-<slug>` for hand-made ones. The path convention is
-  `.claude/worktrees/<slug>`.
+  `manual-<slug>` for hand-made ones.
 - Base branch: the default branch, unless the repo's policy reads a base
   branch off a ticket — then branch from `origin/<base_branch>`.
 - If the chosen isolation would make the work item unreachable from
@@ -108,4 +114,5 @@ the existing branch was meant to address.
 # wt-field: descriptor=wt-env.json
 # wt-field: resources=api, db, cache, shared_db
 # wt-field: shared=https://api.example.com/v1, shared_db
+# wt-field: worktrees=.claude/worktrees/{slug}
 # --- end ---

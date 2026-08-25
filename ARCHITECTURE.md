@@ -252,6 +252,18 @@ Import rules, fixed for the whole plan:
 - `Substitute(t, ctx, resolved)` resolves a non-resource template — a
   hand-authored shared name, a seed source, an emit.env key — against the
   builtin variables plus the already-resolved resource table.
+- `worktrees.path` is where the repository's worktrees go, and the one
+  spec field neither binary acts on: nothing here creates a worktree.
+  `WorktreePathTemplate` applies the default — `.claude/worktrees/{slug}`,
+  the directory Claude Code's own `isolation: "worktree"` creates trees in
+  — and `WorktreeLocation` resolves it for one slug against the **main
+  checkout**, never cwd, so a tree made from inside a worktree does not
+  land under it. The variables are `{slug}` (required, or every worktree
+  is the same directory), `{app}` and `{home}`; `{slot}` is not among them
+  because a slot is allocated after the tree exists. `WorktreeIgnoreLine`
+  is the other half: trees inside the repository are untracked content in
+  the main checkout, so init ignores the directory the same way it ignores
+  the descriptor.
 
 ## Identity and containment (`internal/identity`, `internal/platform`)
 
@@ -279,6 +291,15 @@ Import rules, fixed for the whole plan:
 - `DescriptorPath(root, spec)` joins the worktree root with
   `emit.descriptor.filename`; the filename comes from the spec, never from a
   constant here.
+- `NestedInside(worktreeRoot, gitCommonDir)` is init's refusal of a tree
+  nested inside a **foreign** working tree: two repositories in one
+  directory tree are indistinguishable in every listing the user reads.
+  An ancestor sharing the tree's git common directory is the same
+  repository — the `.claude/worktrees/<slug>` convention, which git
+  permits — and the walk continues past it rather than refusing, because
+  that ancestor may itself sit inside a foreign tree. Every candidate
+  ancestor is confirmed with git itself, so a stray `.git` directory
+  cannot trigger the refusal.
 
 ## The descriptor (`internal/descriptor`)
 
@@ -317,7 +338,11 @@ Import rules, fixed for the whole plan:
   shared through the branch, and every write would dirty a working tree
   another tool just created clean. The git common dir and the worktree
   root come from the classification (`identity.Classification`), the only
-  way the caller should reach either.
+  way the caller should reach either. `EnsureIgnoredLine` is the same
+  mechanism with the line given rather than derived from a filename: init
+  uses it a second time for `spec.WorktreeIgnoreLine`, so a repository
+  whose worktrees live inside it keeps a clean `git status` — which the
+  generated create skill's pre-flight requires.
 
 ## Delivery — the three channels (`internal/envfile`, `internal/generate`)
 
@@ -747,15 +772,16 @@ The six rules of `docs/ARCHITECTURE.md` §8.6, stated as invariants:
   one dial-and-request helper, whose remedy is always the platform's
   start command (`platform.CoordinatorStartCommand`) — every verb that
   reaches the coordinator goes through it. `show` and `guard` never dial,
-  and `spec validate` and `spec explain` are pure functions of the spec
-  and their arguments, so all four work with the coordinator stopped.
+  and `spec validate`, `spec explain` and `spec path` are pure functions
+  of the spec and their arguments, so all five work with the coordinator
+  stopped.
   `daemon status` dials as its reachability probe but treats failure as a
   state, never as an error.
 - Results go to stdout; diagnostics to stderr. `--json` prints exactly one
   JSON object on stdout and nothing else. No colour, no spinner, no
   prompt.
 - Verbs are hand-dispatched with one `flag.FlagSet` per verb. This phase
-  has fourteen: `spec validate`, `spec explain`, `guard`, `show`,
+  has fifteen: `spec validate`, `spec explain`, `spec path`, `guard`, `show`,
   `daemon status`, `daemon install`, `bands list`, `bands suggest`,
   `bands reserve`, `ports scan`, `list`, `doctor`, `reconcile` and
   `clients`.

@@ -237,8 +237,8 @@ func TestInitRefusesPrimaryCheckout(t *testing.T) {
 	}
 }
 
-// TestInitRefusesNestedWorktree: a tree nested inside another worktree is
-// refused with exit 3, naming the nesting.
+// TestInitRefusesNestedWorktree: a tree of another repository nested
+// inside a worktree is refused with exit 3, naming the nesting.
 func TestInitRefusesNestedWorktree(t *testing.T) {
 	sp := lifecycleSpec(t)
 	_, worktree := lifecycleFixture(t, sp)
@@ -252,8 +252,48 @@ func TestInitRefusesNestedWorktree(t *testing.T) {
 	if code != ExitRefused {
 		t.Fatalf("exit = %d, want %d; stderr: %s", code, ExitRefused, stderr)
 	}
-	if !strings.Contains(stderr, "nested inside another git working tree") {
+	if !strings.Contains(stderr, "nested inside another repository's git working tree") {
 		t.Errorf("stderr = %q, want the nesting refusal", stderr)
+	}
+}
+
+// TestInitAttachesToATreeInsideTheMainCheckout: the default
+// `worktrees.path` puts a worktree at `<main>/.claude/worktrees/<slug>`,
+// and init attaches to it — the nesting refusal is about another
+// repository's tree, not this repository's own convention. The worktree
+// directory is left gitignored, so the main checkout stays clean and the
+// create skill's pre-flight can pass again.
+func TestInitAttachesToATreeInsideTheMainCheckout(t *testing.T) {
+	sp := lifecycleSpec(t)
+	main, _ := lifecycleFixture(t, sp)
+	inside := filepath.Join(main, ".claude", "worktrees", "brisk-otter")
+	gitT(t, main, "worktree", "add", "-b", "brisk-otter", inside, "main")
+
+	_, ep := newRecordingCoord(t, map[string]func(*api.Request) *api.Response{
+		"allocate": func(*api.Request) *api.Response {
+			res := allocateOK(inside)
+			return res
+		},
+		"materialise": cannedT(&api.MaterialiseResult{App: "lifecycle-app", Slug: "wt-1", State: "reserving"}),
+		"activate":    cannedT(&api.ActivateResult{App: "lifecycle-app", Slug: "wt-1", State: "active"}),
+	})
+	t.Setenv("WT_ENDPOINT", ep)
+	code, stdout, stderr := runCLI(t, "init", "--cwd", inside, "--description", "inside the checkout")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want %d; stderr: %s", code, ExitOK, stderr)
+	}
+	if !strings.Contains(stdout, "wt-1") {
+		t.Errorf("stdout = %q, want the allocated slug", stdout)
+	}
+	out, err := gitOutT(t, main, "status", "--porcelain")
+	if err != nil {
+		t.Fatalf("git status in the main checkout: %v", err)
+	}
+	if strings.Contains(out, ".claude/worktrees") {
+		t.Errorf("the main checkout is dirty with the worktree directory:\n%s\nthe ignore line was not written", out)
+	}
+	if _, err := gitOutT(t, main, "check-ignore", filepath.Join(".claude", "worktrees", "brisk-otter")); err != nil {
+		t.Errorf("git check-ignore .claude/worktrees/brisk-otter: %v; the worktree directory was not ignored", err)
 	}
 }
 

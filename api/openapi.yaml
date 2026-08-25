@@ -930,6 +930,8 @@ components:
           $ref: "#/components/schemas/Reaper"
         Removal:
           $ref: "#/components/schemas/Removal"
+        Worktrees:
+          $ref: "#/components/schemas/Worktrees"
         Emit:
           $ref: "#/components/schemas/Emit"
       required:
@@ -942,6 +944,7 @@ components:
       - Hooks
       - Reaper
       - Removal
+      - Worktrees
       - Emit
     Slots:
       type: object
@@ -1183,6 +1186,17 @@ components:
       - Uncommitted
       - Unpushed
       - OpenPR
+    Worktrees:
+      type: object
+      description: "Worktrees is the spec's `worktrees:` block: one field, the path template of a single worktree."
+      properties:
+        Path:
+          description: Path is the path template, evaluated with {slug}, {app} and {home}. Absent, DefaultWorktreePath applies; present and empty, validation refuses it, because an empty path is a typo and not a way to ask for the default.
+          type:
+          - string
+          - "null"
+      required:
+      - Path
     Emit:
       type: object
       description: "Emit declares the three delivery channels (05-delivery.md §1): the descriptor, the optional .env block and the optional generated reader."

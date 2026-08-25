@@ -71,6 +71,12 @@ func TestRenderProducesEveryArtefact(t *testing.T) {
 		if !strings.Contains(block, "# wt-field: descriptor=wt-env.json") {
 			t.Errorf("%s's block lacks the descriptor field:\n%s", p, block)
 		}
+		// Where the repository's worktrees go: the effective template,
+		// so a repo that says nothing records the default and doctor
+		// still reports the day it changes.
+		if !strings.Contains(block, "# wt-field: worktrees=.claude/worktrees/{slug}") {
+			t.Errorf("%s's block lacks the worktrees field:\n%s", p, block)
+		}
 	}
 	for _, p := range []string{HookTripwire, HookGuard} {
 		if byPath[p].Mode != 0o755 {

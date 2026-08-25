@@ -64,8 +64,15 @@ configuration; neither binary branches on repo identity.
   evaluator, the walk-up `wt.yaml` finder, and the quoted YAML emitter.
   It owns the accessors every other package used to copy:
   `ResourceByName`, `NamespaceKind`, `HookByName`, `HookNames`,
-  `WorktreePath` and the IPv4 block arithmetic, and the `removal:` block —
-  rm's per-check safety policy and its defaults, through `RemovalPolicy`.
+  `WorktreePath` and the IPv4 block arithmetic, the `removal:` block —
+  rm's per-check safety policy and its defaults, through `RemovalPolicy` —
+  and the `worktrees:` block: where this repository's worktrees go,
+  defaulting to `.claude/worktrees/{slug}` (where Claude Code's own
+  isolation puts a tree) and overridable with a `{slug}`/`{app}`/`{home}`
+  template that `WorktreeLocation` resolves against the main checkout.
+  Neither binary creates a worktree, so the field is guidance the
+  generated create skill follows and `wt spec path --slug <slug>`
+  computes — never a location either binary enforces.
 - `internal/treecheck` — the checks that run before a worktree is
   destroyed: uncommitted changes, unpushed commits (an absent upstream is
   its own answer), what gh reports about the branch's pull request, and
@@ -93,7 +100,7 @@ configuration; neither binary branches on repo identity.
   path is reported not_run on this machine.
 - `internal/cli` — verb dispatch, flag parsing, output, the exit-code error
   type, the one dial-and-request helper (exit 5 lives there), and the
-  verbs: `spec validate`, `spec explain`, `guard`, `show`,
+  verbs: `spec validate`, `spec explain`, `spec path`, `guard`, `show`,
   `daemon status`, `daemon install`, `daemon uninstall`, `bands list`,
   `bands suggest`,
   `bands reserve`, `ports scan`, `init`, `start`, `rm`, `list`, `doctor`,
@@ -123,7 +130,10 @@ configuration; neither binary branches on repo identity.
   hook sets — keyed on cwd, validated by the stat identity of the root's
   `.git` entry (the root dir's own mtime is unusable: the case-sensitivity
   probe writes a file there), dropped and reclassified with a one-time
-  note when the worktree is removed mid-session.
+  note when the worktree is removed mid-session. `NestedInside` is init's
+  refusal of a tree nested inside a *foreign* working tree; a tree sharing
+  the git common directory is the same repository — which is what
+  `.claude/worktrees/<slug>` is — and the walk continues past it.
 - `internal/managed` — the managed block convention, declared once for
   every file the tool writes (`internal/envfile` imports it): the markers, `# wt-field:` records, replace-only-the-block
   regeneration, the unbalanced-marker refusal, append-to-a-markerless-file
@@ -163,7 +173,10 @@ configuration; neither binary branches on repo identity.
   fake-runner tests fake). The only package permitted to branch on `GOOS`.
 - `internal/descriptor` — the per-worktree allocation record: type,
   reader, atomic writer, the shared-block and isolation-state builders,
-  and the `info/exclude` ignore rule.
+  and the `info/exclude` ignore rule — used twice by init, for the
+  descriptor filename and for the directory the repository's worktrees
+  live in, so a repo whose trees sit inside it keeps a clean
+  `git status`.
 - `internal/envfile` — the `.env` delivery channel: the duplicate strip,
   the first-write seed from the main checkout, and the dotenv-specific
   half of the block. The markers and the block primitives are

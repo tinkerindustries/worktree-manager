@@ -8,6 +8,7 @@ This repository's working instructions. The tripwire below is generated: it is r
 # wt-field: descriptor=wt-env.json
 # wt-field: resources=api, db, cache, shared_db
 # wt-field: shared=https://api.example.com/v1, shared_db
+# wt-field: worktrees=.claude/worktrees/{slug}
 This repository uses per-worktree environments.
 - Never hardcode a port or a path: read them with `wt show`.
 - Something else creates the worktree; `wt init` attaches to it.

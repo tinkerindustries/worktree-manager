@@ -117,6 +117,7 @@ type Spec struct {
 	Hooks     Hooks      `yaml:"hooks"`
 	Reaper    Reaper     `yaml:"reaper"`
 	Removal   Removal    `yaml:"removal"`
+	Worktrees Worktrees  `yaml:"worktrees"`
 	Emit      Emit       `yaml:"emit"`
 }
 

@@ -62,6 +62,14 @@ The resolved resource table for one slot, allocating nothing:
 Reading slot 1 and slot 2 side by side is the collision check before
 anything is built.
 
+### `wt spec path --slug S [--home <path>] [--root <dir>]`
+
+Where a worktree of this repository goes: the spec's `worktrees.path`
+resolved for one slug, printed bare on stdout. Allocates nothing and
+dials nothing. Run it in the main checkout — a relative template resolves
+against `--root`, which defaults to the directory the spec was found in.
+The default template is `.claude/worktrees/{slug}`.
+
 ### `wt init --description <text> [--slug <s>] [--cwd <dir>]`
 
 Attach to the current tree: allocate, materialise, emit the descriptor
@@ -121,6 +129,7 @@ Every generated file closes with:
 # wt-field: resources=<names, comma-joined, declaration order>
 # wt-field: band <port resource>=<ledger base>
 # wt-field: shared=<shared names, comma-joined>
+# wt-field: worktrees=<worktrees.path, the effective template>
 <the file's own fact lines, if any>
 # --- end ---
 ```

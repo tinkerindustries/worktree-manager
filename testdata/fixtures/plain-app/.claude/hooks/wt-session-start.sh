@@ -63,4 +63,5 @@ echo "wt: worktree $slug (slot $slot):$ports"
 # wt-field: descriptor=wt-env.json
 # wt-field: resources=api, db, cache, shared_db
 # wt-field: shared=https://api.example.com/v1, shared_db
+# wt-field: worktrees=.claude/worktrees/{slug}
 # --- end ---

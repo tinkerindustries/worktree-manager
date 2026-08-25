@@ -26,6 +26,13 @@ resources:
     size: 22
     on_exhaustion: shared-pool
 
+# Where a worktree of this repository goes, overriding the default
+# `.claude/worktrees/{slug}`: a VM-backed tree is heavy and long-lived, and
+# a repository is free to keep its trees out of its own directory
+# altogether. A relative template resolves against the main checkout.
+worktrees:
+  path: "../{app}-worktrees/{slug}"
+
 hooks:
   install:
     # The machine driver created the profile; this hook waits for its

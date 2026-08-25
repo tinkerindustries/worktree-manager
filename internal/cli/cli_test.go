@@ -343,3 +343,57 @@ func TestWriteErrorWrapped(t *testing.T) {
 		t.Errorf("wrapped error lost its message or remedy: %q", buf.String())
 	}
 }
+
+// TestSpecPathDefault: `wt spec path` prints where a worktree of this
+// repository goes — an absolute path, anchored at the repository root and
+// not at cwd, so the answer is the same from anywhere inside the tree.
+func TestSpecPathDefault(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", "..", "testdata", "fixtures", "plain-app"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	chdir(t, filepath.Join("..", "..", "testdata", "fixtures", "plain-app"))
+	code, stdout, stderr := runCLI(t, "spec", "path", "--slug", "brisk-otter")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want 0; stderr: %s", code, stderr)
+	}
+	want := filepath.Join(root, ".claude", "worktrees", "brisk-otter")
+	if strings.TrimSpace(stdout) != want {
+		t.Errorf("stdout = %q, want %q", strings.TrimSpace(stdout), want)
+	}
+}
+
+// TestSpecPathOverride: the vm-app fixture puts its trees outside the
+// repository, and `spec path` resolves that template against the main
+// checkout — the one place the `../` in it is given a meaning.
+func TestSpecPathOverride(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", "..", "testdata", "fixtures", "vm-app"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	chdir(t, filepath.Join("..", "..", "testdata", "fixtures", "vm-app"))
+	code, stdout, stderr := runCLI(t, "spec", "path", "--slug", "brisk-otter")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want 0; stderr: %s", code, stderr)
+	}
+	want := filepath.Join(filepath.Dir(root), "vm-app-worktrees", "brisk-otter")
+	if strings.TrimSpace(stdout) != want {
+		t.Errorf("stdout = %q, want %q", strings.TrimSpace(stdout), want)
+	}
+}
+
+// TestSpecPathRefusesABadSlug: the slug is checked before anything is
+// resolved, as a usage error — the path is only as valid as the slug in it.
+func TestSpecPathRefusesABadSlug(t *testing.T) {
+	chdir(t, filepath.Join("..", "..", "testdata", "fixtures", "plain-app"))
+	code, stdout, stderr := runCLI(t, "spec", "path", "--slug", "Brisk Otter")
+	if code != ExitUsage {
+		t.Fatalf("exit = %d, want %d; stderr: %s", code, ExitUsage, stderr)
+	}
+	if stdout != "" {
+		t.Errorf("a refused slug wrote to stdout: %q", stdout)
+	}
+	if !strings.Contains(stderr, "is not a valid slug") {
+		t.Errorf("stderr = %q, want the slug rule named", stderr)
+	}
+}

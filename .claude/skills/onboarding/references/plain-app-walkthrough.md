@@ -42,8 +42,8 @@ The seven files of the artefact inventory, each with the managed block:
 the two skills, the tripwire and guard hooks, `.claude/settings.json`
 (SessionStart always, PreToolUse because the developer confirmed), the
 reference doc with its facts block, and the `CLAUDE.md` tripwire — plus
-the committed `.gitignore` (the descriptor, the `.env`, the build output,
-the server log).
+the committed `.gitignore` (the worktree directory, the descriptor, the
+`.env`, the build output, the server log).
 
 ## Phase 6 — patch entry points
 

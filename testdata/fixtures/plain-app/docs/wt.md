@@ -70,8 +70,10 @@ teardown refuses a compose project name that matches a reservation.
 # wt-field: descriptor=wt-env.json
 # wt-field: resources=api, db, cache, shared_db
 # wt-field: shared=https://api.example.com/v1, shared_db
+# wt-field: worktrees=.claude/worktrees/{slug}
 This repository's facts, recorded when these artefacts were generated:
 - descriptor: wt-env.json (json)
+- worktrees: .claude/worktrees/{slug} (resolve one with 'wt spec path --slug <slug>')
 - api: port, band base 8200
 - db: state-path, seeded mode seeded
 - cache: state-path, seeded mode empty

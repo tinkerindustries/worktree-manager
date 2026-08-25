@@ -17,6 +17,8 @@ usage:
   wt spec explain --slot N --slug S  resolve the resource table for one slot
       [--base <name>=<port>]...      one base per port resource
       [--home <path>] [--worktree <path>] [--json]
+  wt spec path --slug S              where a worktree of this repository goes:
+      [--home <path>] [--root <dir>]    the spec's worktrees.path, resolved
   wt show [--json] [--cwd <dir>]     read the descriptor back from the
                                      working tree
   wt guard [--json] [--cwd <dir>]    the enforcement hook: deny a tool call
@@ -179,7 +181,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 func runSpec(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		WriteError(stderr, UsageError(
-			"run 'wt spec validate [path]' or 'wt spec explain --slot N --slug S'",
+			"run 'wt spec validate [path]', 'wt spec explain --slot N --slug S' or 'wt spec path --slug S'",
 			"spec needs a verb"))
 		return ExitUsage
 	}
@@ -188,12 +190,14 @@ func runSpec(args []string, stdout, stderr io.Writer) int {
 		return runSpecValidate(args[1:], stdout, stderr)
 	case "explain":
 		return runSpecExplain(args[1:], stdout, stderr)
+	case "path":
+		return runSpecPath(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usageText)
 		return ExitOK
 	default:
 		WriteError(stderr, UsageError(
-			"run 'wt spec validate [path]' or 'wt spec explain --slot N --slug S'",
+			"run 'wt spec validate [path]', 'wt spec explain --slot N --slug S' or 'wt spec path --slug S'",
 			"unknown spec verb %q", args[0]))
 		return ExitUsage
 	}

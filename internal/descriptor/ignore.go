@@ -59,7 +59,17 @@ type IgnoreResult struct {
 // from the classification (identity.Classification), the only way the
 // caller should reach either.
 func EnsureIgnored(worktreeRoot, gitCommonDir, filename string) (IgnoreResult, error) {
-	line := IgnoreLine(filename)
+	return EnsureIgnoredLine(worktreeRoot, gitCommonDir, IgnoreLine(filename))
+}
+
+// EnsureIgnoredLine is the mechanism EnsureIgnored is one caller of: make
+// git ignore one line for the whole repository, idempotently and without
+// touching a tracked file. `wt init` uses it a second time for the
+// directory the repository's worktrees live in (spec.WorktreeIgnoreLine),
+// which is untracked content in the main checkout whenever the trees land
+// inside the repository — and the create skill's pre-flight requires
+// `git status --porcelain` to print nothing.
+func EnsureIgnoredLine(worktreeRoot, gitCommonDir, line string) (IgnoreResult, error) {
 	res := IgnoreResult{Line: line}
 
 	// 1. Adoption's home: a committed line. Detected, never duplicated.
