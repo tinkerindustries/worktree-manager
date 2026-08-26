@@ -66,6 +66,12 @@ for p in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64; do
   CGO_ENABLED=0 GOOS="${p%/*}" GOARCH="${p#*/}" go build ./... || echo "FAILED $p"
 done
 
+# the two generated surfaces are committed, and CI fails on drift in
+# either; regenerate and check the tree is unchanged
+go run ./cmd/wtgen
+go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate
+git status --porcelain   # must print nothing
+
 # 2. tag and push — this runs .github/workflows/release.yml
 git tag -a v0.2.0 -m "Worktree Manager 0.2.0"
 git push origin v0.2.0
