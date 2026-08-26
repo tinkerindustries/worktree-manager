@@ -12,6 +12,13 @@
 # The archive format per platform: tar.gz for macOS and Linux (bsdtar on
 # macOS and Windows 10+ reads them), zip for Windows (built by the
 # stdlib-only dist/ziphelper.go, so no `zip` binary is needed anywhere).
+#
+# Every archive nests its contents under one directory named for the
+# archive — wt-0.3.0-darwin-arm64/ — so unpacking one puts five files in a
+# directory of their own rather than scattering them across whatever
+# directory the caller is standing in. The installers resolve everything
+# relative to their own location, so the nesting is invisible to them.
+#
 # Each archive carries wt and wtd side by side (the shape
 # CoordinatorBinaryPath expects — `wt daemon install` finds wtd next to
 # wt) and the installer that drives `wt daemon install`. Nothing else is
@@ -136,9 +143,16 @@ stage_for() { # goos goarch ext bin-ext
 	# survive the build.
 	trap 'rm -rf "$STAGE"' EXIT
 
-	CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -ldflags "$LDFLAGS" -o "$STAGE/wt$BINEXT" ./cmd/wt
-	CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -ldflags "$LDFLAGS" -o "$STAGE/wtd$BINEXT" ./cmd/wtd
-	cp "$OUT/README.txt" "$STAGE/README.txt"
+	# NAME is both the archive's basename and the one directory every path
+	# inside it sits under, so `tar xzf wt-<version>-<os>-<arch>.tar.gz`
+	# is followed by `cd wt-<version>-<os>-<arch>`.
+	NAME="wt-$VERSION-$GOOS-$GOARCH"
+	DIR="$STAGE/$NAME"
+	mkdir -p "$DIR"
+
+	CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -ldflags "$LDFLAGS" -o "$DIR/wt$BINEXT" ./cmd/wt
+	CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -ldflags "$LDFLAGS" -o "$DIR/wtd$BINEXT" ./cmd/wtd
+	cp "$OUT/README.txt" "$DIR/README.txt"
 
 	# The archive's own manifest: a SHA256SUMS covering the two binaries,
 	# which the installer verifies against before copying anything. It sits
@@ -147,25 +161,32 @@ stage_for() { # goos goarch ext bin-ext
 	# this installer will install (install.sh refuses, naming --skip-verify
 	# as the deliberate override). sha256sum on Linux, shasum -a 256 on
 	# macOS.
+	# The entries name the binaries alone, never the enclosing directory:
+	# the installer verifies files beside itself, and it is inside that
+	# directory when it runs.
 	if command -v sha256sum >/dev/null 2>&1; then
-		(cd "$STAGE" && sha256sum "wt$BINEXT" "wtd$BINEXT") >"$STAGE/SHA256SUMS"
+		(cd "$DIR" && sha256sum "wt$BINEXT" "wtd$BINEXT") >"$DIR/SHA256SUMS"
 	else
-		(cd "$STAGE" && for f in "wt$BINEXT" "wtd$BINEXT"; do
+		(cd "$DIR" && for f in "wt$BINEXT" "wtd$BINEXT"; do
 			printf '%s  %s\n' "$(shasum -a 256 "$f" | awk '{print $1}')" "$f"
-		done) >"$STAGE/SHA256SUMS"
+		done) >"$DIR/SHA256SUMS"
 	fi
 
 	case "$EXT" in
 	tar.gz)
-		cp "$ROOT/dist/install.sh" "$STAGE/install.sh"
-		chmod 755 "$STAGE/install.sh"
-		tar -C "$STAGE" -czf "$OUT/wt-$VERSION-$GOOS-$GOARCH.tar.gz" \
-			"wt$BINEXT" "wtd$BINEXT" install.sh README.txt SHA256SUMS
+		cp "$ROOT/dist/install.sh" "$DIR/install.sh"
+		chmod 755 "$DIR/install.sh"
+		# The file list stays explicit rather than archiving the directory
+		# whole: the archive holds what this script put there and nothing
+		# a stray file in the stage could add.
+		tar -C "$STAGE" -czf "$OUT/$NAME.tar.gz" \
+			"$NAME/wt$BINEXT" "$NAME/wtd$BINEXT" \
+			"$NAME/install.sh" "$NAME/README.txt" "$NAME/SHA256SUMS"
 		;;
 	zip)
-		cp "$ROOT/dist/install.ps1" "$STAGE/install.ps1"
-		go run "$ROOT/dist/ziphelper.go" "$OUT/wt-$VERSION-$GOOS-$GOARCH.zip" \
-			"$STAGE" "wt$BINEXT" "wtd$BINEXT" install.ps1 README.txt SHA256SUMS
+		cp "$ROOT/dist/install.ps1" "$DIR/install.ps1"
+		go run "$ROOT/dist/ziphelper.go" "$OUT/$NAME.zip" \
+			"$DIR" "$NAME" "wt$BINEXT" "wtd$BINEXT" install.ps1 README.txt SHA256SUMS
 		;;
 	esac
 

@@ -274,10 +274,14 @@ configuration; neither binary branches on repo identity.
   platform — darwin arm64/amd64, linux amd64/arm64, windows amd64 — with
   both binaries plus the installer, run by the release workflow on every
   `v*` tag; the version is semver or the build refuses, derived from the
-  nearest `v*` tag when none is given; it writes a `SHA256SUMS` manifest outside
+  nearest `v*` tag when none is given; each archive nests its five files
+  under one directory named for the archive, so unpacking one scatters
+  nothing and the installers — which resolve everything relative to their
+  own location — sit inside it; it writes a `SHA256SUMS` manifest outside
   the archives and a second one inside each archive covering the two
-  binaries, and wires the archive version and commit into both binaries
-  with `-ldflags -X` so `wt --version`/`wtd --version` report them),
+  binaries by bare name, and wires the archive version and commit into
+  both binaries with `-ldflags -X` so `wt --version`/`wtd --version`
+  report them),
   `install.sh`/`install.ps1` (verify the binaries against the archive's
   `SHA256SUMS` before copying — a missing manifest or a mismatched
   digest refuses, naming `--skip-verify`/`-SkipVerify` as the deliberate

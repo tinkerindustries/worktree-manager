@@ -128,6 +128,13 @@ downloading it.
 | `wt-<version>-windows-amd64.zip` | `wt.exe`, `wtd.exe`, `install.ps1`, `README.txt`, `SHA256SUMS` |
 | `SHA256SUMS` | the sha256 of every archive |
 
+Every archive nests those files under one directory named for the archive,
+so `tar xzf wt-<version>-<os>-<arch>.tar.gz` produces
+`wt-<version>-<os>-<arch>/` and unpacking one in a directory that holds
+other things scatters nothing. Both installers resolve the binaries and the
+manifest relative to their own location, so the directory is theirs to sit
+in and they never look outside it.
+
 Everything builds `CGO_ENABLED=0`, so an archive needs nothing installed to
 run. `linux/arm64` is not only a Linux desktop cell: it is what a container
 built on an Apple Silicon machine runs, so it is the cell that puts the
