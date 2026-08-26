@@ -66,6 +66,9 @@ type rmResult struct {
 	// Notes are the bounded-coverage statements: skipped checks, skipped
 	// git removal, and what survived.
 	Notes []string `json:"notes,omitempty"`
+	// Purged names the state-path resources whose stores this run
+	// deleted. Empty means every state store survived.
+	Purged []string `json:"purged,omitempty"`
 	// Warnings are the safety checks that hit and were warned past
 	// because the removal policy said warn. They are printed as they
 	// happen, before anything is destroyed, and carried here so --json
@@ -74,12 +77,23 @@ type rmResult struct {
 }
 
 // runRm implements `wt rm [--json] [--dry-run] [--cwd <dir>] [--slug <s>]
-// [--keep-processes] [--strict|--force] [--purge <flag>]... [--keep-vm]`.
-// The keep flags are
-// the machine resources' keep_flag names from the spec (B4.3), so they are
-// registered after the spec loads; a spec that declares keep_flag:
-// "--keep-vm" makes `wt rm --keep-vm` legal, and a spec without one
-// refuses the flag as undefined.
+// [--keep-processes] [--strict|--force] [--purge <resource>]... [--keep-vm]
+// [--purge-db]`.
+//
+// Two kinds of flag come from the spec rather than from rm: the machine
+// resources' keep_flag names (B4.3) and the state-path resources'
+// purge.flag names (03-drivers.md §4.4). Both are registered after the
+// spec loads, so a spec that declares keep_flag: "--keep-vm" makes
+// `wt rm --keep-vm` legal and one that declares purge.flag: "--purge-db"
+// makes `wt rm --purge-db` legal; a spec without one refuses the flag as
+// undefined. A declared flag whose name is already one of rm's own is
+// refused, because registering it twice would panic the flag package.
+//
+// `--purge <resource>` is the other spelling of the same thing, naming the
+// resource rather than its flag. Both resolve to the flag strings the
+// state-path driver matches on, and a value matching no purgeable resource
+// is a usage error: a --purge that selected nothing used to exit 0 having
+// deleted nothing.
 func runRm(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("rm", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -90,8 +104,8 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 	keepProcesses := fs.Bool("keep-processes", false, "do not signal processes bound to the worktree's ports")
 	strict := fs.Bool("strict", false, "run every safety check as a refusal for this run, whatever the spec says")
 	force := fs.Bool("force", false, "downgrade every safety check to a warning for this run; git worktree remove is still never forced")
-	var purgeFlags []string
-	fs.Var(stringList(&purgeFlags), "purge", "purge this state-path resource on teardown (repeatable)")
+	var purgeValues []string
+	fs.Var(stringList(&purgeValues), "purge", "purge this state-path resource's store on teardown, by resource name (repeatable)")
 
 	// The spec must load before the keep flags can be registered, and the
 	// spec's location depends on --cwd, so the flag's value is pre-scanned
@@ -128,19 +142,20 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 
-	// The keep flags: one boolean flag per declared keep_flag, deduplicated
-	// (two machine resources may declare the same flag name).
-	keepFlags := []string{}
-	seenKeep := map[string]bool{}
-	for i := range sp.Resources {
-		r := &sp.Resources[i]
-		if r.Type != "machine" || r.KeepFlag == nil || seenKeep[*r.KeepFlag] {
-			continue
-		}
-		seenKeep[*r.KeepFlag] = true
-		name := strings.TrimPrefix(*r.KeepFlag, "--")
-		keepFlags = append(keepFlags, *r.KeepFlag)
-		fs.BoolVar(new(bool), name, false, "keep the VM up: tear down the containers and the entry but leave the instance running")
+	// The spec-declared flags: one boolean flag per machine keep_flag and
+	// one per state-path purge.flag, deduplicated (two resources may
+	// declare the same flag name).
+	keepDeclared := declaredKeepFlags(sp)
+	purgeDeclared := declaredPurgeFlags(sp)
+	if e := registerSpecFlags(fs, keepDeclared, "keep_flag",
+		"keep the VM up: tear down the containers and the entry but leave the instance running"); e != nil {
+		WriteError(stderr, e)
+		return e.Code
+	}
+	if e := registerSpecFlags(fs, purgeDeclared, "purge.flag",
+		"purge this state-path resource's store on teardown"); e != nil {
+		WriteError(stderr, e)
+		return e.Code
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -160,12 +175,17 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 	}
 	pol := removalPolicy{spec: &sp.Removal, strict: *strict, force: *force}
 
-	keepPassed := []string{}
-	for _, kf := range keepFlags {
-		if flagValue(fs, strings.TrimPrefix(kf, "--")) {
-			keepPassed = append(keepPassed, kf)
-		}
+	keepPassed := passedSpecFlags(fs, keepDeclared)
+	// The two spellings of a purge — the declared flag and --purge <name>
+	// — resolve to the one list of flag strings the state-path driver
+	// matches on.
+	resolvedPurge, perr := resolvePurgeValues(purgeValues, purgeDeclared)
+	if perr != nil {
+		WriteError(stderr, perr)
+		return perr.Code
 	}
+	purgeFlags := mergeFlags(passedSpecFlags(fs, purgeDeclared), resolvedPurge)
+	purgeNames := purgeTargets(purgeDeclared, purgeFlags)
 	// The parsed --slug is authoritative once Parse has run; the pre-scan
 	// only existed to place the target check before the spec load.
 	if *slug != "" {
@@ -236,7 +256,7 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 	// Phase two: the real thing — reap and teardown in the coordinator.
 	if *dryRun {
 		// The prepare call was the preview; print it and stop.
-		return rmPrintPreview(stdout, stderr, *jsonOut, sp, targetSlug, prep, targetExists, notes)
+		return rmPrintPreview(stdout, stderr, *jsonOut, sp, targetSlug, prep, targetExists, notes, purgeNames, purgeDeclared)
 	}
 	res, rerr := rmRequest(sess, sp, targetSlug, *keepProcesses, false, purgeFlags, keepPassed)
 	if rerr != nil {
@@ -264,10 +284,16 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// What a teardown deleted is not recoverable, so the report names it
+	// rather than leaving "removed" to cover both outcomes.
+	if res.Removed {
+		notes = append(notes, "purged the state stores: "+purgeSummary(purgeNames, purgeDeclared))
+	}
 	writeRmReport(stdout, stderr, *jsonOut, rmResult{
 		App: sp.App, Slug: targetSlug, Removed: res.Removed,
 		WorktreeRemoved: worktreeRemoved,
 		Reap:            res.Reap,
+		Purged:          purgeNames,
 		Notes:           notes,
 		Warnings:        warnings,
 	})
@@ -333,6 +359,168 @@ func rmNoEntry(stdout, stderr io.Writer, jsonOut bool, sp *spec.Spec, slug, call
 			fmt.Sprintf("no registry entry for %s/%s: the git worktree was removed and nothing was deallocated", sp.App, slug)},
 	})
 	return ExitOK
+}
+
+// specFlag is one CLI flag a spec resource declares — a machine's
+// keep_flag or a state-path's purge.flag — paired with the resource that
+// declared it, so a refusal can name the resource and not only the flag.
+type specFlag struct {
+	flag     string // as the spec spells it, e.g. "--purge-db"
+	resource string // the resource's name, e.g. "db"
+}
+
+// declaredKeepFlags collects the machine resources' keep_flag names.
+func declaredKeepFlags(sp *spec.Spec) []specFlag {
+	return declaredFlags(sp, "machine", func(r *spec.Resource) string {
+		if r.KeepFlag == nil {
+			return ""
+		}
+		return *r.KeepFlag
+	})
+}
+
+// declaredPurgeFlags collects the state-path resources' purge.flag names.
+// A state-path resource without a purge block declares nothing, and is
+// therefore not purgeable at all.
+func declaredPurgeFlags(sp *spec.Spec) []specFlag {
+	return declaredFlags(sp, "state-path", func(r *spec.Resource) string {
+		if r.Purge == nil {
+			return ""
+		}
+		return r.Purge.Flag
+	})
+}
+
+// declaredFlags reads one flag field off every resource of the given type,
+// in spec order and deduplicated by flag string: two resources may name
+// the same flag, and one flag is one CLI flag.
+func declaredFlags(sp *spec.Spec, typ string, pick func(*spec.Resource) string) []specFlag {
+	var out []specFlag
+	seen := map[string]bool{}
+	for i := range sp.Resources {
+		r := &sp.Resources[i]
+		if r.Type != typ {
+			continue
+		}
+		f := pick(r)
+		if f == "" || seen[f] {
+			continue
+		}
+		seen[f] = true
+		out = append(out, specFlag{flag: f, resource: r.Name})
+	}
+	return out
+}
+
+// registerSpecFlags registers one boolean flag per spec-declared flag. A
+// declared flag whose name is already one of rm's own is refused rather
+// than registered: the flag package panics on a redefinition, and a
+// committed spec must not be able to crash the binary. field names the
+// spec field in the refusal so the fix lands in the right place.
+func registerSpecFlags(fs *flag.FlagSet, declared []specFlag, field, usage string) *Error {
+	for _, df := range declared {
+		name := strings.TrimPrefix(df.flag, "--")
+		if fs.Lookup(name) != nil {
+			return UsageError(
+				fmt.Sprintf("rename %s on resource %q in wt.yaml: it may not be one of rm's own flags", field, df.resource),
+				"resource %q declares %s %q, which is already an rm flag", df.resource, field, df.flag)
+		}
+		fs.BoolVar(new(bool), name, false, usage)
+	}
+	return nil
+}
+
+// passedSpecFlags returns the declared flags the caller actually passed,
+// in the spec's order.
+func passedSpecFlags(fs *flag.FlagSet, declared []specFlag) []string {
+	var out []string
+	for _, df := range declared {
+		if flagValue(fs, strings.TrimPrefix(df.flag, "--")) {
+			out = append(out, df.flag)
+		}
+	}
+	return out
+}
+
+// resolvePurgeValues turns the values of --purge into the flag strings the
+// state-path driver matches on. A value names a resource — which is what
+// the flag reads as — or spells the flag that resource declares, which is
+// the only form the flag accepted before it validated anything. Any other
+// value is a usage error naming what this repository can purge: a --purge
+// matching no resource used to exit 0 having deleted nothing.
+func resolvePurgeValues(values []string, declared []specFlag) ([]string, *Error) {
+	var out []string
+	for _, v := range values {
+		matched := ""
+		for _, df := range declared {
+			if v == df.resource || v == df.flag || v == strings.TrimPrefix(df.flag, "--") {
+				matched = df.flag
+				break
+			}
+		}
+		if matched == "" {
+			return nil, UsageError(purgeRemedy(declared),
+				"--purge %s names nothing this repository can purge", v)
+		}
+		out = append(out, matched)
+	}
+	return out, nil
+}
+
+// purgeRemedy names the resources that declare a purge flag.
+func purgeRemedy(declared []specFlag) string {
+	if len(declared) == 0 {
+		return "no state-path resource in this repository's wt.yaml declares a purge: block, so rm has nothing to purge"
+	}
+	var names []string
+	for _, df := range declared {
+		names = append(names, fmt.Sprintf("%s (or %s)", df.resource, df.flag))
+	}
+	return "pass one of: " + strings.Join(names, ", ")
+}
+
+// purgeTargets names the state-path resources the given purge flags
+// select, so rm can report what it deleted in the words the spec uses.
+func purgeTargets(declared []specFlag, purgeFlags []string) []string {
+	var out []string
+	for _, df := range declared {
+		for _, f := range purgeFlags {
+			if f == df.flag {
+				out = append(out, df.resource)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// purgeSummary renders the purge decision as one diagnostic phrase, saying
+// plainly that nothing is deleted when no flag was passed.
+func purgeSummary(names []string, declared []specFlag) string {
+	if len(names) > 0 {
+		return strings.Join(names, ", ")
+	}
+	if len(declared) == 0 {
+		return "none — no state-path resource in this repository declares a purge flag"
+	}
+	return "none — every state store survives the teardown (" + purgeRemedy(declared) + ")"
+}
+
+// mergeFlags concatenates flag lists, dropping duplicates and keeping the
+// order of first occurrence.
+func mergeFlags(lists ...[]string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, l := range lists {
+		for _, f := range l {
+			if seen[f] {
+				continue
+			}
+			seen[f] = true
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // rmMaxLines caps how many changed paths or unpushed commits a refusal
@@ -508,13 +696,18 @@ func isStandalone(root string) bool {
 }
 
 // rmPrintPreview prints what the real rm would do, changing nothing.
-func rmPrintPreview(stdout, stderr io.Writer, jsonOut bool, sp *spec.Spec, slug string, prep *api.RmResult, targetExists bool, notes []string) int {
+func rmPrintPreview(stdout, stderr io.Writer, jsonOut bool, sp *spec.Spec, slug string, prep *api.RmResult, targetExists bool, notes []string, purgeNames []string, purgeDeclared []specFlag) int {
 	note := "dry run: nothing was changed."
 	for _, n := range notes {
 		fmt.Fprintf(stderr, "note: %s\n", n)
 	}
 	fmt.Fprintf(stderr, "would reap: %s\n", reapSummary(&prep.Reap))
 	fmt.Fprintf(stderr, "would tear down the resources: %s\n", strings.Join(prep.Resources, ", "))
+	// Tearing a state path down and deleting its store are different
+	// things, and the preview says which one this run would do: without a
+	// purge flag every state store survives, which is what the teardown
+	// line alone used to read as.
+	fmt.Fprintf(stderr, "would purge the state stores: %s\n", purgeSummary(purgeNames, purgeDeclared))
 	if targetExists && !isStandalone(prep.Path) {
 		fmt.Fprintf(stderr, "would run: git worktree remove %s\n", prep.Path)
 	}
@@ -522,7 +715,7 @@ func rmPrintPreview(stdout, stderr io.Writer, jsonOut bool, sp *spec.Spec, slug 
 		if err := WriteJSON(stdout, map[string]any{
 			"dry_run": true, "app": sp.App, "slug": slug,
 			"reap": prep.Reap, "resources": prep.Resources,
-			"worktree": prep.Path,
+			"worktree": prep.Path, "purged": purgeNames,
 		}); err != nil {
 			WriteError(stderr, New(ExitFailure, err.Error(), ""))
 			return ExitFailure

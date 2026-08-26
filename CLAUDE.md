@@ -86,7 +86,14 @@ configuration; neither binary branches on repo identity.
   override the block for one run, in the two directions, and neither
   reaches `git worktree remove`, which is still never forced. cleanup and
   the sweep ignore the block and require a merged PR. git and gh reach it
-  through a runner function.
+  through a runner function. Deleting a state store is separate from
+  tearing one down: `rm` deletes one only when the caller selects it, by
+  resource name (`--purge db`) or by the flag the spec's `purge:` block
+  declares (`--purge-db`), which `rm` registers the way it registers a
+  machine's `keep_flag`. A `--purge` value selecting no resource is a usage
+  error naming what the repository can purge, a declared flag colliding
+  with one of rm's own is refused rather than left to panic the flag
+  package, and both the dry run and the report name the stores deleted.
 - `internal/driver` — the six-operation contract, the port, namespace,
   state-path, cidr and machine drivers, the docker CLI seam, and the
   sequencing: apply in dependency order with machine forced first among

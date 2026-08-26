@@ -74,10 +74,14 @@ usage:
                                      no emission, no coordinator
   wt rm --slug <s> [--json]         safety checks (dirty tree, unpushed
       [--dry-run] [--keep-processes] commits, open PR), then reap, tear
-      [--purge <flag>]... [--cwd]    down and deallocate in the
+      [--purge <resource>]... [--cwd] down and deallocate in the
                                      coordinator, then git worktree
                                      remove; works with the directory
-                                     already gone
+                                     already gone. --purge names a
+                                     state-path resource whose store is
+                                     deleted; without it every store
+                                     survives. The spec's own purge.flag
+                                     and keep_flag names are flags too
   wt bands reserve --host            reserve host-global ports no app may
       --port <p>... --note <text>    allocate from; the note names what
       [--json]                       holds the range
