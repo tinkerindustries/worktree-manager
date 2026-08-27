@@ -86,6 +86,14 @@ func TestAcceptanceTwoWorktreesSideBySide(t *testing.T) {
 		t.Fatalf("building the coordinator: %v", err)
 	}
 	h.InstallDrivers(driver.NewRegistry(&driver.Port{}, &driver.Namespace{}, &driver.StatePath{}))
+	// The container's admission credential, which is what makes it a named
+	// client rather than a refused one. It is set before the server starts
+	// so nothing writes to the handler while it is serving, and it is what
+	// `wtd --container-token` sets in the arrangement this gate stands in
+	// for: with it empty the coordinator admits host clients only, which
+	// is the phase-9 identity rule.
+	token := "gate2-token-" + fmt.Sprint(time.Now().UnixNano())
+	h.ContainerToken = token
 	srv := coord.NewServer(h, log)
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- srv.Serve(ctx, "127.0.0.1:0") }()
@@ -675,6 +683,14 @@ func TestAcceptanceGate2ContainerAndHostAllocate(t *testing.T) {
 		t.Fatalf("building the coordinator: %v", err)
 	}
 	h.InstallDrivers(driver.NewRegistry(&driver.Port{}, &driver.Namespace{}, &driver.StatePath{}))
+	// The container's admission credential, which is what makes it a named
+	// client rather than a refused one. It is set before the server starts
+	// so nothing writes to the handler while it is serving, and it is what
+	// `wtd --container-token` sets in the arrangement this gate stands in
+	// for: with it empty the coordinator admits host clients only, which
+	// is the phase-9 identity rule.
+	token := "gate2-token-" + fmt.Sprint(time.Now().UnixNano())
+	h.ContainerToken = token
 	srv := coord.NewServer(h, log)
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- srv.Serve(ctx, "127.0.0.1:0") }()
@@ -773,9 +789,8 @@ wt rm --cwd "$REPO" --slug wt-c
 	}
 
 	// The container client allocates concurrently: a docker container
-	// running the real wt with the token and a disposable clone of the
-	// app's repository.
-	token := "gate2-token-" + fmt.Sprint(time.Now().UnixNano())
+	// running the real wt with the token the coordinator was given above
+	// and a disposable clone of the app's repository.
 	containerName := fmt.Sprintf("wtp6-gate2-%d", time.Now().UnixNano())
 	runContainer := func(scriptName string) string {
 		t.Helper()
