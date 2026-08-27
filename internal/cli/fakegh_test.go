@@ -69,25 +69,82 @@ func writeFakeGh(t *testing.T, dir, script string) {
 	}
 }
 
-// setPathWithoutGh takes gh off PATH, leaving everything else where it is.
+// neededTools are the tools the missing-gh tests run once gh is gone.
+// git is required — the removal checks shell out to it; sh and env are
+// conveniences a hook may reach for.
+var neededTools = []string{"git", "sh", "env"}
+
+// setPathWithoutGh takes gh off PATH, leaving the rest of the machine's
+// tools where they are.
 //
-// It drops each directory that holds a gh executable rather than building
-// a minimal PATH out of symlinks, which is what this used to do. That
-// cannot work on Windows three times over: creating a symlink needs a
-// privilege an ordinary user does not have, LookPath would skip the
-// extensionless link anyway, and git.exe loads its DLLs from the directory
-// it actually lives in. Dropping directories keeps git, sh and the system
-// directories intact and is the same operation on every platform.
+// It drops each directory gh resolves from rather than building a minimal
+// PATH out of symlinks, which is what this used to do. That cannot work on
+// Windows three times over: creating a symlink needs a privilege an
+// ordinary user does not have, LookPath would skip the extensionless link
+// anyway, and git.exe loads its DLLs from the directory it actually lives
+// in.
+//
+// Dropping a directory can take more than gh with it. On a Linux runner
+// gh and git are both /usr/bin, so the drop leaves no git either, which is
+// what restoreTools puts back.
 func setPathWithoutGh(t *testing.T) {
 	t.Helper()
-	var kept []string
-	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
-		if dir == "" || dirHasGh(dir) {
-			continue
+
+	// Resolve the tools before any dropping: once the directory is off
+	// PATH, LookPath can no longer say where they were.
+	found := map[string]string{}
+	for _, tool := range neededTools {
+		if p, err := exec.LookPath(tool); err == nil {
+			found[tool] = p
 		}
-		kept = append(kept, dir)
 	}
-	t.Setenv("PATH", strings.Join(kept, string(os.PathListSeparator)))
+
+	// A machine can have more than one gh on PATH — Ubuntu's /bin and
+	// /usr/bin are one directory under two names — so drop and look again
+	// until none answers. LookPath decides where gh is under the rules the
+	// code under test uses, PATHEXT on Windows and the execute bit on
+	// unix, so nothing here reimplements them. Each pass removes at least
+	// one entry, so the entry count bounds the loop.
+	for range len(filepath.SplitList(os.Getenv("PATH"))) + 1 {
+		gh, err := exec.LookPath("gh")
+		if err != nil {
+			break
+		}
+		t.Setenv("PATH", withoutDir(os.Getenv("PATH"), filepath.Dir(gh)))
+	}
+
+	restoreTools(t, found)
+}
+
+// restoreTools puts back, in a directory of its own, each tool the
+// gh-dropping took with it, and states what the test is standing on: git
+// present, gh absent.
+func restoreTools(t *testing.T, found map[string]string) {
+	t.Helper()
+	var shim string
+	for _, tool := range neededTools {
+		src, ok := found[tool]
+		if !ok {
+			continue // it was not on PATH to begin with
+		}
+		if _, err := exec.LookPath(tool); err == nil {
+			continue // the drop left it where it was
+		}
+		if runtime.GOOS == "windows" {
+			// None of the three ways of moving a tool works here — see
+			// setPathWithoutGh. This arises only where gh shares a
+			// directory with one of them, which is not how the Windows
+			// installers lay either out.
+			t.Skipf("gh shares its directory with %s, and Windows cannot relocate %s", tool, tool)
+		}
+		if shim == "" {
+			shim = t.TempDir()
+			t.Setenv("PATH", shim+string(os.PathListSeparator)+os.Getenv("PATH"))
+		}
+		if err := os.Symlink(src, filepath.Join(shim, tool)); err != nil {
+			t.Fatalf("linking %s into the test PATH: %v", tool, err)
+		}
+	}
 	if p, err := exec.LookPath("gh"); err == nil {
 		t.Fatalf("gh is still on PATH at %s; the test cannot prove the missing-gh path", p)
 	}
@@ -96,34 +153,57 @@ func setPathWithoutGh(t *testing.T) {
 	}
 }
 
-// dirHasGh reports whether dir holds something LookPath would resolve as
-// gh: the bare name on unix, and a name carrying one of PATHEXT's
-// extensions on Windows.
-func dirHasGh(dir string) bool {
-	entries, err := os.ReadDir(dir)
+// withoutDir drops every PATH entry naming dir, and every empty entry with
+// them: an empty entry is the current directory, which no test wants a
+// tool resolving out of.
+func withoutDir(path, dir string) string {
+	var kept []string
+	for _, entry := range filepath.SplitList(path) {
+		if entry == "" || sameDirName(entry, dir) {
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	return strings.Join(kept, string(os.PathListSeparator))
+}
+
+// sameDirName compares two PATH entries by name — cleaned, and
+// case-insensitively on Windows. Two names for one directory that this
+// misses cost a second pass of the drop loop, not a wrong answer.
+func sameDirName(a, b string) bool {
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+// TestSetPathWithoutGhKeepsGitWhereGhSharesItsDirectory is the Linux
+// runner's shape: gh and git are both /usr/bin, so dropping gh's directory
+// drops git too. The helper has to put git back.
+func TestSetPathWithoutGhKeepsGitWhereGhSharesItsDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no Windows installer puts gh and git in one directory")
+	}
+	git, err := exec.LookPath("git")
 	if err != nil {
-		return false
+		t.Skipf("this test needs a git to point at: %v", err)
 	}
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if runtime.GOOS != "windows" {
-			if name == "gh" {
-				return true
-			}
-			continue
-		}
-		ext := filepath.Ext(name)
-		if !strings.EqualFold(strings.TrimSuffix(name, ext), "gh") {
-			continue
-		}
-		for _, pathExt := range filepath.SplitList(os.Getenv("PATHEXT")) {
-			if strings.EqualFold(ext, pathExt) {
-				return true
-			}
-		}
+
+	// One directory holding both, and nothing else on PATH.
+	shared := t.TempDir()
+	writeFakeGh(t, shared, ghNoPRScript)
+	if err := os.Symlink(git, filepath.Join(shared, "git")); err != nil {
+		t.Fatalf("linking git into the shared directory: %v", err)
 	}
-	return false
+	t.Setenv("PATH", shared)
+
+	setPathWithoutGh(t)
+
+	if p, err := exec.LookPath("gh"); err == nil {
+		t.Errorf("gh is still on PATH at %s", p)
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Errorf("git went with gh's directory: %v", err)
+	}
 }
