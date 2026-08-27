@@ -32,7 +32,12 @@ func tempDir(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("resolving the temp dir: %v", err)
 	}
-	return dir
+	// A fixture root is handed to git, so it must be in the spelling an
+	// external tool accepts. RealPath's Windows output is the
+	// extended-length form, which git rejects as an argument; ExternalPath
+	// is the way back and the identity on unix, where the symlink
+	// resolution above is the whole point.
+	return platform.ExternalPath(dir)
 }
 
 func buildAdoptedTestRepo(t *testing.T) *adoptedTestRepo {
@@ -151,8 +156,9 @@ func TestRunGuardDeniesReadCLAUDEOutside(t *testing.T) {
 	if code != ExitRefused {
 		t.Fatalf("exit = %d, want 3", code)
 	}
-	if !strings.Contains(stdout, ar.wt1) {
-		t.Errorf("denial does not name the correct root: %s", stdout)
+	v := decodeVerdict(t, stdout)
+	if v.WorktreeRoot != ar.wt1 || !strings.Contains(v.Reason, ar.wt1) {
+		t.Errorf("denial does not name the correct root %s: %s", ar.wt1, stdout)
 	}
 }
 
@@ -216,8 +222,9 @@ func TestRunGuardStdinPayload(t *testing.T) {
 	if code != ExitRefused {
 		t.Fatalf("exit = %d, want 3", code)
 	}
-	if !strings.Contains(stdout, ar.wt1) {
-		t.Errorf("denial does not name the root: %s", stdout)
+	v := decodeVerdict(t, stdout)
+	if v.WorktreeRoot != ar.wt1 || !strings.Contains(v.Reason, ar.wt1) {
+		t.Errorf("denial does not name the root %s: %s", ar.wt1, stdout)
 	}
 }
 
@@ -399,4 +406,27 @@ func TestRunHelpListsNewVerbs(t *testing.T) {
 	if !strings.Contains(stdout, "wt guard") || !strings.Contains(stdout, "wt show") {
 		t.Errorf("help lacks the phase-1 verbs:\n%s", stdout)
 	}
+}
+
+// guardVerdictJSON is the shape `wt guard --json` prints.
+type guardVerdictJSON struct {
+	Allowed      bool   `json:"allowed"`
+	Reason       string `json:"reason"`
+	WorktreeRoot string `json:"worktree_root"`
+	Outcome      string `json:"outcome"`
+}
+
+// decodeVerdict decodes the one JSON object guard prints.
+//
+// The verdict is read as JSON rather than searched as text: a Windows path
+// in a JSON string carries doubled backslashes, so a substring test for
+// C:\Users\u\wt1 over the raw stdout is false for output that names it
+// perfectly well.
+func decodeVerdict(t *testing.T, stdout string) guardVerdictJSON {
+	t.Helper()
+	var v guardVerdictJSON
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &v); err != nil {
+		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
+	}
+	return v
 }

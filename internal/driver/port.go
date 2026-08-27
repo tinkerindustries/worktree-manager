@@ -10,9 +10,7 @@ package driver
 // instance (B1.6, ARCHITECTURE.md §12.1).
 
 import (
-	"errors"
 	"fmt"
-	"syscall"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
@@ -61,7 +59,7 @@ func (*Port) Probe(r *spec.Resource, value any, env Env) ProbeResult {
 		return ProbeUnavailable
 	}
 	if err := platform.ProbeBind(port); err != nil {
-		if errors.Is(err, syscall.EADDRINUSE) {
+		if platform.IsAddrInUse(err) {
 			return ProbeHeld
 		}
 		return ProbeUnavailable

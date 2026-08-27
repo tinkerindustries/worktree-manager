@@ -42,6 +42,7 @@ import (
 	"github.com/mrgeoffrich/worktree-manager/internal/coord"
 	"github.com/mrgeoffrich/worktree-manager/internal/descriptor"
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
+	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
@@ -74,7 +75,7 @@ type adoptionEnv struct {
 func newAdoptionEnv(t *testing.T, withSpec bool) *adoptionEnv {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 
 	// The shared sources the seed modes read from: the db file the seeded
 	// mode snapshots, the cache directory the empty mode ignores, and the
@@ -116,10 +117,7 @@ func newAdoptionEnv(t *testing.T, withSpec bool) *adoptionEnv {
 	if err := os.MkdirAll(storeRoot, 0o700); err != nil {
 		t.Fatalf("store root: %v", err)
 	}
-	st, err := store.Open(storeRoot)
-	if err != nil {
-		t.Fatalf("opening the store: %v", err)
-	}
+	st := openTestStore(t, storeRoot)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	h, err := coord.NewHandler(st, log)
 	if err != nil {
@@ -262,10 +260,48 @@ func (e *adoptionEnv) worktree(slug string) string {
 // initWorktree runs the skill's phase-7 init and asserts success.
 func (e *adoptionEnv) initWorktree(wt, slug string) {
 	e.t.Helper()
+	e.reapOnCleanup(wt)
 	code, _, stderr := runCLI(e.t, "init", "--cwd", wt, "--description", "adoption worktree "+slug)
 	if code != ExitOK {
 		e.t.Fatalf("init of %s exit = %d; stderr:\n%s", slug, code, stderr)
 	}
+}
+
+// reapOnCleanup terminates whatever still holds the worktree's allocated
+// ports when the test ends.
+//
+// The bring-up hooks start a real server in the background, and `wt rm` is
+// what reaps it — so a test that fails before its rm leaves the server
+// running. On unix that is a stray process; on Windows it also holds its
+// own binary open, so t.TempDir() cannot remove the worktree and the next
+// run finds the band's low ports taken and allocates a different slot,
+// which then fails a slot assertion in a completely different test. The
+// registration is made before init so a failure *during* init is covered
+// too.
+func (e *adoptionEnv) reapOnCleanup(wt string) {
+	e.t.Helper()
+	e.t.Cleanup(func() {
+		d, err := descriptor.Read(filepath.Join(wt, "wt-env.json"), "json")
+		if err != nil {
+			return // never initialised, or already removed: nothing allocated
+		}
+		var ports []int
+		for _, r := range d.Resources {
+			if p, ok := r.Value.(int); ok && r.Type == "port" {
+				ports = append(ports, p)
+			}
+		}
+		if len(ports) == 0 {
+			return
+		}
+		holders, err := platform.Listeners(ports)
+		if err != nil {
+			return // discovery unavailable here; the reaper says so too
+		}
+		for _, h := range holders {
+			platform.SignalKill(h.PID)
+		}
+	})
 }
 
 // startWorktree runs wt start (the bring-up hooks) and asserts success.
@@ -354,8 +390,13 @@ func (e *adoptionEnv) serverHealthy(wt string) bool {
 	if !ok {
 		e.t.Fatalf("api value of %s is %T, want int", wt, d.Resources["api"].Value)
 	}
+	// The command line goes to a POSIX shell, so the binary's path has to
+	// be spelled the way that shell reads it: a native Windows path loses
+	// every backslash to the shell's escaping and names nothing. This is
+	// the test's twin of the conversion runHook does (hooks.go).
+	bin := filepath.ToSlash(filepath.Join(wt, "plain-app-server"))
 	out, err := exec.Command("sh", "-c",
-		fmt.Sprintf("API_PORT=%d %s -healthcheck", port, filepath.Join(wt, "plain-app-server"))).CombinedOutput()
+		fmt.Sprintf("API_PORT=%d %s -healthcheck", port, bin)).CombinedOutput()
 	if err != nil {
 		return false
 	}
@@ -528,10 +569,10 @@ func TestAcceptancePlainAppAdoptedThroughTheSkill(t *testing.T) {
 		t.Errorf("the empty seed mode copied the source's file")
 	}
 	shared := filepath.Join(env.home, ".plain-app", "shared", "db.sqlite")
-	if v, ok := d1.Resources["shared_db"].Value.(string); !ok || v != shared {
+	if v, ok := d1.Resources["shared_db"].Value.(string); !ok || !samePathValue(v, shared) {
 		t.Errorf("wt-1's shared_db = %v, want the shared store %s", d1.Resources["shared_db"].Value, shared)
 	}
-	if v, ok := d2.Resources["shared_db"].Value.(string); !ok || v != shared {
+	if v, ok := d2.Resources["shared_db"].Value.(string); !ok || !samePathValue(v, shared) {
 		t.Errorf("wt-2's shared_db = %v, want the same shared store %s", d2.Resources["shared_db"].Value, shared)
 	}
 	iso := d1.State["shared_db"]
@@ -540,7 +581,7 @@ func TestAcceptancePlainAppAdoptedThroughTheSkill(t *testing.T) {
 	}
 	sharedInBlock := false
 	for _, s := range d1.Shared {
-		if s.Name == shared && s.Impact != "" {
+		if samePathValue(s.Name, shared) && s.Impact != "" {
 			sharedInBlock = true
 		}
 	}
@@ -861,3 +902,16 @@ func docFindingsJSON(doc api.DoctorResult) string {
 }
 
 // keep the managed import referenced (the block is the fixture's contract).
+
+// samePathValue compares two spellings of one path.
+//
+// A resolved state-path keeps its template's forward slashes after the
+// native root {home} substitutes to, and that is deliberate: the trailing
+// "/" of a template is what tells the state-path driver its target is a
+// directory rather than a file, so the resolver does not normalise
+// separators. On Windows the value is therefore C:\Users\u\...\001/.plain-app/...,
+// which names the same file as the filepath.Join spelling and differs from
+// it as a string.
+func samePathValue(a, b string) bool {
+	return filepath.Clean(filepath.FromSlash(a)) == filepath.Clean(filepath.FromSlash(b))
+}

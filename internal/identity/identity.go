@@ -133,17 +133,17 @@ func Classify(cwd string, standalone bool) (*Classification, error) {
 		return nil, fmt.Errorf("classifying %s: not a directory", cwd)
 	}
 
-	toplevel, err := runGit(cwd, "rev-parse", "--show-toplevel")
+	toplevel, err := gitPath(cwd, "rev-parse", "--show-toplevel")
 	if err != nil {
 		// git rev-parse fails: not a repository (01-identity.md §2). The
 		// remaining fields are meaningless and stay empty.
 		return &Classification{Outcome: NotARepository}, nil
 	}
-	gitDirRaw, err := runGit(cwd, "rev-parse", "--git-dir")
+	gitDirRaw, err := gitPath(cwd, "rev-parse", "--git-dir")
 	if err != nil {
 		return nil, fmt.Errorf("classifying %s: rev-parse --git-dir: %w", cwd, err)
 	}
-	commonDirRaw, err := runGit(cwd, "rev-parse", "--git-common-dir")
+	commonDirRaw, err := gitPath(cwd, "rev-parse", "--git-common-dir")
 	if err != nil {
 		return nil, fmt.Errorf("classifying %s: rev-parse --git-common-dir: %w", cwd, err)
 	}
@@ -195,7 +195,7 @@ func WorktreeRoot(cwd string) (string, error) {
 		}
 		return "", fmt.Errorf("classifying %s: %w", cwd, err)
 	}
-	root, err := runGit(cwd, "rev-parse", "--show-toplevel")
+	root, err := gitPath(cwd, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return "", fmt.Errorf("%s is not inside a git work tree", cwd)
 	}
@@ -212,7 +212,7 @@ func mainCheckoutPath(cwd string) (string, error) {
 	}
 	for _, line := range strings.Split(out, "\n") {
 		if rest, ok := strings.CutPrefix(line, "worktree "); ok {
-			return rest, nil
+			return filepath.FromSlash(rest), nil
 		}
 	}
 	return "", fmt.Errorf("listing worktrees for %s: no worktree entry found", cwd)
@@ -230,6 +230,20 @@ func absJoin(base, p string) string {
 		return filepath.Clean(p)
 	}
 	return filepath.Clean(filepath.Join(absBase, p))
+}
+
+// gitPath is runGit for a command whose output is a path. git reports
+// paths with forward slashes on every platform, so on Windows
+// --show-toplevel answers C:/Users/u/wt1 while every other path in this
+// process is native. filepath.FromSlash is the whole conversion (the
+// identity on unix), applied here so a classification carries a path in
+// the same spelling as the ones it is joined onto and compared with.
+func gitPath(cwd string, args ...string) (string, error) {
+	out, err := runGit(cwd, args...)
+	if err != nil {
+		return "", err
+	}
+	return filepath.FromSlash(out), nil
 }
 
 // runGit runs one git command with cwd as the working directory and returns

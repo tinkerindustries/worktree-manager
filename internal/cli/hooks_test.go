@@ -147,15 +147,23 @@ func TestMissingParamOnOtherHookFails(t *testing.T) {
 func TestHookRunsInWorktreeWithEnvAndStreamsToStderr(t *testing.T) {
 	sp := hookTestSpec(t)
 	r, worktree := hookRunnerFor(t, sp)
-	sp.Hooks.Install.Run = "pwd; echo \"API_PORT=$API_PORT\""
+	// cwd is proved by reading a file by its bare name: only a process
+	// standing in the worktree root can. `pwd` would be the obvious probe
+	// and is not usable — the hook shell on Windows is the one Git for
+	// Windows provides, whose pwd prints an MSYS path (/tmp/...), so the
+	// output would never contain the native worktree path however right
+	// the cwd was.
+	const marker = "CWD-MARKER-9f3a"
+	writeT(t, filepath.Join(worktree, "cwd-marker.txt"), marker+"\n")
+	sp.Hooks.Install.Run = "cat cwd-marker.txt; echo \"API_PORT=$API_PORT\""
 	var out strings.Builder
 	r.stderr = &out
 	if err := r.runHook("install", sp.Hooks.Install); err != nil {
 		t.Fatalf("runHook: %v", err)
 	}
 	text := out.String()
-	if !strings.Contains(text, worktree) {
-		t.Errorf("output = %q, want the worktree root as cwd", text)
+	if !strings.Contains(text, marker) {
+		t.Errorf("output = %q, want the marker only a process in the worktree root could read", text)
 	}
 	if !strings.Contains(text, "API_PORT=4321") {
 		t.Errorf("output = %q, want the delivery environment exported (API_PORT=4321)", text)
@@ -276,5 +284,56 @@ func TestRunAllStopsAtFirstFailure(t *testing.T) {
 	}
 	if failed != "prepull" {
 		t.Errorf("failed = %q, want prepull", failed)
+	}
+}
+
+// TestHookCommandCarriesShellSafePaths: the paths this tool substitutes
+// into a hook command are spelled the way the hook's shell reads them.
+//
+// A hook command runs under `sh -c` on every platform, and a native
+// Windows path is not a path to that shell — every backslash is an
+// escape, so {worktree}/wt-server.log arrives as a different, relative
+// location the hook then quietly writes to. The assertion is the same on
+// unix, where the conversion is the identity.
+func TestHookCommandCarriesShellSafePaths(t *testing.T) {
+	sp := hookTestSpec(t)
+	r, worktree := hookRunnerFor(t, sp)
+	r.resolved = map[string]spec.Resolved{
+		"api": {Type: "port", Value: 4321},
+		"db":  {Type: "state-path", Value: filepath.Join(worktree, "state", "db.sqlite")},
+	}
+	sp.Hooks.Build.Run = "build {worktree}/out {home}/cache {db}"
+	sp.Hooks.Build.Params = nil
+	cmd, err := r.resolveCommand("build", sp.Hooks.Build)
+	if err != nil {
+		t.Fatalf("resolveCommand: %v", err)
+	}
+	if strings.Contains(cmd, `\`) {
+		t.Errorf("the resolved hook command carries a backslash the shell would eat: %q", cmd)
+	}
+	for _, want := range []string{
+		filepath.ToSlash(worktree) + "/out",
+		filepath.ToSlash(filepath.Join(worktree, "state", "db.sqlite")),
+	} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("the resolved hook command lacks %q: %q", want, cmd)
+		}
+	}
+}
+
+// TestHookSubstitutionLeavesTheContextAlone: the shell-safe spelling is
+// for the command line only. The runner's own context and resolved table
+// are what the descriptor and the .env are written from, and they keep the
+// native paths.
+func TestHookSubstitutionLeavesTheContextAlone(t *testing.T) {
+	sp := hookTestSpec(t)
+	r, worktree := hookRunnerFor(t, sp)
+	sp.Hooks.Build.Run = "build {worktree}"
+	sp.Hooks.Build.Params = nil
+	if _, err := r.resolveCommand("build", sp.Hooks.Build); err != nil {
+		t.Fatalf("resolveCommand: %v", err)
+	}
+	if r.ctx.Worktree != worktree {
+		t.Errorf("the runner's context worktree = %q, want the native %q", r.ctx.Worktree, worktree)
 	}
 }

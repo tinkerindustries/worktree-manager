@@ -290,8 +290,8 @@ func TestAllocateResultCarriesExistedPathAndShared(t *testing.T) {
 	if !second.Existed {
 		t.Error("Existed = false on a re-run, want true")
 	}
-	if second.Path != "/tmp/wt/wt-1" {
-		t.Errorf("Path = %q, want the entry's recorded path", second.Path)
+	if want := filepath.Join("/tmp/wt", "wt-1"); second.Path != want {
+		t.Errorf("Path = %q, want the entry's recorded path (%q)", second.Path, want)
 	}
 	if second.Slot != first.Slot {
 		t.Errorf("slot = %d, want the authoritative %d", second.Slot, first.Slot)

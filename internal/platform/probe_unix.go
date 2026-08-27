@@ -2,7 +2,10 @@
 
 package platform
 
-import "syscall"
+import (
+	"errors"
+	"syscall"
+)
 
 // probeControl returns the ListenConfig control that sets SO_REUSEADDR on
 // unix: it permits binding an address in TIME_WAIT while still refusing one
@@ -20,3 +23,6 @@ func probeControl() func(network, address string, c syscall.RawConn) error {
 		return serr
 	}
 }
+
+// isAddrInUse is EADDRINUSE on unix.
+func isAddrInUse(err error) bool { return errors.Is(err, syscall.EADDRINUSE) }

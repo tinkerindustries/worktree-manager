@@ -79,7 +79,7 @@ func gitTreeRoot(dir string) (string, bool, error) {
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
 		return "", false, nil
 	}
-	root, err := runGit(dir, "rev-parse", "--show-toplevel")
+	root, err := gitPath(dir, "rev-parse", "--show-toplevel")
 	if err != nil {
 		// A `.git` entry git does not honour (a stray directory, a broken
 		// worktree registration): not a working tree root.
@@ -101,7 +101,7 @@ func sameRepository(dir, gitCommonDir string) (bool, error) {
 	if gitCommonDir == "" {
 		return false, nil
 	}
-	common, err := runGit(dir, "rev-parse", "--git-common-dir")
+	common, err := gitPath(dir, "rev-parse", "--git-common-dir")
 	if err != nil {
 		return false, nil
 	}

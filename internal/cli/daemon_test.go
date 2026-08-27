@@ -252,17 +252,17 @@ func TestDaemonInstallPrefix(t *testing.T) {
 	if res.RegistrationPath != wantPath {
 		t.Errorf("registration path = %q, want %q", res.RegistrationPath, wantPath)
 	}
-	data, err := os.ReadFile(res.RegistrationPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	content := string(data)
+	content := readRegistration(t, res.RegistrationPath)
+	// What identifies the registration differs by supervisor. launchd and
+	// systemd carry the label in the file; the Windows task's name is the
+	// /TN argument schtasks is given, and the XML carries the action —
+	// which is what a reader of the file has to be able to check.
+	want := platform.LaunchAgentLabel
 	if runtime.GOOS == "windows" {
-		// The task XML is UTF-16 (schtasks /Create /XML requires it).
-		content = decodeUTF16LE(t, data)
+		want = "<Command>" + stub + "</Command>"
 	}
-	if !strings.Contains(content, platform.LaunchAgentLabel) {
-		t.Errorf("registration file lacks the label:\n%s", content)
+	if !strings.Contains(content, want) {
+		t.Errorf("registration file lacks %s:\n%s", want, content)
 	}
 
 	code, stdout, _ = runCLI(t, "daemon", "install", "--prefix", prefix, "--wtd", stub)
@@ -416,4 +416,21 @@ func decodeUTF16LE(t *testing.T, data []byte) string {
 		u = u[1:]
 	}
 	return string(utf16.Decode(u))
+}
+
+// readRegistration reads a supervisor registration file as text.
+//
+// The Windows one is the scheduled task's XML, which schtasks /Create /XML
+// requires to be UTF-16 — read as a Go string it is a run of NULs between
+// the characters, and every strings.Contains over it is false.
+func readRegistration(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the registration %s: %v", path, err)
+	}
+	if runtime.GOOS == "windows" {
+		return decodeUTF16LE(t, data)
+	}
+	return string(data)
 }

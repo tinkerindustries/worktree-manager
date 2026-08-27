@@ -20,7 +20,6 @@ import (
 	"github.com/mrgeoffrich/worktree-manager/internal/coord"
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
-	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
 
 // TestRunListJSONAndTable: `wt list --json` prints exactly the registry the
@@ -235,10 +234,7 @@ func TestRunReconcileTearsDownDeletedWorktree(t *testing.T) {
 	if err := os.MkdirAll(storeRoot, 0o700); err != nil {
 		t.Fatalf("store root: %v", err)
 	}
-	st, err := store.Open(storeRoot)
-	if err != nil {
-		t.Fatalf("opening the store: %v", err)
-	}
+	st := openTestStore(t, storeRoot)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	h, err := coord.NewHandler(st, log)
 	if err != nil {

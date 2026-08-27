@@ -45,6 +45,23 @@ func RealPath(path string) (string, error) {
 	return canonical(resolved), nil
 }
 
+// ExternalPath renders a realised path in the spelling an external tool
+// accepts — the "path for an external tool" conversion.
+//
+// RealPath's output is for this process: it is the form containment
+// comparisons and registry keys are built on, and on Windows that is the
+// extended-length \\?\C:\... spelling GetFinalPathNameByHandleW returns.
+// git rejects it (it normalises the backslashes and then cannot open the
+// result), so a realised path handed to git, docker or any other program
+// must come back through here first. On unix it is the identity, so the
+// conversion can be applied unconditionally at the point a path leaves
+// the process; a path that carries no prefix is returned unchanged, so
+// applying it to a whole argument list is safe.
+//
+// The pair is deliberate and asymmetric: realise on the way in, convert
+// on the way out. Nothing stores the external form.
+func ExternalPath(p string) string { return externalPath(p) }
+
 // SamePath reports whether two paths name the same file or directory,
 // comparing their realised forms so two spellings of one directory compare
 // equal. Two paths that both fail to realise are the same only when they are
@@ -107,6 +124,20 @@ func canonical(p string) string {
 // the conservative direction for the containment property (08-platform.md §8).
 func CaseSensitive(dir string) (bool, error) {
 	if runtime.GOOS == "windows" {
+		// Windows answers without probing — NTFS is case-insensitive
+		// unless a directory was marked otherwise, and the conservative
+		// answer is the one that already holds. The directory is still
+		// checked: "a directory that is not there cannot be probed" is
+		// the contract on every platform, and a caller that gets an
+		// answer for a path that does not exist has been told something
+		// about nothing.
+		fi, err := os.Stat(dir)
+		if err != nil {
+			return false, fmt.Errorf("case-sensitivity probe of %s: %w", dir, err)
+		}
+		if !fi.IsDir() {
+			return false, fmt.Errorf("case-sensitivity probe of %s: not a directory", dir)
+		}
 		return false, nil
 	}
 	// The answer is a property of the mount and cannot change under a

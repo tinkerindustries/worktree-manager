@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -54,7 +55,12 @@ func tempDir(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("resolving the temp dir: %v", err)
 	}
-	return dir
+	// A fixture root is handed to git, so it must be in the spelling an
+	// external tool accepts. RealPath's Windows output is the
+	// extended-length form, which git rejects as an argument; ExternalPath
+	// is the way back and the identity on unix, where the symlink
+	// resolution above is the whole point.
+	return platform.ExternalPath(dir)
 }
 
 func buildFixtures(t *testing.T) *fixtures {
@@ -99,9 +105,7 @@ func buildFixtures(t *testing.T) *fixtures {
 		fx.linkClone: fx.clone,
 		fx.linkGone:  fx.removedPath,
 	} {
-		if err := os.Symlink(target, link); err != nil {
-			t.Fatal(err)
-		}
+		symlinkOrSkip(t, target, link)
 	}
 	return fx
 }
@@ -317,5 +321,25 @@ func TestOutcomeNames(t *testing.T) {
 		if o.String() != s {
 			t.Errorf("Outcome(%d).String() = %q, want %q", o, o.String(), s)
 		}
+	}
+}
+
+// symlinkOrSkip creates a symlink, skipping the test when the platform
+// will not let it.
+//
+// Creating a symlink on Windows needs SeCreateSymbolicLinkPrivilege, which
+// an ordinary account holds only with Developer Mode on; without it
+// os.Symlink fails with "A required privilege is not held by the client".
+// A test about symlink semantics cannot run there, and a skip naming the
+// reason is the honest answer — the same call the mapped-drive probe in
+// realpath_windows_test.go makes. Every other platform, and Windows CI,
+// creates the link and runs the test.
+func symlinkOrSkip(t *testing.T, oldname, newname string) {
+	t.Helper()
+	if err := os.Symlink(oldname, newname); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("cannot create a symlink on this machine (%v); creating one needs SeCreateSymbolicLinkPrivilege, which Developer Mode grants", err)
+		}
+		t.Fatalf("symlink %s -> %s: %v", newname, oldname, err)
 	}
 }

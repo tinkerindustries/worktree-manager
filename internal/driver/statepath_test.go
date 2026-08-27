@@ -3,17 +3,35 @@ package driver
 // statepath_test.go exercises the state-path driver: apply per mode, the
 // purge refusal on the resolved symlink-realised path, teardown only when
 // the purge flag is given, and verify. All paths are built from t.TempDir()
-// roots and expectations are derived from the same roots, so a symlinked
-// temp root (macOS /var → /private/var) cannot break a comparison.
+// roots; where an expectation is a path the driver prints, it comes from
+// realisedName, because t.TempDir's spelling is not the one the driver
+// realises — macOS answers /var where the realised form is /private/var,
+// and Windows answers an 8.3 short name where the realised form is long.
 
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 )
+
+// realisedName is the spelling the driver's messages give a path: realised,
+// then converted back to the form a person reads. Asserting on the caller's
+// own spelling instead is what made these tests pass on macOS by accident —
+// "/private/var/x" contains "/var/x" — and fail on Windows, where the short
+// and long names share no such substring.
+func realisedName(t *testing.T, path string) string {
+	t.Helper()
+	real, err := platform.RealPath(path)
+	if err != nil {
+		t.Fatalf("realising %s: %v", path, err)
+	}
+	return platform.ExternalPath(real)
+}
 
 // statePathEnv builds the Env a state-path operation needs: a spec carrying
 // the given resource, a temp home, and the given seed-mode and purge-flag
@@ -256,8 +274,8 @@ func TestStatePathPurgeRefusalNamesThePath(t *testing.T) {
 	if !isRefusal(err) {
 		t.Fatalf("purging the shared source itself must be refused, got %v", err)
 	}
-	if !strings.Contains(err.Error(), shared) {
-		t.Errorf("the refusal must name the resolved path: %v", err)
+	if want := realisedName(t, shared); !strings.Contains(err.Error(), want) {
+		t.Errorf("the refusal must name the resolved path %s: %v", want, err)
 	}
 	if _, serr := os.Stat(shared); serr != nil {
 		t.Fatalf("the shared source must survive the refusal: %v", serr)
@@ -299,9 +317,7 @@ func TestStatePathPurgeRefusalThroughSymlink(t *testing.T) {
 	os.MkdirAll(real, 0o755)
 	os.WriteFile(filepath.Join(real, "db.sqlite"), []byte("data"), 0o644)
 	link := filepath.Join(home, "link-store")
-	if err := os.Symlink(real, link); err != nil {
-		t.Fatalf("creating the symlink: %v", err)
-	}
+	symlinkOrSkip(t, real, link)
 	// The purge target is the symlink; the shared source sits inside the
 	// real directory the symlink names.
 	res := &spec.Resource{Type: "state-path", Name: "db",
@@ -319,8 +335,8 @@ func TestStatePathPurgeRefusalThroughSymlink(t *testing.T) {
 	if !isRefusal(err) {
 		t.Fatalf("a purge reached through a symlink must be refused, got %v", err)
 	}
-	if !strings.Contains(err.Error(), real) {
-		t.Errorf("the refusal must name the resolved (symlink-realised) path %s: %v", real, err)
+	if want := realisedName(t, real); !strings.Contains(err.Error(), want) {
+		t.Errorf("the refusal must name the resolved (symlink-realised) path %s: %v", want, err)
 	}
 	if _, serr := os.Stat(filepath.Join(real, "db.sqlite")); serr != nil {
 		t.Fatalf("the shared source must survive: %v", serr)
@@ -378,5 +394,25 @@ func TestStatePathBlastRadiusNamesSharing(t *testing.T) {
 	br := (&StatePath{}).BlastRadius(&spec.Resource{Name: "db"}, nil)
 	if !strings.Contains(br, "every worktree") || !strings.Contains(br, "writes") {
 		t.Errorf("BlastRadius = %q, want prose naming shared writes", br)
+	}
+}
+
+// symlinkOrSkip creates a symlink, skipping the test when the platform
+// will not let it.
+//
+// Creating a symlink on Windows needs SeCreateSymbolicLinkPrivilege, which
+// an ordinary account holds only with Developer Mode on; without it
+// os.Symlink fails with "A required privilege is not held by the client".
+// A test about symlink semantics cannot run there, and a skip naming the
+// reason is the honest answer — the same call the mapped-drive probe in
+// realpath_windows_test.go makes. Every other platform, and Windows CI,
+// creates the link and runs the test.
+func symlinkOrSkip(t *testing.T, oldname, newname string) {
+	t.Helper()
+	if err := os.Symlink(oldname, newname); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("cannot create a symlink on this machine (%v); creating one needs SeCreateSymbolicLinkPrivilege, which Developer Mode grants", err)
+		}
+		t.Fatalf("symlink %s -> %s: %v", newname, oldname, err)
 	}
 }

@@ -30,6 +30,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -332,11 +333,45 @@ func (r *hookRunner) resolveCommand(name string, hook *spec.Hook) (string, error
 	for _, p := range slices.Sorted(maps.Keys(values)) {
 		out = strings.ReplaceAll(out, "{"+p+"}", values[p])
 	}
-	cmd, err := spec.Substitute(out, r.ctx, r.resolved)
+	ctx, resolved := shellSafeSubstitutions(r.ctx, r.resolved)
+	cmd, err := spec.Substitute(out, ctx, resolved)
 	if err != nil {
 		return "", fmt.Errorf("hook %s: resolving the command: %v", name, err)
 	}
 	return cmd, nil
+}
+
+// shellSafeSubstitutions renders the path-valued substitution inputs in the
+// spelling a POSIX shell accepts.
+//
+// A hook command is a shell command and runs under `sh -c` on every
+// platform (platform.ShellCommand, 08-platform.md). A native Windows path
+// substituted into one is not a path to that shell: every backslash is an
+// escape, so `{worktree}/server.log` resolved to
+// C:\Users\u\wt/server.log arrives at sh as C:Usersuwt/server.log — a
+// different, relative location the hook then quietly writes to. Forward
+// slashes are accepted both by the shell and by every Windows program the
+// hook goes on to call, so the four inputs the tool itself produced as
+// paths — {worktree}, {home} and each state-path resource's value — are
+// converted here. filepath.ToSlash is the identity on unix, where the
+// question does not arise.
+//
+// Only paths this tool produced are converted. A hook parameter's value is
+// the repository's own string (a password, a URL, a flag) and is
+// substituted before this point, untouched.
+func shellSafeSubstitutions(ctx spec.Context, resolved map[string]spec.Resolved) (spec.Context, map[string]spec.Resolved) {
+	ctx.Worktree = filepath.ToSlash(ctx.Worktree)
+	ctx.Home = filepath.ToSlash(ctx.Home)
+	out := make(map[string]spec.Resolved, len(resolved))
+	for name, r := range resolved {
+		if r.Type == "state-path" {
+			if v, ok := r.Value.(string); ok {
+				r.Value = filepath.ToSlash(v)
+			}
+		}
+		out[name] = r
+	}
+	return ctx, out
 }
 
 // paramValues resolves every declared parameter of a hook. The returned

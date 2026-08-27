@@ -24,7 +24,12 @@ func tempDir(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("resolving the temp dir: %v", err)
 	}
-	return dir
+	// A fixture root is handed to git, so it must be in the spelling an
+	// external tool accepts. RealPath's Windows output is the
+	// extended-length form, which git rejects as an argument; ExternalPath
+	// is the way back and the identity on unix, where the symlink
+	// resolution above is the whole point.
+	return platform.ExternalPath(dir)
 }
 
 func gitIn(t *testing.T, dir string, args ...string) string {

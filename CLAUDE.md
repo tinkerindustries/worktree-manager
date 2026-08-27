@@ -76,7 +76,9 @@ configuration; neither binary branches on repo identity.
 - `internal/treecheck` — the checks that run before a worktree is
   destroyed: uncommitted changes, unpushed commits (an absent upstream is
   its own answer), what gh reports about the branch's pull request, and
-  the never-forced `git worktree remove`. `wt rm`, `wt cleanup` and the
+  the never-forced `git worktree remove` (run from the repository's main
+  checkout, never from the tree it deletes — Windows will not remove a
+  directory a process is standing in). `wt rm`, `wt cleanup` and the
   coordinator's sweep each keep their own policy over this one mechanism.
   rm's policy is the repository's, from the spec's `removal:` block: each
   check either refuses (exit 3, or 4 when it could not run) or warns and
@@ -159,7 +161,14 @@ configuration; neither binary branches on repo identity.
   predicate), the mount's case-sensitivity probe (answered once per
   directory per process), the hook shell (`sh -c` on every platform,
   resolved from Git for Windows on Windows and refused by name where no
-  POSIX shell exists, because hook commands are shell commands), the
+  POSIX shell exists, because hook commands are shell commands),
+  `ExternalPath` (the one conversion out of a realised path into the
+  spelling an external tool accepts — the identity on unix, and the strip
+  of the extended-length prefix on Windows, which git rejects as an
+  argument), `IsAddrInUse` (a bind's address-taken answer, whose errno
+  differs between unix and Winsock), `FileIdentity` (the dev/inode/mtime
+  the guard cache validates against, from stat on unix and
+  GetFileInformationByHandle on Windows), the
   listen-address and container-token rails (`ValidateListenAddr`,
   `ValidateContainerToken` and the `ValidateCoordinatorConfig` that both
   `wtd` and `wt daemon install` run, so the two cannot disagree about what

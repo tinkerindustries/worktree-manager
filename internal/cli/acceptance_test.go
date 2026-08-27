@@ -39,7 +39,6 @@ import (
 	"github.com/mrgeoffrich/worktree-manager/internal/descriptor"
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
-	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
 
 // gateBase is the band base the gate's band registration uses: far from
@@ -76,10 +75,7 @@ func TestAcceptanceTwoWorktreesSideBySide(t *testing.T) {
 	if err := os.MkdirAll(storeRoot, 0o700); err != nil {
 		t.Fatalf("store root: %v", err)
 	}
-	st, err := store.Open(storeRoot)
-	if err != nil {
-		t.Fatalf("opening the store: %v", err)
-	}
+	st := openTestStore(t, storeRoot)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	h, err := coord.NewHandler(st, log)
 	if err != nil {
@@ -367,13 +363,7 @@ func projectObjectCount(t *testing.T, project string) int {
 // rm safety check reads.
 func fakeGhNoPR(t *testing.T) {
 	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gh")
-	body := "#!/bin/sh\necho \"no pull requests found for branch \\\"$(git branch --show-current)\\\"\" >&2\nexit 1\n"
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
-		t.Fatalf("writing the fake gh: %v", err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	fakeGhOnPath(t, ghNoPRScript)
 }
 
 // gate2Spec is the allocation spec both sides of gate 2 adopt: the
@@ -673,10 +663,7 @@ func TestAcceptanceGate2ContainerAndHostAllocate(t *testing.T) {
 	if err := os.MkdirAll(storeRoot, 0o700); err != nil {
 		t.Fatalf("store root: %v", err)
 	}
-	st, err := store.Open(storeRoot)
-	if err != nil {
-		t.Fatalf("opening the store: %v", err)
-	}
+	st := openTestStore(t, storeRoot)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	h, err := coord.NewHandler(st, log)
 	if err != nil {

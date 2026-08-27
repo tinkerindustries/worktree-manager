@@ -130,10 +130,8 @@ func parseTasklistName(out string) string {
 	if i := strings.IndexByte(line, '\n'); i >= 0 {
 		line = line[:i]
 	}
-	if strings.HasPrefix(line, "\"") {
-		if i := strings.IndexByte(line[1:], '"'); i >= 0 {
-			return line[1 : 1+i]
-		}
+	if fields := parseTasklistFields(line); len(fields) > 0 {
+		return fields[0]
 	}
 	return "(unknown)"
 }
@@ -151,6 +149,41 @@ func signalKill(pid int) error {
 }
 
 // alive reports whether the pid still has a tasklist entry.
+//
+// The answer is in the output, never in the exit code: tasklist exits 0
+// for a filter that matches nothing and prints "INFO: No tasks are running
+// which match the specified criteria" instead. Reading the exit code alone
+// made alive() answer true for every pid, including one that had just been
+// force-terminated — which is exactly the reading the reaper's escalation
+// must not get wrong.
 func alive(pid int) bool {
-	return exec.Command("tasklist", "/FI", "PID eq "+strconv.Itoa(pid)).Run() == nil
+	want := strconv.Itoa(pid)
+	out, err := exec.Command("tasklist", "/FO", "CSV", "/NH", "/FI", "PID eq "+want).Output()
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if fields := parseTasklistFields(line); len(fields) > 1 && fields[1] == want {
+			return true
+		}
+	}
+	return false
+}
+
+// parseTasklistFields splits one tasklist CSV line into its quoted fields:
+// `"server.exe","1234","Console","1","5,000 K"`. The memory column carries
+// a comma inside its quotes, so the split follows the quoting rather than
+// the commas.
+func parseTasklistFields(line string) []string {
+	var fields []string
+	rest := strings.TrimSpace(line)
+	for strings.HasPrefix(rest, `"`) {
+		end := strings.IndexByte(rest[1:], '"')
+		if end < 0 {
+			break
+		}
+		fields = append(fields, rest[1:1+end])
+		rest = strings.TrimPrefix(rest[1+end+1:], ",")
+	}
+	return fields
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/api"
+	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
 
 // waitEndpoint waits for an in-process server to write endpoint.json
@@ -396,4 +397,37 @@ func TestSpecPathRefusesABadSlug(t *testing.T) {
 	if !strings.Contains(stderr, "is not a valid slug") {
 		t.Errorf("stderr = %q, want the slug rule named", stderr)
 	}
+}
+
+// openTestStore opens a coordinator store for a test and closes it when
+// the test ends. The handle holds wt.db and its -wal/-shm sidecars open;
+// leaving it open leaks it on every platform and, on Windows, stops
+// t.TempDir() removing the directory it lives in — which is how the leak
+// was noticed.
+func openTestStore(t *testing.T, root string) *store.Store {
+	t.Helper()
+	st, err := store.Open(root)
+	if err != nil {
+		t.Fatalf("opening the store at %s: %v", root, err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("closing the store at %s: %v", root, err)
+		}
+	})
+	return st
+}
+
+// setTestHome points the tool's home-directory resolution at dir.
+//
+// Every home lookup in this tool is os.UserHomeDir, which reads
+// USERPROFILE on Windows and HOME everywhere else. Setting HOME alone left
+// the Windows runs resolving {home} against the real user's directory,
+// so a fixture's state paths were written outside the test's own tree —
+// silently, because the directory exists. Both variables are set, so the
+// isolation holds whichever one the platform reads.
+func setTestHome(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
 }

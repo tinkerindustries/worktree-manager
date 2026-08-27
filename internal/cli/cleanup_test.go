@@ -21,7 +21,6 @@ import (
 	"github.com/mrgeoffrich/worktree-manager/internal/coord"
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
-	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
 
 // cleanupSpec is the cleanup fixture's committed spec: a port only — no
@@ -83,10 +82,7 @@ func cleanupCoord(t *testing.T, sp *spec.Spec) string {
 	if err := os.MkdirAll(storeRoot, 0o700); err != nil {
 		t.Fatalf("store root: %v", err)
 	}
-	st, err := store.Open(storeRoot)
-	if err != nil {
-		t.Fatalf("opening the store: %v", err)
-	}
+	st := openTestStore(t, storeRoot)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	h, err := coord.NewHandler(st, log)
 	if err != nil {
