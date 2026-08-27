@@ -60,6 +60,7 @@ func allocateCIDR(t *testing.T, h *Harness, sess *Session, sp *spec.Spec, slug s
 // silent.
 func TestAllocateCIDRFallbackIsLoud(t *testing.T) {
 	h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
+	h.H.Docker = &noNetworksDocker{} // the subject is the allocator, not the probe
 	h.H.InstallDrivers(driver.NewRegistry(&driver.CIDR{}))
 	sess, err := h.Connect(api.KindHost, "")
 	if err != nil {
@@ -148,6 +149,18 @@ func (d *overlapDocker) NetworkSubnet(string) (string, error)  { return d.subnet
 func (d *overlapDocker) RemoveContainers([]string) error       { return nil }
 func (d *overlapDocker) RemoveNetworks([]string) error         { return nil }
 func (d *overlapDocker) RemoveVolumes([]string) error          { return nil }
+
+// noNetworksDocker is the docker seam for a test whose subject is the
+// allocator rather than the probe: a reachable daemon holding no network,
+// so no derived slice overlaps anything.
+//
+// Without it the probe asks the machine's own daemon, and the answer
+// depends on whatever networks that daemon happens to hold — a Windows
+// runner's default nat network sits inside 192.168.0.0/16 and takes the
+// first two slots with it.
+type noNetworksDocker struct{ overlapDocker }
+
+func (d *noNetworksDocker) ListNetworksAll() ([]string, error) { return nil, nil }
 
 // mustUnmarshal decodes a response result into v, failing the test on a
 // decode error.
