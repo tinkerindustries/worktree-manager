@@ -43,18 +43,26 @@ enum InstalledEditors {
 final class PreferencesWindowController: NSWindowController {
     private let defaults: UserDefaults
     private let installedEditors: [EditorDefinition]
+    private let launchAtLogin: LaunchAtLoginRegistering
 
     private var editorPopUp: NSPopUpButton?
     private var customTemplateField: NSTextField?
     private var wtPathField: NSTextField?
     private var refreshIntervalField: NSTextField?
+    private var launchAtLoginCheckbox: NSButton?
+    private var launchAtLoginStatusLabel: NSTextField?
 
-    init(defaults: UserDefaults = .standard, workspace: NSWorkspace = .shared) {
+    init(
+        defaults: UserDefaults = .standard,
+        workspace: NSWorkspace = .shared,
+        launchAtLogin: LaunchAtLoginRegistering = SMAppServiceLaunchAtLogin()
+    ) {
         self.defaults = defaults
         self.installedEditors = InstalledEditors.detect(workspace: workspace)
+        self.launchAtLogin = launchAtLogin
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 230),
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 270),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -110,6 +118,26 @@ final class PreferencesWindowController: NSWindowController {
         refreshIntervalField.action = #selector(refreshIntervalChanged(_:))
         self.refreshIntervalField = refreshIntervalField
 
+        let launchAtLoginCheckbox = NSButton(
+            checkboxWithTitle: "Launch at login",
+            target: self,
+            action: #selector(launchAtLoginChanged(_:))
+        )
+        self.launchAtLoginCheckbox = launchAtLoginCheckbox
+
+        let launchAtLoginStatusLabel = NSTextField(labelWithString: "")
+        launchAtLoginStatusLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        launchAtLoginStatusLabel.textColor = .secondaryLabelColor
+        launchAtLoginStatusLabel.lineBreakMode = .byWordWrapping
+        launchAtLoginStatusLabel.maximumNumberOfLines = 2
+        launchAtLoginStatusLabel.preferredMaxLayoutWidth = 380
+        self.launchAtLoginStatusLabel = launchAtLoginStatusLabel
+
+        let launchAtLoginStack = NSStackView(views: [launchAtLoginCheckbox, launchAtLoginStatusLabel])
+        launchAtLoginStack.orientation = .vertical
+        launchAtLoginStack.alignment = .leading
+        launchAtLoginStack.spacing = 2
+
         func row(_ label: NSView, _ control: NSView) -> NSStackView {
             let stack = NSStackView(views: [label, control])
             stack.orientation = .horizontal
@@ -125,6 +153,7 @@ final class PreferencesWindowController: NSWindowController {
             row(customLabel, customTemplateField),
             row(wtPathLabel, wtPathField),
             row(refreshLabel, refreshIntervalField),
+            launchAtLoginStack,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -160,6 +189,21 @@ final class PreferencesWindowController: NSWindowController {
         let interval = defaults.object(forKey: PreferencesKeys.refreshIntervalSeconds) as? Double
             ?? PreferencesKeys.defaultRefreshIntervalSeconds
         refreshIntervalField?.stringValue = String(Int(interval))
+
+        refreshLaunchAtLoginState()
+    }
+
+    /// Reads `SMAppService.mainApp`'s current status (through the
+    /// injected `launchAtLogin`) and reflects it in the checkbox and the
+    /// status label below it. Called on open and after every toggle
+    /// attempt, so a denial in System Settings or a throw from
+    /// `register()`/`unregister()` is always shown as the true state
+    /// rather than whatever the checkbox optimistically flipped to.
+    private func refreshLaunchAtLoginState() {
+        let status = launchAtLogin.currentStatus
+        launchAtLoginCheckbox?.state = (status == .enabled) ? .on : .off
+        launchAtLoginCheckbox?.isEnabled = (status != .notFound)
+        launchAtLoginStatusLabel?.stringValue = LaunchAtLoginPreference.statusDescription(status)
     }
 
     @objc private func editorChanged(_ sender: NSPopUpButton) {
@@ -179,5 +223,34 @@ final class PreferencesWindowController: NSWindowController {
     @objc private func refreshIntervalChanged(_ sender: NSTextField) {
         guard let value = Double(sender.stringValue), value > 0 else { return }
         defaults.set(value, forKey: PreferencesKeys.refreshIntervalSeconds)
+    }
+
+    /// Registers or unregisters with `SMAppService.mainApp` to match the
+    /// checkbox the user just clicked. Both calls can throw — the user
+    /// may have denied the request, or already removed the app from
+    /// Login Items in System Settings — so the checkbox is never trusted
+    /// on its own: `refreshLaunchAtLoginState` re-reads the real status
+    /// afterwards and the checkbox settles there, not wherever the click
+    /// left it (PLAN.md: "handle the failure case").
+    @objc private func launchAtLoginChanged(_ sender: NSButton) {
+        let wantsOn = (sender.state == .on)
+        do {
+            if wantsOn {
+                try launchAtLogin.register()
+            } else {
+                try launchAtLogin.unregister()
+            }
+            refreshLaunchAtLoginState()
+        } catch {
+            // Leave the failure text in place rather than letting
+            // refreshLaunchAtLoginState's generic status line overwrite
+            // it; only the checkbox is resynced to the real status.
+            let status = launchAtLogin.currentStatus
+            launchAtLoginCheckbox?.state = (status == .enabled) ? .on : .off
+            launchAtLoginStatusLabel?.stringValue = LaunchAtLoginPreference.failureDescription(
+                togglingOn: wantsOn,
+                error: error
+            )
+        }
     }
 }
