@@ -41,27 +41,41 @@ list. Deferred until it is missed.
 
 ## Layout
 
+The package splits in two. `WorktreeMenuCore` is a library holding
+everything that can be tested without AppKit; `WorktreeMenu` is a thin
+executable that owns the AppKit surface. A SwiftPM executable target
+cannot be `@testable import`ed, so anything worth a unit test lives in
+the library.
+
 ```
 macapp/
   PLAN.md
   Package.swift
+  Sources/WorktreeMenuCore/
+    Models.swift            ListEntry and friends, decoded from wt list --json
+    WtClient.swift          Locating wt, running it, timeout, exit-code mapping
+    MenuBuilder.swift       [ListEntry] -> menu description tree, no AppKit
+    RefreshCoordinator.swift  Ticket counter; the newest refresh wins
+    EditorLauncher.swift    URL scheme templates, modifier-key routing (phase 3)
   Sources/WorktreeMenu/
-    main.swift            App entry, NSApplication setup
-    AppDelegate.swift     NSStatusItem, menu delegate, refresh timer
-    Models.swift          ListEntry and friends, decoded from wt list --json
-    WtClient.swift        Locating wt, running it, mapping exit codes
-    MenuBuilder.swift     Snapshot -> menu description
-    EditorLauncher.swift  URL scheme templates, modifier-key routing
-    Preferences.swift     UserDefaults keys and the preferences window
+    main.swift              App entry, NSApplication setup
+    AppDelegate.swift       NSStatusItem, menu delegate, refresh timer,
+                            menu description -> NSMenu
+    Preferences.swift       The preferences window (phase 3)
   Resources/
     Info.plist
-    StatusIcon.pdf        Template image, inverts for dark mode
     AppIcon.icns
   Scripts/
-    bundle.sh             Assemble WorktreeMenu.app from the built binary
-    sign.sh               codesign, notarytool submit, stapler staple
-  Tests/WorktreeMenuTests/
+    bundle.sh               Assemble WorktreeMenu.app from the built binary
+    sign.sh                 codesign, notarytool submit, stapler staple
+  Tests/WorktreeMenuCoreTests/
 ```
+
+The rule for later phases: pure logic goes in `WorktreeMenuCore` with
+tests; only the code that must touch AppKit goes in `WorktreeMenu`.
+
+The status item currently uses an SF Symbol in template mode rather than
+a drawn asset. A custom mark can replace it whenever one exists.
 
 ## Data contract
 
