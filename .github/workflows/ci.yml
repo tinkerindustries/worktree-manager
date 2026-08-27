@@ -170,6 +170,18 @@ jobs:
       - name: go test
         run: go test -race ./...
 
+  swift:
+    name: swift build and test (macapp)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: swift build
+        working-directory: macapp
+        run: swift build
+      - name: swift test
+        working-directory: macapp
+        run: swift test
+
   acceptance:
     name: acceptance gates (docker)
     runs-on: ubuntu-latest

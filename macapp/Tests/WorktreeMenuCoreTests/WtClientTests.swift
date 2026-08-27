@@ -175,6 +175,99 @@ final class WtClientTests: XCTestCase {
         try? FileManager.default.removeItem(at: tempDir)
     }
 
+    // MARK: doctor() — phase 5: shares list()'s exit-code mapping rather
+    // than duplicating it (internal/cli's doctor uses the same codes as
+    // list, per macapp/PLAN.md's task).
+
+    func testDoctorDecodesFindings() async throws {
+        let json = """
+        {"findings": [
+          {"app": "worktree-manager", "slug": "macapp", "level": "warning", "message": "stale entry"}
+        ]}
+        """
+        let client = makeClient { executable, arguments in
+            XCTAssertEqual(arguments, ["doctor", "--json"])
+            return ProcessResult(exitCode: 0, stdout: Data(json.utf8), stderr: Data())
+        }
+        let result = try await client.doctor()
+        XCTAssertEqual(result.findings.count, 1)
+        XCTAssertEqual(result.findings[0].level, .warning)
+    }
+
+    func testDoctorExitFiveMapsToUnreachable() async throws {
+        let client = makeClient { _, _ in
+            ProcessResult(exitCode: 5, stdout: Data(), stderr: Data("dial tcp: connection refused".utf8))
+        }
+        do {
+            _ = try await client.doctor()
+            XCTFail("expected an error")
+        } catch let WtClientError.unreachable(message) {
+            XCTAssertEqual(message, "dial tcp: connection refused")
+        }
+    }
+
+    func testDoctorGenericFailureCarriesStderr() async throws {
+        let client = makeClient { _, _ in
+            ProcessResult(exitCode: 1, stdout: Data(), stderr: Data("boom".utf8))
+        }
+        do {
+            _ = try await client.doctor()
+            XCTFail("expected an error")
+        } catch let WtClientError.failed(code, stderr) {
+            XCTAssertEqual(code, 1)
+            XCTAssertEqual(stderr, "boom")
+        }
+    }
+
+    func testDoctorMalformedOutputMapsToDecodeError() async throws {
+        let client = makeClient { _, _ in
+            ProcessResult(exitCode: 0, stdout: Data("not json".utf8), stderr: Data())
+        }
+        do {
+            _ = try await client.doctor()
+            XCTFail("expected an error")
+        } catch is WtClientError {
+            // expected: the decode path, not success.
+        }
+    }
+
+    // MARK: version() — plain text, not JSON, but the same exit-code
+    // mapping.
+
+    func testVersionReturnsStdoutVerbatim() async throws {
+        let client = makeClient { executable, arguments in
+            XCTAssertEqual(arguments, ["--version"])
+            return ProcessResult(exitCode: 0, stdout: Data("wt 0.2.0 (abc1234)\n".utf8), stderr: Data())
+        }
+        let output = try await client.version()
+        XCTAssertEqual(output, "wt 0.2.0 (abc1234)\n")
+    }
+
+    func testVersionExitFiveMapsToUnreachable() async throws {
+        let client = makeClient { _, _ in
+            ProcessResult(exitCode: 5, stdout: Data(), stderr: Data("dial tcp: connection refused".utf8))
+        }
+        do {
+            _ = try await client.version()
+            XCTFail("expected an error")
+        } catch WtClientError.unreachable {
+            // expected
+        }
+    }
+
+    func testVersionMissingBinaryReportsBinaryNotFound() async throws {
+        let client = WtClient(
+            runner: { _, _ in XCTFail("runner should not be invoked"); return ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()) },
+            locateBinary: { nil }
+        )
+        do {
+            _ = try await client.version()
+            XCTFail("expected an error")
+        } catch WtClientError.binaryNotFound {
+            // expected
+        }
+    }
+
     func testLocateBinaryOnDiskReturnsNilWhenNothingExists() {
         let defaults = UserDefaults(suiteName: "WorktreeMenuCoreTests.\(UUID().uuidString)")!
         // No override set, and the well-known paths are stubbed out via a

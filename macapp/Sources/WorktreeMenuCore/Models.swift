@@ -104,3 +104,58 @@ public struct ListResult: Decodable, Equatable, Sendable {
         self.entries = entries
     }
 }
+
+/// A doctor finding's severity, decoded from `internal/api.DoctorFinding`'s
+/// `level` field. Ordered `info < warning < error` so the badge decision
+/// (phase 5) is "does anything outrank info" rather than a manual
+/// enumeration of the two levels that do.
+public enum DoctorLevel: String, Decodable, Equatable, Comparable, Sendable {
+    case info
+    case warning
+    case error
+
+    private var rank: Int {
+        switch self {
+        case .info: return 0
+        case .warning: return 1
+        case .error: return 2
+        }
+    }
+
+    public static func < (lhs: DoctorLevel, rhs: DoctorLevel) -> Bool {
+        lhs.rank < rhs.rank
+    }
+}
+
+/// One row of `wt doctor --json`'s report. `app` and `slug` are absent for
+/// a finding that is not about one particular entry; `remedy` is absent
+/// for an info-level observation, which has nothing to fix
+/// (`internal/api.DoctorFinding`).
+public struct DoctorFinding: Decodable, Equatable, Sendable {
+    public let app: String?
+    public let slug: String?
+    public let level: DoctorLevel
+    public let message: String
+    public let remedy: String?
+
+    public init(app: String? = nil, slug: String? = nil, level: DoctorLevel, message: String, remedy: String? = nil) {
+        self.app = app
+        self.slug = slug
+        self.level = level
+        self.message = message
+        self.remedy = remedy
+    }
+}
+
+/// The whole shape of `wt doctor --json`'s stdout: every finding, plus the
+/// bounded-coverage notes about what doctor could not check
+/// (`internal/api.DoctorResult`).
+public struct DoctorResult: Decodable, Equatable, Sendable {
+    public let findings: [DoctorFinding]
+    public let notes: [String]?
+
+    public init(findings: [DoctorFinding], notes: [String]? = nil) {
+        self.findings = findings
+        self.notes = notes
+    }
+}

@@ -123,6 +123,53 @@ final class MenuBuilderTests: XCTestCase {
         XCTAssertTrue(group.rows[0].title.contains("\t:7843"))
     }
 
+    // MARK: the title/port split (phase 5: a literal tab in `title` does
+    // not actually right-align in AppKit, so the port must be its own
+    // field for the AppKit layer to build a real tab-stop with)
+
+    func testRowWithNoPortHasNilPortText() {
+        let nodes = MenuBuilder.build(from: [entry(slug: "a", slot: 0)])
+        guard case .group(let group) = nodes[0] else {
+            return XCTFail("expected a group")
+        }
+        XCTAssertNil(group.rows[0].portText)
+        XCTAssertEqual(group.rows[0].leadingText, "\u{25CF} a")
+    }
+
+    func testRowWithPortSplitsLeadingAndPortText() {
+        let nodes = MenuBuilder.build(from: [entry(slug: "a", slot: 0, resources: [
+            "web": Resolved(type: "port", value: .port(7843)),
+        ])])
+        guard case .group(let group) = nodes[0] else {
+            return XCTFail("expected a group")
+        }
+        XCTAssertEqual(group.rows[0].leadingText, "\u{25CF} a")
+        XCTAssertEqual(group.rows[0].portText, ":7843")
+        // The fallback plain-string title still carries the tab, for any
+        // caller that only wants a string.
+        XCTAssertEqual(group.rows[0].title, "\u{25CF} a\t:7843")
+    }
+
+    func testRowWithPortAndFlagsSplitsTrailingTextSeparately() {
+        let nodes = MenuBuilder.build(from: [entry(slug: "a", slot: 0, resources: [
+            "web": Resolved(type: "port", value: .port(7843)),
+        ], flags: ["stale"])])
+        guard case .group(let group) = nodes[0] else {
+            return XCTFail("expected a group")
+        }
+        XCTAssertEqual(group.rows[0].portText, ":7843")
+        XCTAssertEqual(group.rows[0].trailingText, "(stale)")
+        XCTAssertFalse(group.rows[0].isEnabled)
+    }
+
+    func testRowWithNoFlagsHasNilTrailingText() {
+        let nodes = MenuBuilder.build(from: [entry(slug: "a", slot: 0)])
+        guard case .group(let group) = nodes[0] else {
+            return XCTFail("expected a group")
+        }
+        XCTAssertNil(group.rows[0].trailingText)
+    }
+
     func testRowWithSeveralPortResourcesShowsTheAlphabeticallyFirstKey() {
         let nodes = MenuBuilder.build(from: [entry(slug: "a", slot: 0, resources: [
             "web": Resolved(type: "port", value: .port(7843)),

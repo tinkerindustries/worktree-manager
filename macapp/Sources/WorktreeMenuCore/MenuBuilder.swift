@@ -26,22 +26,64 @@ public struct AppMenuGroup: Equatable, Sendable {
     }
 }
 
-/// One menu item's worth of rendered data: its title, an optional
-/// tooltip, whether it should be enabled, and the worktree path a click
-/// on it should act on. `path` is `nil` for a row with nothing behind it
-/// — the empty-registry placeholder — so `WorktreeMenu` knows not to wire
-/// up a click action rather than wiring one up to an empty path.
+/// One menu item's worth of rendered data: the row split into the parts
+/// an AppKit right tab stop needs, an optional tooltip, whether it should
+/// be enabled, and the worktree path a click on it should act on. `path`
+/// is `nil` for a row with nothing behind it — the empty-registry
+/// placeholder — so `WorktreeMenu` knows not to wire up a click action
+/// rather than wiring one up to an empty path.
+///
+/// AppKit renders a literal tab character as-is rather than as a column
+/// stop, so a single `title` string with `\t` baked in cannot actually
+/// right-align a port (a bug phase 2 shipped and phase 5 fixes). The fix
+/// keeps the layout decision — what the leading text is, what the port
+/// text is, what comes after — a pure `MenuBuilder` concern, and leaves
+/// only the `NSAttributedString`/tab-stop construction to `WorktreeMenu`.
 public struct MenuRow: Equatable, Sendable {
-    public let title: String
+    /// The symbol and slug, e.g. "\u{25CF} macapp".
+    public let leadingText: String
+    /// The port suffix, e.g. ":7843", when the entry has a port
+    /// resource; `nil` when it does not.
+    public let portText: String?
+    /// The flag-driven suffixes ("(stale)", "(owned by ...)"), already
+    /// joined; `nil` when the entry carries none.
+    public let trailingText: String?
     public let tooltip: String?
     public let isEnabled: Bool
     public let path: String?
 
-    public init(title: String, tooltip: String? = nil, isEnabled: Bool = true, path: String? = nil) {
-        self.title = title
+    public init(
+        leadingText: String,
+        portText: String? = nil,
+        trailingText: String? = nil,
+        tooltip: String? = nil,
+        isEnabled: Bool = true,
+        path: String? = nil
+    ) {
+        self.leadingText = leadingText
+        self.portText = portText
+        self.trailingText = trailingText
         self.tooltip = tooltip
         self.isEnabled = isEnabled
         self.path = path
+    }
+
+    /// The plain-string fallback title, used when there is no port to
+    /// align (nothing to align means a literal tab is never rendered) or
+    /// when the caller has no attributed-string path available. This is
+    /// the same text phase 2 always rendered — a tab character between
+    /// the leading text and the port, then the trailing suffixes — kept
+    /// for callers that only want a string and for anything that does
+    /// not carry a port at all.
+    public var title: String {
+        var result = leadingText
+        if let portText {
+            result += "\t" + portText
+        }
+        if let trailingText {
+            result += "  " + trailingText
+        }
+        return result
     }
 }
 
@@ -73,7 +115,7 @@ public enum MenuBuilder {
     /// groups.
     public static func build(from entries: [ListEntry]) -> [MenuNode] {
         guard !entries.isEmpty else {
-            return [.row(MenuRow(title: emptyRegistryTitle, isEnabled: false))]
+            return [.row(MenuRow(leadingText: emptyRegistryTitle, isEnabled: false))]
         }
         let byApp = Dictionary(grouping: entries, by: \.app)
         return byApp.keys.sorted().map { app in
@@ -99,10 +141,8 @@ public enum MenuBuilder {
         let flags = Set(entry.flags ?? [])
         let symbol = stateSymbols[entry.state] ?? unknownStateSymbol
 
-        var title = "\(symbol) \(entry.slug)"
-        if let port = firstPort(in: entry.resources) {
-            title += "\t:\(port)"
-        }
+        let leadingText = "\(symbol) \(entry.slug)"
+        let portText = firstPort(in: entry.resources).map { ":\($0)" }
 
         var suffixes: [String] = []
         if flags.contains("stale") {
@@ -114,16 +154,21 @@ public enum MenuBuilder {
         if flags.contains("unverifiable") {
             suffixes.append("(path not visible from here)")
         }
-        if !suffixes.isEmpty {
-            title += "  " + suffixes.joined(separator: " ")
-        }
+        let trailingText = suffixes.isEmpty ? nil : suffixes.joined(separator: " ")
 
         // path_visible == false disables the row whatever the flags say:
         // that is the container case, and opening it would silently do
         // nothing (PLAN.md).
         let isEnabled = entry.pathVisible && !flags.contains("stale")
 
-        return MenuRow(title: title, tooltip: entry.description, isEnabled: isEnabled, path: entry.path)
+        return MenuRow(
+            leadingText: leadingText,
+            portText: portText,
+            trailingText: trailingText,
+            tooltip: entry.description,
+            isEnabled: isEnabled,
+            path: entry.path
+        )
     }
 
     /// The first port-type resource, chosen by sorting `resources`' keys

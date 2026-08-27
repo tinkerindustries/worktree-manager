@@ -87,15 +87,45 @@ public struct WtClient: Sendable {
     /// Runs `wt list --json` and decodes its stdout. Never passes
     /// `--wide` (PLAN.md: seed credentials must not appear in a menu).
     public func list() async throws -> ListResult {
+        try await runAndDecode(["list", "--json"], as: ListResult.self)
+    }
+
+    /// Runs `wt doctor --json` and decodes its stdout. `wt doctor` uses
+    /// the same exit codes as `wt list` (`internal/cli/errors.go`), so
+    /// this shares `runAndDecode` rather than re-deriving the mapping.
+    /// Doctor reads every entry, not just this app's, so callers are
+    /// expected to run it on a slower cadence than `list()`.
+    public func doctor() async throws -> DoctorResult {
+        try await runAndDecode(["doctor", "--json"], as: DoctorResult.self)
+    }
+
+    /// Runs `wt --version` and returns its stdout line verbatim —
+    /// `"wt <version> (<commit>)"`, plain text rather than JSON
+    /// (`internal/cli/version_test.go`). `VersionCore.parseVersionLine`
+    /// is where that line is actually parsed; this only runs the process
+    /// and applies the same exit-code mapping every other verb uses.
+    /// `wt --version` needs no store, endpoint or coordinator, but a
+    /// stopped or renamed binary still fails the same way `list()` and
+    /// `doctor()` would.
+    public func version() async throws -> String {
+        try await runAndDecode(["--version"]) { data in
+            String(data: data, encoding: .utf8) ?? ""
+        }
+    }
+
+    /// Resolves the binary, runs it, and applies the one exit-code
+    /// mapping every verb shares: 0 decodes via `decode`, 5 is
+    /// `.unreachable`, anything else is `.failed`. `list()`, `doctor()`
+    /// and `version()` differ only in the arguments and how stdout is
+    /// turned into a result, so that is the only thing each passes in.
+    private func runAndDecode<T>(_ arguments: [String], decode: (Data) throws -> T) async throws -> T {
         guard let binary = locateBinary() else {
             throw WtClientError.binaryNotFound
         }
-        let result = try await runner(binary, ["list", "--json"])
+        let result = try await runner(binary, arguments)
         if result.exitCode == 0 {
             do {
-                let decoder = JSONDecoder()
-                decoder.keyDecodingStrategy = .convertFromSnakeCase
-                return try decoder.decode(ListResult.self, from: result.stdout)
+                return try decode(result.stdout)
             } catch {
                 throw WtClientError.decode(error)
             }
@@ -105,6 +135,17 @@ public struct WtClient: Sendable {
             throw WtClientError.unreachable(stderrText)
         }
         throw WtClientError.failed(code: result.exitCode, stderr: stderrText)
+    }
+
+    /// The `Decodable` convenience over `runAndDecode`, used by `list()`
+    /// and `doctor()`, which both decode JSON with the same snake-case
+    /// strategy.
+    private func runAndDecode<T: Decodable>(_ arguments: [String], as type: T.Type) async throws -> T {
+        try await runAndDecode(arguments) { data in
+            let decoder = JSONDecoder()
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+            return try decoder.decode(type, from: data)
+        }
     }
 
     /// The default binary search order (PLAN.md): an explicit
