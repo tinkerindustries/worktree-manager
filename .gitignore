@@ -3,3 +3,6 @@ dist/out/
 
 # SwiftPM build output for the menu bar app (never committed)
 macapp/.build/
+
+# worktrees created under the repo's default location (never committed)
+.claude/worktrees/
