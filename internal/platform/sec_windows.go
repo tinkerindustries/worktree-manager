@@ -4,9 +4,9 @@ package platform
 
 // sec_windows.go is the Windows permission model (08-platform.md §4.6):
 // mode bits are meaningless on NTFS, so private state — the store
-// directory, holding wt.db and endpoint.json — is protected with an ACL
-// granting the current user and denying everyone else, built from an
-// SDDL string and applied with the raw Win32 API through the standard
+// directory, holding wt.db and endpoint.json — is protected with a
+// protected ACL whose only entry is the current user, built from an SDDL
+// string and applied with the raw Win32 API through the standard
 // library's syscall package (no x/sys, no cgo: CGO_ENABLED=0 throughout).
 //
 // The ACL used to carry more than this. While the transport was a named
@@ -61,19 +61,30 @@ func userSID() (string, error) {
 	return sid, nil
 }
 
-// secureSecurityAttributes builds the SECURITY_ATTRIBUTES for the named
-// pipe: a protected DACL granting the current user GENERIC_ALL and
-// denying Everyone ("WD", the world SID). Protected means inherited ACEs
-// cannot widen it — the pipe is the coordinator's whole attack surface
-// (docs/ARCHITECTURE.md §12.2), so the ACL must be exactly what this
-// function says. The descriptor must be freed with freeSecurityDescriptor
-// when the attributes are no longer needed.
+// secureSecurityAttributes builds the SECURITY_ATTRIBUTES for the private
+// state directory: a protected DACL whose only entry grants the current
+// user GENERIC_ALL, inherited by the files and directories created inside
+// it. Protected is what does the excluding — it detaches the object from
+// its parent's inheritable ACEs, so an ACE that is not written here does
+// not apply, and the single allow entry is therefore the whole of the
+// access anyone has (docs/ARCHITECTURE.md §12.2).
+//
+// There is deliberately no deny-Everyone entry. Windows evaluates deny
+// ACEs before allow ACEs and the current user is a member of Everyone, so
+// "deny Everyone, allow me" denies the owner its own store: every open
+// under the directory fails with ERROR_ACCESS_DENIED, which is what
+// EnsurePrivateDir's write probe reports. Exclusion on Windows is
+// expressed by the protected flag and the absence of an ACE, never by
+// denying the world.
+//
+// The descriptor must be freed with freeSecurityDescriptor when the
+// attributes are no longer needed.
 func secureSecurityAttributes() (*syscall.SecurityAttributes, error) {
 	sid, err := userSID()
 	if err != nil {
 		return nil, err
 	}
-	sddl := "D:P(D;;GA;;;WD)(A;;GA;;;" + sid + ")"
+	sddl := "D:P(A;OICI;GA;;;" + sid + ")"
 	p, err := syscall.UTF16PtrFromString(sddl)
 	if err != nil {
 		return nil, fmt.Errorf("encoding the security descriptor string: %w", err)
