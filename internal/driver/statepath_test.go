@@ -3,8 +3,10 @@ package driver
 // statepath_test.go exercises the state-path driver: apply per mode, the
 // purge refusal on the resolved symlink-realised path, teardown only when
 // the purge flag is given, and verify. All paths are built from t.TempDir()
-// roots and expectations are derived from the same roots, so a symlinked
-// temp root (macOS /var → /private/var) cannot break a comparison.
+// roots; where an expectation is a path the driver prints, it comes from
+// realisedName, because t.TempDir's spelling is not the one the driver
+// realises — macOS answers /var where the realised form is /private/var,
+// and Windows answers an 8.3 short name where the realised form is long.
 
 import (
 	"os"
@@ -13,8 +15,23 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 )
+
+// realisedName is the spelling the driver's messages give a path: realised,
+// then converted back to the form a person reads. Asserting on the caller's
+// own spelling instead is what made these tests pass on macOS by accident —
+// "/private/var/x" contains "/var/x" — and fail on Windows, where the short
+// and long names share no such substring.
+func realisedName(t *testing.T, path string) string {
+	t.Helper()
+	real, err := platform.RealPath(path)
+	if err != nil {
+		t.Fatalf("realising %s: %v", path, err)
+	}
+	return platform.ExternalPath(real)
+}
 
 // statePathEnv builds the Env a state-path operation needs: a spec carrying
 // the given resource, a temp home, and the given seed-mode and purge-flag
@@ -257,8 +274,8 @@ func TestStatePathPurgeRefusalNamesThePath(t *testing.T) {
 	if !isRefusal(err) {
 		t.Fatalf("purging the shared source itself must be refused, got %v", err)
 	}
-	if !strings.Contains(err.Error(), shared) {
-		t.Errorf("the refusal must name the resolved path: %v", err)
+	if want := realisedName(t, shared); !strings.Contains(err.Error(), want) {
+		t.Errorf("the refusal must name the resolved path %s: %v", want, err)
 	}
 	if _, serr := os.Stat(shared); serr != nil {
 		t.Fatalf("the shared source must survive the refusal: %v", serr)
@@ -318,8 +335,8 @@ func TestStatePathPurgeRefusalThroughSymlink(t *testing.T) {
 	if !isRefusal(err) {
 		t.Fatalf("a purge reached through a symlink must be refused, got %v", err)
 	}
-	if !strings.Contains(err.Error(), real) {
-		t.Errorf("the refusal must name the resolved (symlink-realised) path %s: %v", real, err)
+	if want := realisedName(t, real); !strings.Contains(err.Error(), want) {
+		t.Errorf("the refusal must name the resolved (symlink-realised) path %s: %v", want, err)
 	}
 	if _, serr := os.Stat(filepath.Join(real, "db.sqlite")); serr != nil {
 		t.Fatalf("the shared source must survive: %v", serr)

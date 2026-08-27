@@ -183,6 +183,11 @@ func (sp *StatePath) Teardown(r *spec.Resource, value any, env Env) error {
 			if rerr != nil {
 				realized = path
 			}
+			// The refusal is read by a person, so the realised path leaves
+			// the process in the spelling they would type: on Windows
+			// RealPath answers \\?\C:\..., which names a path nobody
+			// recognises and no other tool accepts.
+			realized = platform.ExternalPath(realized)
 			return &RefusalError{Reason: fmt.Sprintf(
 				"refusing to purge %s: it is the shared source %s, or an ancestor of it — deleting it would wipe every project's data",
 				realized, from)}
