@@ -36,6 +36,11 @@ public enum WtClientError: Error, Sendable {
     case failed(code: Int32, stderr: String)
     /// `wt` exited 0 but stdout did not decode as a `ListResult`.
     case decode(Error)
+    /// The process did not finish within the runner's timeout and was
+    /// terminated. Distinct from `.failed` so the menu can say the run
+    /// timed out rather than blaming the coordinator for a plain
+    /// non-zero exit.
+    case timedOut
 }
 
 extension WtClientError: Equatable {
@@ -51,6 +56,8 @@ extension WtClientError: Equatable {
             // The underlying decoding errors are not themselves
             // Equatable; two decode failures compare equal regardless of
             // cause. Tests that care about the cause inspect it directly.
+            return true
+        case (.timedOut, .timedOut):
             return true
         default:
             return false
@@ -123,11 +130,38 @@ public struct WtClient: Sendable {
         return nil
     }
 
-    /// The default process runner: runs the executable with `Process`,
-    /// draining stdout and stderr concurrently so a chatty stderr cannot
-    /// deadlock a large stdout (or vice versa). The blocking wait happens
-    /// on a background queue, never on the caller's thread.
+    /// How long the default runner waits before giving up on `wt`.
+    /// `wt list` is a local HTTP round trip; ten seconds is generous for
+    /// that and still short enough that a hung coordinator does not leave
+    /// the menu saying "Loading…" indefinitely.
+    public static let defaultTimeout: TimeInterval = 10
+
+    /// The default process runner, run with `defaultTimeout`. This is the
+    /// two-argument shape `ProcessRunner` requires, which is what lets it
+    /// stand as `WtClient.init`'s default argument.
     public static func runProcess(_ executable: URL, arguments: [String]) async throws -> ProcessResult {
+        try await runProcess(executable, arguments: arguments, timeout: defaultTimeout)
+    }
+
+    /// Builds a runner with a caller-chosen timeout, so a test can exercise
+    /// real process termination without waiting out `defaultTimeout`.
+    public static func runProcess(timeout: TimeInterval) -> ProcessRunner {
+        { executable, arguments in
+            try await runProcess(executable, arguments: arguments, timeout: timeout)
+        }
+    }
+
+    /// Runs the executable with `Process`, draining stdout and stderr
+    /// concurrently so a chatty stderr cannot deadlock a large stdout (or
+    /// vice versa). The blocking wait happens on a background queue,
+    /// never on the caller's thread. A timer races the process: if it
+    /// fires first, the process is terminated and this throws
+    /// `WtClientError.timedOut` instead of returning a result.
+    private static func runProcess(
+        _ executable: URL,
+        arguments: [String],
+        timeout: TimeInterval
+    ) async throws -> ProcessResult {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
                 let process = Process()
@@ -146,6 +180,17 @@ public struct WtClient: Sendable {
                     return
                 }
 
+                let timedOut = TimeoutFlag()
+                let timeoutTimer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+                timeoutTimer.schedule(deadline: .now() + timeout)
+                timeoutTimer.setEventHandler {
+                    timedOut.value = true
+                    if process.isRunning {
+                        process.terminate()
+                    }
+                }
+                timeoutTimer.resume()
+
                 let group = DispatchGroup()
                 let stdoutBox = DataBox()
                 let stderrBox = DataBox()
@@ -162,7 +207,13 @@ public struct WtClient: Sendable {
                 }
 
                 process.waitUntilExit()
+                timeoutTimer.cancel()
                 group.wait()
+
+                if timedOut.value {
+                    continuation.resume(throwing: WtClientError.timedOut)
+                    return
+                }
 
                 continuation.resume(returning: ProcessResult(
                     exitCode: process.terminationStatus,
@@ -172,6 +223,16 @@ public struct WtClient: Sendable {
             }
         }
     }
+}
+
+/// A single mutable `Bool` slot set by the timeout timer's handler and
+/// read after `process.waitUntilExit()` returns. The two never overlap in
+/// practice (the timer either fires and terminates the process, which
+/// then makes `waitUntilExit` return, or the process exits first and the
+/// timer is cancelled before it could fire) but the compiler cannot see
+/// that ordering — hence `@unchecked`.
+private final class TimeoutFlag: @unchecked Sendable {
+    var value = false
 }
 
 /// A single mutable `Data` slot passed into a background read closure.

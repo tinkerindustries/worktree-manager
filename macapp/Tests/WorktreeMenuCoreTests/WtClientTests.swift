@@ -98,6 +98,51 @@ final class WtClientTests: XCTestCase {
         }
     }
 
+    /// The stub runner stands in for a hung `wt`: it throws the same
+    /// error the real timing-out runner would, and `list()` must let it
+    /// through as `.timedOut` rather than folding it into `.failed`.
+    func testTimedOutRunnerErrorSurfacesAsTimedOut() async throws {
+        let client = makeClient { _, _ in
+            throw WtClientError.timedOut
+        }
+
+        do {
+            _ = try await client.list()
+            XCTFail("expected an error")
+        } catch WtClientError.timedOut {
+            // expected
+        }
+    }
+
+    /// Exercises the real timeout mechanism in `WtClient.runProcess`, not
+    /// a stub: a slow real process is terminated once the timeout
+    /// elapses, and the call fails with `.timedOut` well before the
+    /// process would otherwise exit on its own. The fake "wt" is a
+    /// shell script that sleeps regardless of the `list --json`
+    /// arguments `list()` always passes it.
+    func testRunProcessTerminatesASlowProcessAndThrowsTimedOut() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let slowScript = tempDir.appendingPathComponent("wt")
+        try "#!/bin/sh\nsleep 30\n".write(to: slowScript, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: slowScript.path)
+
+        let client = WtClient(
+            runner: WtClient.runProcess(timeout: 0.2),
+            locateBinary: { slowScript }
+        )
+
+        let start = Date()
+        do {
+            _ = try await client.list()
+            XCTFail("expected an error")
+        } catch WtClientError.timedOut {
+            let elapsed = Date().timeIntervalSince(start)
+            XCTAssertLessThan(elapsed, 5, "the slow process should have been terminated, not waited out")
+        }
+    }
+
     func testMissingBinaryReportsBinaryNotFound() async throws {
         let client = WtClient(
             runner: { _, _ in XCTFail("runner should not be invoked"); return ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()) },

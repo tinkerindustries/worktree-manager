@@ -23,6 +23,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var lastError: Error?
     private var lastUpdated: Date?
     private var refreshTimer: Timer?
+    /// Makes overlapping refreshes resolve deterministically: whichever
+    /// refresh started last is the one whose result is kept, regardless
+    /// of which finishes first (WorktreeMenuCore.RefreshCoordinator).
+    private let refreshCoordinator = RefreshCoordinator()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -63,17 +67,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// `updatingOpenMenu` re-renders the status item's menu when the
     /// refresh completes — skipped for the startup call, where there is
     /// no open menu yet to mutate.
+    ///
+    /// `refreshCoordinator` guards every write against a newer refresh
+    /// having started in the meantime, so two overlapping runs (the menu
+    /// opened twice quickly, or the 60-second timer firing mid-refresh)
+    /// cannot let the one that finishes last win when it is not the one
+    /// that started last.
     private func refresh(updatingOpenMenu: Bool) {
+        let ticket = refreshCoordinator.begin()
         Task {
             do {
                 let result = try await client.list()
+                guard refreshCoordinator.isCurrent(ticket) else { return }
                 lastSnapshot = result
                 lastError = nil
                 lastUpdated = Date()
             } catch {
+                guard refreshCoordinator.isCurrent(ticket) else { return }
                 lastError = error
             }
-            if updatingOpenMenu, let menu = statusItem?.menu {
+            if updatingOpenMenu, refreshCoordinator.isCurrent(ticket), let menu = statusItem?.menu {
                 render(into: menu)
             }
         }
@@ -100,17 +113,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(quitItem)
     }
 
+    /// Turns `MenuBuilder`'s pure description into real `NSMenuItem`s —
+    /// the one AppKit-touching step the phase-2 architecture requirement
+    /// keeps thin and separate from the grouping and formatting rules
+    /// themselves.
     private func appendEntries(_ entries: [ListEntry], to menu: NSMenu) {
-        guard !entries.isEmpty else {
-            menu.addItem(disabledItem("No worktrees registered"))
-            return
+        for node in MenuBuilder.build(from: entries) {
+            switch node {
+            case .row(let row):
+                menu.addItem(menuItem(for: row))
+            case .group(let group):
+                let header = NSMenuItem(title: group.headerTitle, action: nil, keyEquivalent: "")
+                header.isEnabled = false
+                let submenu = NSMenu()
+                for row in group.rows {
+                    submenu.addItem(menuItem(for: row))
+                }
+                header.submenu = submenu
+                menu.addItem(header)
+            }
         }
-        let sorted = entries.sorted { lhs, rhs in
-            lhs.app == rhs.app ? lhs.slug < rhs.slug : lhs.app < rhs.app
-        }
-        for entry in sorted {
-            menu.addItem(disabledItem("\(entry.app)/\(entry.slug)"))
-        }
+    }
+
+    private func menuItem(for row: MenuRow) -> NSMenuItem {
+        let item = NSMenuItem(title: row.title, action: nil, keyEquivalent: "")
+        item.isEnabled = row.isEnabled
+        item.toolTip = row.tooltip
+        return item
     }
 
     private func disabledItem(_ title: String) -> NSMenuItem {
@@ -132,6 +161,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return stderr.isEmpty ? "wt failed (exit \(code))" : stderr
         case .decode:
             return "Unexpected response from wt"
+        case .timedOut:
+            return "wt list timed out"
         }
     }
 
