@@ -113,6 +113,18 @@ usage:
                                      and never touches an unverifiable
                                      entry; --dry-run previews exactly
                                      what the real run does
+  wt claude install [--json]         register wt as Claude Code's worktree
+      [--dry-run] [--force]          creator: worktree creation from the
+      [--skill=false] [--prefix <d>] editor's own control then allocates an
+                                     environment for a repository with a
+                                     wt.yaml, and makes the plain worktree
+                                     Claude Code would have made for every
+                                     other repository. Installs the
+                                     worktree-onboarding skill too unless
+                                     --skill=false
+  wt claude uninstall [--json]       take the registration back out. The
+      [--dry-run] [--force]          store, the registry and every
+      [--skill=false] [--prefix <d>] allocated worktree are left alone
   wt --version                      print the version and the commit, then
                                      exit (what an installer reports when
                                      it replaces an older wt)
@@ -160,6 +172,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runShow(args[1:], stdout, stderr)
 	case "daemon":
 		return runDaemon(args[1:], stdout, stderr)
+	case "claude":
+		return runClaude(args[1:], stdout, stderr)
 	case "bands":
 		return runBands(args[1:], stdout, stderr)
 	case "ports":

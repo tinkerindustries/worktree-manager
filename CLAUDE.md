@@ -111,7 +111,8 @@ configuration; neither binary branches on repo identity.
   `daemon status`, `daemon install`, `daemon uninstall`, `bands list`,
   `bands suggest`,
   `bands reserve`, `ports scan`, `init`, `start`, `rm`, `list`, `doctor`,
-  `reconcile`, `clients` and `cleanup` (gated on gh: missing or
+  `reconcile`, `clients`, `claude install`, `claude uninstall` and
+  `cleanup` (gated on gh: missing or
   unauthenticated gh cleans nothing and exits 4; the full rm safety
   checks apply even when the PR is merged; unverifiable entries are never
   touched). `daemon status` reports the systemd lingering caveat on Linux,
@@ -189,6 +190,24 @@ configuration; neither binary branches on repo identity.
   half of the block. The markers and the block primitives are
   `internal/managed`'s, so one convention covers every file the tool
   writes.
+- `internal/claudehook` — the Claude Code integration, driven by `wt
+  claude install` and `wt claude uninstall`: the two hook scripts for
+  Claude Code's `WorktreeCreate` and `WorktreeRemove` events, the
+  per-event merge into the user's `~/.claude/settings.json`, and the
+  embedded copy of the onboarding skill. Claude Code hands worktree
+  creation to a registered `WorktreeCreate` hook entirely and never falls
+  back to `git worktree add` on its own, so the create script answers for
+  every repository on the machine: one with a `wt.yaml` gets its worktree
+  where the spec says and an environment from `wt init`, and every other
+  one gets the plain worktree Claude Code would have made itself, plus a
+  sentence naming the worktree-onboarding skill. Nothing here is rendered from a
+  spec — which is why this is linked by `cmd/wt` and `internal/artefact`
+  is not — and nothing here touches the store, the registry or an
+  allocated worktree. The merge preserves the user's other hooks and
+  every other setting; an unparseable settings file and an event
+  registered to somebody else's script both refuse. The embedded skill
+  under `skill/` is a copy of `.claude/skills/worktree-onboarding`, and
+  a test fails on drift between them.
 - `internal/generate` — the generated Go descriptor reader, stdlib-only
   and gofmt-clean by construction.
 - `internal/api` — the HTTP surface both binaries share: the `*Args` and
@@ -294,9 +313,10 @@ configuration; neither binary branches on repo identity.
   never removed), then drive `wt daemon install`; an explicit `--prefix`
   is self-contained and loads nothing), `ziphelper.go` (the stdlib-only
   Windows zip builder).
-- `.claude/skills/onboarding/` — the onboarding skill (a document): the
-  eight phases, the primitives card, the plain-app walkthrough. It is the
-  judgment half of the system; the binaries expose facts and refuse.
+- `.claude/skills/worktree-onboarding/` — the onboarding skill (a
+  document), invoked as `/worktree-onboarding`: the eight phases, the
+  primitives card, the plain-app walkthrough. It is the judgment half of
+  the system; the binaries expose facts and refuse.
 - `testdata/fixtures/` — the three fixture repositories; each has its own
   `wt.yaml`, which is what the walk-up resolution rule is tested against.
   `plain-app` is the adopted showcase — phase 7 gave it runnable content

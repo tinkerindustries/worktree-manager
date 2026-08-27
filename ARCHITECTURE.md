@@ -7,7 +7,7 @@ deliberately both named `ARCHITECTURE.md` (plan.md §7).
 
 ## Packages
 
-One module, `github.com/mrgeoffrich/worktree-manager`, two binaries, twelve
+One module, `github.com/mrgeoffrich/worktree-manager`, two binaries, thirteen
 internal packages:
 
 ```
@@ -92,6 +92,15 @@ internal/artefact  M7: the phase-7 generated artefacts, rendered per
               CLAUDE.md tripwire) and the briefing renderer; not a verb —
               the onboarding skill and the tests drive it, cmd/wt never
               imports it
+internal/claudehook  the Claude Code integration `wt claude install`
+              and `wt claude uninstall` drive: the two WorktreeCreate /
+              WorktreeRemove hook scripts under claudehook/templates/,
+              the per-event merge into the user's ~/.claude/settings.json,
+              and the embedded copy of the worktree-onboarding skill.
+              Machine-wide, never per repo — the scripts are identical
+              everywhere but for the wt binary recorded in their managed
+              block, and they decide at run time what a repository is by
+              looking for its wt.yaml
 internal/generate  M5: the generated Go descriptor reader — the source
               an adopted repo compiles into its own entry points, with an
               embedded YAML-subset parser (stdlib only)
@@ -209,6 +218,12 @@ Import rules, fixed for the whole plan:
   embedded templates under its own `templates/` directory (which carries
   a nested CLAUDE.md stating the directory's rules). Not linked by any
   binary.
+- `internal/claudehook` → `internal/managed` (the block that records
+  which wt the scripts call, and marks the files as this tool's) and
+  `internal/platform` (the atomic write), plus the embedded scripts and
+  the embedded onboarding skill under its own directory. Linked by
+  `cmd/wt`, which is what separates it from `internal/artefact`: nothing
+  here is rendered from a spec, so no repository's judgment is involved.
 - `internal/managed` → the standard library. The block convention is
   line-based text; nothing else to it.
 - `internal/treecheck` → the standard library. git and gh reach it through
@@ -781,10 +796,33 @@ The six rules of `docs/ARCHITECTURE.md` §8.6, stated as invariants:
   JSON object on stdout and nothing else. No colour, no spinner, no
   prompt.
 - Verbs are hand-dispatched with one `flag.FlagSet` per verb. This phase
-  has fifteen: `spec validate`, `spec explain`, `spec path`, `guard`, `show`,
-  `daemon status`, `daemon install`, `bands list`, `bands suggest`,
+  has seventeen: `spec validate`, `spec explain`, `spec path`, `guard`, `show`,
+  `daemon status`, `daemon install`, `claude install`, `claude uninstall`,
+  `bands list`, `bands suggest`,
   `bands reserve`, `ports scan`, `list`, `doctor`, `reconcile` and
   `clients`.
+- `claude install` registers the two hook scripts
+  (`internal/claudehook`) in the user's `~/.claude/settings.json` and
+  writes them into `~/.claude/hooks`, so worktree creation from Claude
+  Code's own control runs `wt init` rather than a bare `git worktree
+  add`. It is client-local — no route, no coordinator call — and takes
+  `--prefix` exactly as the daemon verbs do. The scripts record the
+  running `wt` in their managed block, which is what makes the hook call
+  the binary that installed it rather than whatever a GUI application's
+  PATH resolves. `claude uninstall` is the reverse. Both merge per event:
+  the user's other hooks and every other setting survive, a settings file
+  that does not parse refuses the write, and an event registered to
+  somebody else's script is exit 3 naming `--force`. Neither touches the
+  store, the registry or any allocated worktree.
+- The create hook answers for every repository on the machine, not the
+  adopted ones alone, because Claude Code delegates worktree creation to
+  it entirely and never falls back to git on its own. A repository with a
+  `wt.yaml` gets its worktree where the spec says and an environment from
+  `wt init`; every other repository gets the plain worktree under
+  `.claude/worktrees` that Claude Code would have made itself, plus one
+  sentence naming the worktree-onboarding skill. `claude install` puts
+  that skill in `~/.claude/skills/worktree-onboarding` so the sentence
+  names something the reader can run.
 - `ports scan` reports every LISTEN TCP socket in the coordinator's
   network namespace — port, pid, command, sorted — as facts; it never
   classifies what it finds and never reserves anything. Discovery is

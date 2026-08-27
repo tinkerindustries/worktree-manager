@@ -1,5 +1,5 @@
 ---
-name: onboarding
+name: worktree-onboarding
 description: Adopt a repository into worktree-manager: audit its resources, choose the policy, reserve port bands, write wt.yaml, generate the artefacts, patch the entry points, and prove the result with two worktrees side by side. Use when a repository has no wt.yaml and should get per-worktree environments. This is a once-per-repo, judgment-heavy, conversational task — never run it unattended.
 ---
 
