@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -62,8 +63,10 @@ func TestInstallWritesScriptsAndRegistersBothEvents(t *testing.T) {
 			t.Fatalf("stat %s: %v", path, err)
 		}
 		// Claude Code executes the hook directly; a script it cannot run
-		// is not a hook.
-		if info.Mode().Perm()&0o111 == 0 {
+		// is not a hook. Windows has no execute bit to check — Go reports
+		// -rw-rw-rw- for every file there — and a hook command is run
+		// through a shell on that platform anyway.
+		if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
 			t.Errorf("%s is not executable (mode %v)", s.File, info.Mode().Perm())
 		}
 		body, err := os.ReadFile(path)
