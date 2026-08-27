@@ -9,6 +9,10 @@
 //
 // Every check takes a Runner, so the client passes the real git and gh and
 // the coordinator passes its seam.
+//
+// The one import beyond the standard library is internal/platform, for
+// the "path for an external tool" conversion WorktreeRemove needs: a
+// realised path is this process's spelling, not git's.
 package treecheck
 
 import (
@@ -16,7 +20,10 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
+
+	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 )
 
 // Runner runs one git or gh command in dir and returns its output.
@@ -224,8 +231,18 @@ func isAuthFailure(lower string) bool {
 // WorktreeRemove runs `git worktree remove <dir>` from inside the tree,
 // never with --force: git refusing is signal that a check missed something,
 // and the refusal is reported as itself. The error carries git's own words.
+//
+// This is the one check whose directory is also a command-line argument,
+// so it is the one that must convert. Every caller here holds a realised
+// path — that is what the registry records and what containment
+// comparisons are built on — and on Windows realisation produces the
+// extended-length \\?\C:\... spelling, which git answers with "is not a
+// working tree". platform.ExternalPath is the documented conversion out
+// (it is the identity on unix), applied once here so the three callers
+// cannot disagree about it.
 func WorktreeRemove(dir string, git Runner) error {
-	if out, err := git(dir, "worktree", "remove", dir); err != nil {
+	dir = platform.ExternalPath(dir)
+	if out, err := git(removeFrom(dir, git), "worktree", "remove", dir); err != nil {
 		text := strings.TrimSpace(string(out))
 		if text == "" {
 			text = err.Error()
@@ -233,6 +250,45 @@ func WorktreeRemove(dir string, git Runner) error {
 		return errors.New(text)
 	}
 	return nil
+}
+
+// removeFrom is the directory `git worktree remove` is run from, which
+// must not be the directory it is about to delete.
+//
+// On unix it can be: a directory is unlinkable while it is a process's
+// current directory. Windows refuses to remove a directory any process is
+// standing in, so running git from inside the tree failed a removal that
+// was otherwise fine — "error: failed to delete '<tree>': Permission
+// denied" against a clean, merged, perfectly removable worktree, from
+// `wt rm`, `wt cleanup` and the coordinator's sweep alike.
+//
+// The repository's main checkout is the one directory certainly inside the
+// repository and certainly not this tree, so the removal runs from there.
+// It is used only when git confirms it is a work tree — a linked worktree
+// of a bare repository has no such directory — and the tree itself is the
+// fallback, which is still correct everywhere but Windows.
+func removeFrom(dir string, git Runner) string {
+	out, err := git(dir, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return dir
+	}
+	common := strings.TrimSpace(string(out))
+	if common == "" {
+		return dir
+	}
+	common = filepath.FromSlash(common)
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(dir, common)
+	}
+	main := filepath.Dir(filepath.Clean(common))
+	if main == "" || main == "." || main == dir {
+		return dir
+	}
+	inside, err := git(main, "rev-parse", "--is-inside-work-tree")
+	if err != nil || strings.TrimSpace(string(inside)) != "true" {
+		return dir
+	}
+	return main
 }
 
 // nonEmptyLines splits a command's output into its non-empty lines.

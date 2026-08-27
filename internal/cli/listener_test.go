@@ -168,17 +168,10 @@ func tcpRepo(t *testing.T) (main, worktree string) {
 }
 
 // fakeGhAnswersNoPR installs a fake gh on PATH answering the no-PR
-// contract the rm safety check reads (untagged twin of the acceptance
-// layer's fakeGhNoPR).
+// contract the rm safety check reads.
 func fakeGhAnswersNoPR(t *testing.T) {
 	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gh")
-	body := "#!/bin/sh\necho \"no pull requests found for branch \\\"$(git branch --show-current)\\\"\" >&2\nexit 1\n"
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
-		t.Fatalf("writing the fake gh: %v", err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	fakeGhOnPath(t, ghNoPRScript)
 }
 
 // readTcpDescriptor reads the worktree's descriptor (untagged twin of the
@@ -370,12 +363,9 @@ func TestDaemonInstallWritesContainerTokenIntoRegistration(t *testing.T) {
 	}
 	// The registration file carries the token (the file is 0600 on unix
 	// when it does).
-	data, err := os.ReadFile(filepath.Join(prefix, registrationFilenameForThisPlatform()))
-	if err != nil {
-		t.Fatalf("reading the registration: %v", err)
-	}
-	if !strings.Contains(string(data), "--addr") || !strings.Contains(string(data), "--container-token") || !strings.Contains(string(data), tcpTestToken) {
-		t.Errorf("the registration does not carry the listener configuration:\n%s", data)
+	reg := readRegistration(t, filepath.Join(prefix, registrationFilenameForThisPlatform()))
+	if !strings.Contains(reg, "--addr") || !strings.Contains(reg, "--container-token") || !strings.Contains(reg, tcpTestToken) {
+		t.Errorf("the registration does not carry the listener configuration:\n%s", reg)
 	}
 	// The 0600 rail is unix: Windows file modes are ACL-shaped, and the
 	// task XML's secrecy comes from the profile ACL, not a mode bit.
@@ -446,15 +436,12 @@ func TestDaemonInstallCustomAddrNeedsNoContainerToken(t *testing.T) {
 		t.Errorf("the transcript must say containers are not admitted when no token was given:\n%s", stdout)
 	}
 
-	data, err := os.ReadFile(filepath.Join(prefix, registrationFilenameForThisPlatform()))
-	if err != nil {
-		t.Fatalf("reading the registration: %v", err)
+	reg := readRegistration(t, filepath.Join(prefix, registrationFilenameForThisPlatform()))
+	if !strings.Contains(reg, "127.0.0.1:9001") {
+		t.Errorf("the registration does not carry the address:\n%s", reg)
 	}
-	if !strings.Contains(string(data), "127.0.0.1:9001") {
-		t.Errorf("the registration does not carry the address:\n%s", data)
-	}
-	if strings.Contains(string(data), "--container-token") {
-		t.Errorf("the registration carries --container-token though none was configured:\n%s", data)
+	if strings.Contains(reg, "--container-token") {
+		t.Errorf("the registration carries --container-token though none was configured:\n%s", reg)
 	}
 }
 
@@ -476,12 +463,9 @@ func TestDaemonInstallPinsAFreePortWhenTheDefaultIsHeld(t *testing.T) {
 	if !strings.Contains(stdout, "listening on:") {
 		t.Errorf("the transcript must always name the address it registered:\n%s", stdout)
 	}
-	data, err := os.ReadFile(filepath.Join(prefix, registrationFilenameForThisPlatform()))
-	if err != nil {
-		t.Fatalf("reading the registration: %v", err)
-	}
-	if !strings.Contains(string(data), "--addr") {
-		t.Errorf("the registration must pin a concrete address rather than leaving it to the default:\n%s", data)
+	reg := readRegistration(t, filepath.Join(prefix, registrationFilenameForThisPlatform()))
+	if !strings.Contains(reg, "--addr") {
+		t.Errorf("the registration must pin a concrete address rather than leaving it to the default:\n%s", reg)
 	}
 }
 
@@ -524,11 +508,8 @@ func TestDaemonInstallKeepsTheAddressItAlreadyHad(t *testing.T) {
 	if !strings.Contains(stdout, held) {
 		t.Errorf("re-install moved the coordinator off %s:\n%s", held, stdout)
 	}
-	data, err := os.ReadFile(filepath.Join(prefix, registrationFilenameForThisPlatform()))
-	if err != nil {
-		t.Fatalf("reading the registration: %v", err)
-	}
-	if !strings.Contains(string(data), held) {
-		t.Errorf("the registration does not keep the existing address %s:\n%s", held, data)
+	reg := readRegistration(t, filepath.Join(prefix, registrationFilenameForThisPlatform()))
+	if !strings.Contains(reg, held) {
+		t.Errorf("the registration does not keep the existing address %s:\n%s", held, reg)
 	}
 }

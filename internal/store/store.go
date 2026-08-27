@@ -206,6 +206,21 @@ func schemaStatements() []string {
 // Root returns the store root path.
 func (s *Store) Root() string { return s.root }
 
+// Close releases the database handle and its WAL and SHM sidecars. The
+// coordinator owns one store for its whole life, so in production this
+// runs once at shutdown; the reason it exists at all is that a handle
+// left open is a leak on every platform, and on Windows an open file
+// cannot be deleted — a store not closed is a store whose directory
+// cannot be removed. Close is idempotent.
+func (s *Store) Close() error {
+	if s.db == nil {
+		return nil
+	}
+	db := s.db
+	s.db = nil
+	return db.Close()
+}
+
 // metaVersion reads the database's own schema version from the meta
 // table.
 func (s *Store) metaVersion() (int, error) {

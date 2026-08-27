@@ -9,7 +9,6 @@ package cli
 import (
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -81,20 +80,11 @@ func rmCoord(t *testing.T, worktree string, handlers map[string]func(*api.Reques
 	return fakeCoordServer(t, all)
 }
 
-// fakeGh writes a gh executable on PATH. The script's exit code and stderr
-// mimic real gh's contract: exit 0 with PR JSON means a PR exists, in
-// whatever state the JSON names — gh answers the same way for OPEN, MERGED
-// and CLOSED. Exit 1 with "no pull requests found" means none, exit 4 with
-// an auth message means unauthenticated.
+// fakeGh puts a fake gh on PATH; the shape of the script is documented on
+// fakeGhOnPath in fakegh_test.go.
 func fakeGh(t *testing.T, script string) {
 	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gh")
-	body := "#!/bin/sh\n" + script + "\n"
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
-		t.Fatalf("writing the fake gh: %v", err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	fakeGhOnPath(t, script)
 }
 
 // TestRmStopsOnUncommittedChanges: a dirty tree stops rm with exit 3.
@@ -564,33 +554,5 @@ func TestRmCoordinatorUnreachableExitsFive(t *testing.T) {
 	// named at all.
 	if !strings.Contains(stderr, "wtd") && !strings.Contains(stderr, "daemon install") {
 		t.Errorf("stderr = %q, want a command that starts the coordinator", stderr)
-	}
-}
-
-// setPathWithoutGh points PATH at a directory holding only the tools the
-// safety checks legitimately need, so `gh` is absent by construction.
-//
-// The obvious approach — drop every PATH directory that contains gh — is
-// wrong on a machine where gh and git share a directory. On the CI runner
-// both live in /usr/bin, so dropping it took git away too and rm failed for
-// a different reason before it ever reached the open-PR check.
-func setPathWithoutGh(t *testing.T) {
-	t.Helper()
-	dir := t.TempDir()
-	for _, tool := range []string{"git", "sh", "env"} {
-		src, err := exec.LookPath(tool)
-		if err != nil {
-			continue // sh and env are conveniences; git is found or the test fails below
-		}
-		if err := os.Symlink(src, filepath.Join(dir, tool)); err != nil {
-			t.Fatalf("linking %s into the test PATH: %v", tool, err)
-		}
-	}
-	if _, err := os.Stat(filepath.Join(dir, "git")); err != nil {
-		t.Fatalf("the test PATH needs git: %v", err)
-	}
-	t.Setenv("PATH", dir)
-	if _, err := exec.LookPath("gh"); err == nil {
-		t.Fatal("gh is still on PATH; the test cannot prove the missing-gh path")
 	}
 }

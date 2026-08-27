@@ -1058,8 +1058,10 @@ func TestAllocationEntryIsDenormalised(t *testing.T) {
 	if len(e.Resources) != 1 || e.Resources["api"].Value != res.Slot+4200 {
 		t.Errorf("entry resources = %+v, want the denormalised api port for slot %d", e.Resources, res.Slot)
 	}
-	if e.Path != "/tmp/wt/alpha" {
-		t.Errorf("entry path = %q, want the path as the client saw it", e.Path)
+	// The client sent filepath.Join("/tmp/wt", slug); the entry must carry
+	// that exact string back, in whatever spelling the platform gave it.
+	if want := filepath.Join("/tmp/wt", "alpha"); e.Path != want {
+		t.Errorf("entry path = %q, want the path as the client saw it (%q)", e.Path, want)
 	}
 }
 

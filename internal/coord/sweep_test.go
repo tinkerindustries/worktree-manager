@@ -97,10 +97,20 @@ func sweepHarness(t *testing.T, sp *spec.Spec) (*Harness, *bytes.Buffer) {
 	t.Helper()
 	var logBuf bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&logBuf, nil))
-	st, err := store.Open(filepath.Join(tempRoot(t), "wt"))
+	root := filepath.Join(tempRoot(t), "wt")
+	st, err := store.Open(root)
 	if err != nil {
 		t.Fatalf("opening the store: %v", err)
 	}
+	// The store owns an open SQLite handle; leaving it open leaks it on
+	// every platform and, on Windows, stops t.TempDir() removing its own
+	// directory. NewHarness does this for the harnesses it builds; this
+	// one builds its own, for the capturing log.
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("closing the store at %s: %v", root, err)
+		}
+	})
 	h, err := NewHandler(st, log)
 	if err != nil {
 		t.Fatalf("building the handler: %v", err)

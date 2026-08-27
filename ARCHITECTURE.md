@@ -37,7 +37,10 @@ internal/cli  verb dispatch, flag parsing, output, the exit-code error
               tree-reading safety checks from internal/treecheck, then
               reap + teardown + git worktree remove), and the hook
               sequencer (sticky parameters, health polling,
-              process-group timeouts)
+              process-group timeouts, and the shell-safe spelling of the
+              paths it substitutes into a command line — a hook runs
+              under sh -c, where a native Windows path loses every
+              backslash to the shell's escaping)
 internal/spec the wt.yaml schema: parser, validator, template evaluator,
               the walk-up finder, the quoted YAML emitter
 internal/identity  M1: classification, root resolution, containment,
@@ -50,9 +53,19 @@ internal/platform  M8: path realisation (on Windows via
               case-sensitivity probe (answered once per directory per
               process), the hook shell (sh -c everywhere, resolved from
               Git for Windows on Windows and refused by name when no
-              POSIX shell exists — hook commands are shell commands), the port-probe socket options (SO_REUSEADDR set on
+              POSIX shell exists — hook commands are shell commands),
+              ExternalPath (the one conversion out of a realised path into
+              the spelling an external tool accepts: the identity on unix,
+              and the strip of the extended-length \\?\ prefix on Windows,
+              which git rejects as an argument), the port-probe socket
+              options (SO_REUSEADDR set on
               unix, unset on Windows — the one GOOS branch callers never
-              see), the listen-address and container-token rails
+              see) and the bind classification over them (IsAddrInUse:
+              EADDRINUSE on unix, WSAEADDRINUSE on Windows, which the unix
+              errno does not match), the file identity the guard cache
+              validates entries against (stat's dev/ino/mtime on unix,
+              GetFileInformationByHandle's volume serial and file index on
+              Windows), the listen-address and container-token rails
               (ValidateListenAddr, ValidateContainerToken, and the
               ValidateCoordinatorConfig both wtd and `wt daemon install`
               run so the two cannot disagree — each setting checked on its
@@ -117,7 +130,8 @@ internal/apigen  the generator behind cmd/wtgen: emits the OpenAPI 3.1
               document and the client from the route table and the api
               types. No third-party codegen; CI fails on drift, and
               adding a route without regenerating fails a test
-internal/store  the coordinator's state: one SQLite database at
+internal/store  the coordinator's state, opened with Open and released
+              with Close: one SQLite database at
               <store>/wt.db (WAL, busy_timeout=5000, foreign_keys=on,
               synchronous=FULL; the database and its -wal/-shm sidecars
               all 0600, because entry secrets live in them). Whole-
@@ -169,7 +183,10 @@ internal/treecheck  the checks that run before a worktree is
               defaulting to refuse on uncommitted changes and warn on the
               other two. cleanup and the sweep are unaffected — they
               destroy trees with nobody at the keyboard and keep
-              requiring a merged pull request. Both binaries link it
+              requiring a merged pull request. The removal runs git from
+              the repository's main checkout, never from the tree it is
+              deleting: Windows will not remove a directory a process is
+              standing in. Both binaries link it
 ```
 
 Import rules, fixed for the whole plan:
@@ -226,8 +243,12 @@ Import rules, fixed for the whole plan:
   here is rendered from a spec, so no repository's judgment is involved.
 - `internal/managed` → the standard library. The block convention is
   line-based text; nothing else to it.
-- `internal/treecheck` → the standard library. git and gh reach it through
-  a runner function, so the coordinator passes its own seam.
+- `internal/treecheck` → the standard library plus `internal/platform`, for
+  the one "path for an external tool" conversion: every caller holds a
+  realised path, and `git worktree remove` takes that path as an argument,
+  which on Windows is a spelling git rejects (`platform.ExternalPath`). git
+  and gh reach it through a runner function, so the coordinator passes its
+  own seam.
 - `internal/platform` imports only the standard library and is the only
   package that may branch on `GOOS`; no `runtime.GOOS ==` and no
   `_darwin.go` build tag exists anywhere else.

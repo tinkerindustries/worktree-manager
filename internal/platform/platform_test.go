@@ -44,9 +44,7 @@ func TestRealPathSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := filepath.Join(dir, "link")
-	if err := os.Symlink(real, link); err != nil {
-		t.Fatal(err)
-	}
+	symlinkOrSkip(t, real, link)
 	got, err := RealPath(filepath.Join(link, "sub"))
 	if err != nil {
 		t.Fatalf("RealPath: %v", err)
@@ -67,9 +65,7 @@ func TestRealPathNonexistentTail(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := filepath.Join(dir, "link")
-	if err := os.Symlink(real, link); err != nil {
-		t.Fatal(err)
-	}
+	symlinkOrSkip(t, real, link)
 	got, err := RealPath(filepath.Join(link, "new", "file.txt"))
 	if err != nil {
 		t.Fatalf("RealPath: %v", err)
@@ -168,5 +164,25 @@ func TestCanonical(t *testing.T) {
 		if got := canonical("/System/Volumes/Data"); got != "/" {
 			t.Errorf("canonical of the firmlink root = %s, want /", got)
 		}
+	}
+}
+
+// symlinkOrSkip creates a symlink, skipping the test when the platform
+// will not let it.
+//
+// Creating a symlink on Windows needs SeCreateSymbolicLinkPrivilege, which
+// an ordinary account holds only with Developer Mode on; without it
+// os.Symlink fails with "A required privilege is not held by the client".
+// A test about symlink semantics cannot run there, and a skip naming the
+// reason is the honest answer — the same call the mapped-drive probe in
+// realpath_windows_test.go makes. Every other platform, and Windows CI,
+// creates the link and runs the test.
+func symlinkOrSkip(t *testing.T, oldname, newname string) {
+	t.Helper()
+	if err := os.Symlink(oldname, newname); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("cannot create a symlink on this machine (%v); creating one needs SeCreateSymbolicLinkPrivilege, which Developer Mode grants", err)
+		}
+		t.Fatalf("symlink %s -> %s: %v", newname, oldname, err)
 	}
 }

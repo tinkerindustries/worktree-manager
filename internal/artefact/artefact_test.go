@@ -250,16 +250,21 @@ func TestBriefingRefusesWithDescriptorMissing(t *testing.T) {
 // from the show output — the path prefix, the values, the shared list.
 func TestBriefingRendersFromShowValues(t *testing.T) {
 	sp := fixtureSpec(t)
+	// A descriptor's path is a native path, so the fixture's is one too:
+	// the briefing joins the descriptor filename onto it with
+	// filepath.Join, and a POSIX literal would make the expectation wrong
+	// on Windows for no reason of the renderer's.
+	root := filepath.FromSlash("/wt/brisk-otter")
 	d := &descriptor.Descriptor{
 		Version: 1, App: "plain-app", Slug: "brisk-otter", Slot: 2,
-		Path: "/wt/brisk-otter",
+		Path: root,
 		Resources: map[string]spec.Resolved{
 			"api": {Type: "port", Value: 8202},
-			"db":  {Type: "state-path", Value: "/home/u/.plain-app/worktrees/brisk-otter-2/db.sqlite"},
+			"db":  {Type: "state-path", Value: filepath.FromSlash("/home/u/.plain-app/worktrees/brisk-otter-2/db.sqlite")},
 		},
 		Shared: []descriptor.Shared{{Name: "shared_db", Impact: "writes are visible to every worktree"}},
 	}
-	show := map[string]any{"found": true, "worktree_root": "/wt/brisk-otter", "descriptor": d}
+	show := map[string]any{"found": true, "worktree_root": root, "descriptor": d}
 	data, err := json.Marshal(show)
 	if err != nil {
 		t.Fatalf("marshalling the show verdict: %v", err)
@@ -268,7 +273,7 @@ func TestBriefingRendersFromShowValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Briefing: %v", err)
 	}
-	for _, want := range []string{"brisk-otter", "slot 2", "8202", "db.sqlite", "shared_db", "writes are visible to every worktree", "/wt/brisk-otter", "--env /wt/brisk-otter/wt-env.json", "Not for this session"} {
+	for _, want := range []string{"brisk-otter", "slot 2", "8202", "db.sqlite", "shared_db", "writes are visible to every worktree", root, "--env " + filepath.Join(root, "wt-env.json"), "Not for this session"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the briefing lacks %q:\n%s", want, out)
 		}

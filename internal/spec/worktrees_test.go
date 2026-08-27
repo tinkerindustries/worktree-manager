@@ -7,11 +7,30 @@ package spec
 
 import (
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 func str(s string) *string { return &s }
+
+// abs turns a POSIX-shaped fixture path into one that is absolute on the
+// running platform. On Windows a rooted path with no volume — what
+// filepath.FromSlash("/srv/repo") produces — is *not* absolute, so
+// WorktreeLocation would join it onto the main checkout and the rule
+// under test ("an absolute template stands on its own, a relative one
+// resolves against the main checkout") could never be exercised. A volume
+// letter is what makes it absolute; the paths are never touched on disk.
+func abs(p string) string {
+	if runtime.GOOS == "windows" {
+		return `C:` + filepath.FromSlash(p)
+	}
+	return filepath.FromSlash(p)
+}
+
+// absTemplate is abs in the spelling a spec template is written in:
+// forward slashes on every platform (validation refuses a backslash).
+func absTemplate(p string) string { return filepath.ToSlash(abs(p)) }
 
 // TestWorktreePathDefault: a spec that says nothing gets Claude Code's own
 // directory, so the manual flow and the automatic one land in one place.
@@ -20,11 +39,11 @@ func TestWorktreePathDefault(t *testing.T) {
 	if got := WorktreePathTemplate(s); got != ".claude/worktrees/{slug}" {
 		t.Errorf("template = %q, want the Claude Code default", got)
 	}
-	got, err := WorktreeLocation(s, filepath.FromSlash("/repo"), "brisk-otter", filepath.FromSlash("/home/u"))
+	got, err := WorktreeLocation(s, abs("/repo"), "brisk-otter", abs("/home/u"))
 	if err != nil {
 		t.Fatalf("WorktreeLocation: %v", err)
 	}
-	want := filepath.Join("/repo", ".claude", "worktrees", "brisk-otter")
+	want := filepath.Join(abs("/repo"), ".claude", "worktrees", "brisk-otter")
 	if got != want {
 		t.Errorf("location = %q, want %q", got, want)
 	}
@@ -39,19 +58,19 @@ func TestWorktreeLocationOverrides(t *testing.T) {
 		template string
 		want     string
 	}{
-		{"sibling", "../{app}-worktrees/{slug}", filepath.Join("/", "srv", "bacio-worktrees", "brisk-otter")},
-		{"home", "{home}/wt/{app}/{slug}", filepath.Join("/home/u", "wt", "bacio", "brisk-otter")},
-		{"absolute", "/var/wt/{slug}", filepath.Join("/var", "wt", "brisk-otter")},
+		{"sibling", "../{app}-worktrees/{slug}", filepath.Join(abs("/srv"), "bacio-worktrees", "brisk-otter")},
+		{"home", "{home}/wt/{app}/{slug}", filepath.Join(abs("/home/u"), "wt", "bacio", "brisk-otter")},
+		{"absolute", absTemplate("/var") + "/wt/{slug}", filepath.Join(abs("/var"), "wt", "brisk-otter")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := &Spec{App: "bacio", Worktrees: Worktrees{Path: str(tt.template)}}
-			got, err := WorktreeLocation(s, filepath.FromSlash("/srv/repo"), "brisk-otter", filepath.FromSlash("/home/u"))
+			got, err := WorktreeLocation(s, abs("/srv/repo"), "brisk-otter", abs("/home/u"))
 			if err != nil {
 				t.Fatalf("WorktreeLocation: %v", err)
 			}
-			if got != filepath.FromSlash(tt.want) {
-				t.Errorf("location = %q, want %q", got, filepath.FromSlash(tt.want))
+			if got != tt.want {
+				t.Errorf("location = %q, want %q", got, tt.want)
 			}
 		})
 	}

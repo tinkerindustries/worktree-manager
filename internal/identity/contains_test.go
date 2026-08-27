@@ -62,15 +62,11 @@ func TestContainsReal(t *testing.T) {
 	// A symlink inside the tree pointing out of it: a write through the
 	// link lands outside, and resolution must say so.
 	leak := filepath.Join(tree, "sub", "leak")
-	if err := os.Symlink(outside, leak); err != nil {
-		t.Fatal(err)
-	}
+	symlinkOrSkip(t, outside, leak)
 	// A symlink outside the tree pointing in: a write through it lands
 	// inside, and resolution must say so.
 	door := filepath.Join(outside, "door")
-	if err := os.Symlink(tree, door); err != nil {
-		t.Fatal(err)
-	}
+	symlinkOrSkip(t, tree, door)
 
 	tests := []struct {
 		name string

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -13,14 +14,10 @@ import (
 // real platform: lsof (or netstat+tasklist) finds the LISTEN holder of a
 // port this process binds, and a port nothing holds comes back empty.
 func TestListenersFindsARealListener(t *testing.T) {
-	if InContainer() {
-		// Inside a container the discovery still sees the container's own
-		// namespace, and this process's listener is in it — so the test is
-		// meaningful here too. lsof, however, must exist.
-	}
-	if _, err := exec.LookPath("lsof"); err != nil {
-		t.Skip("lsof is not installed; the discovery test needs the platform tool")
-	}
+	// Inside a container the discovery still sees the container's own
+	// namespace, and this process's listener is in it — so the test is
+	// meaningful there too. The platform's tool must exist either way.
+	requireDiscoveryTool(t)
 
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -66,9 +63,7 @@ func TestListenersFindsARealListener(t *testing.T) {
 // TestListenersMultiplePortsFindsEachHolder: one discovery call covers
 // several ports and reports each holder with its own port.
 func TestListenersMultiplePortsFindsEachHolder(t *testing.T) {
-	if _, err := exec.LookPath("lsof"); err != nil {
-		t.Skip("lsof is not installed; the discovery test needs the platform tool")
-	}
+	requireDiscoveryTool(t)
 	l1, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("binding: %v", err)
@@ -126,13 +121,20 @@ func TestSignalTermAndKill(t *testing.T) {
 	// TERM arriving during startup would kill the shell before the trap
 	// exists, which is not what this test is about.
 	time.Sleep(300 * time.Millisecond)
-	if err := SignalTerm(cmd.Process.Pid); err != nil {
+	// The TERM step. On unix the victim traps the signal and survives it.
+	// On Windows there is no signal to trap: SignalTerm is taskkill
+	// without /F, which asks a windowed process to close, and a console
+	// process has no window — taskkill refuses, and the refusal is
+	// reported rather than swallowed (08-platform.md: TERM then /F, the
+	// escalation reported). Both platforms make the same statement here,
+	// which is the one the escalation below depends on: TERM did not end
+	// the victim.
+	if err := SignalTerm(cmd.Process.Pid); err != nil && runtime.GOOS != "windows" {
 		t.Fatalf("SignalTerm: %v", err)
 	}
-	// It ignores TERM: still alive after a moment.
 	time.Sleep(200 * time.Millisecond)
 	if !Alive(cmd.Process.Pid) {
-		t.Fatal("victim died from SIGTERM despite trapping it")
+		t.Fatal("victim died from the TERM step, which it must survive")
 	}
 	if err := SignalKill(cmd.Process.Pid); err != nil {
 		t.Fatalf("SignalKill: %v", err)
@@ -156,6 +158,17 @@ func TestInContainer(t *testing.T) {
 // the process group takes the shell and its children together, so a timed
 // out hook cannot orphan a build or a compose up.
 func TestKillGroupKillsTheWholeTree(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Windows limitation, stated rather than worked around: the
+		// assertion is "no descendant of the killed shell survives", and
+		// checking it needs a parent-aware process listing —
+		// `ps -eo pid=,ppid=,comm=`. Windows has no such tool that can be
+		// relied on (tasklist reports no parent, and wmic is gone from
+		// current builds). KillGroup itself is taskkill /F /T there, whose
+		// tree behaviour is the operating system's rather than this
+		// package's.
+		t.Skip("windows has no parent-aware process listing to verify a tree kill with")
+	}
 	cmd := exec.Command("sh", "-c", "sleep 30 & wait")
 	StartInOwnGroup(cmd)
 	if err := cmd.Start(); err != nil {
@@ -223,4 +236,30 @@ func freePlatformPort(t *testing.T) int {
 	port := l.Addr().(*net.TCPAddr).Port
 	l.Close()
 	return port
+}
+
+// discoveryTool names the platform's own listener-discovery binary — lsof
+// on macOS and Linux, netstat on Windows (paired with tasklist). Guarding
+// on lsof everywhere skipped the whole discovery contract on Windows,
+// which is the one platform whose implementation is not lsof.
+func discoveryTool() string {
+	if runtime.GOOS == "windows" {
+		return "netstat"
+	}
+	return "lsof"
+}
+
+// requireDiscoveryTool skips when the platform's discovery binary is
+// absent, naming it.
+func requireDiscoveryTool(t *testing.T) {
+	t.Helper()
+	tool := discoveryTool()
+	if _, err := exec.LookPath(tool); err != nil {
+		t.Skipf("%s is not installed; the discovery test needs the platform tool", tool)
+	}
+	if runtime.GOOS == "windows" {
+		if _, err := exec.LookPath("tasklist"); err != nil {
+			t.Skip("tasklist is not installed; the discovery test needs it to name the holder")
+		}
+	}
 }

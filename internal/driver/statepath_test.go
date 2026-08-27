@@ -9,6 +9,7 @@ package driver
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -299,9 +300,7 @@ func TestStatePathPurgeRefusalThroughSymlink(t *testing.T) {
 	os.MkdirAll(real, 0o755)
 	os.WriteFile(filepath.Join(real, "db.sqlite"), []byte("data"), 0o644)
 	link := filepath.Join(home, "link-store")
-	if err := os.Symlink(real, link); err != nil {
-		t.Fatalf("creating the symlink: %v", err)
-	}
+	symlinkOrSkip(t, real, link)
 	// The purge target is the symlink; the shared source sits inside the
 	// real directory the symlink names.
 	res := &spec.Resource{Type: "state-path", Name: "db",
@@ -378,5 +377,25 @@ func TestStatePathBlastRadiusNamesSharing(t *testing.T) {
 	br := (&StatePath{}).BlastRadius(&spec.Resource{Name: "db"}, nil)
 	if !strings.Contains(br, "every worktree") || !strings.Contains(br, "writes") {
 		t.Errorf("BlastRadius = %q, want prose naming shared writes", br)
+	}
+}
+
+// symlinkOrSkip creates a symlink, skipping the test when the platform
+// will not let it.
+//
+// Creating a symlink on Windows needs SeCreateSymbolicLinkPrivilege, which
+// an ordinary account holds only with Developer Mode on; without it
+// os.Symlink fails with "A required privilege is not held by the client".
+// A test about symlink semantics cannot run there, and a skip naming the
+// reason is the honest answer — the same call the mapped-drive probe in
+// realpath_windows_test.go makes. Every other platform, and Windows CI,
+// creates the link and runs the test.
+func symlinkOrSkip(t *testing.T, oldname, newname string) {
+	t.Helper()
+	if err := os.Symlink(oldname, newname); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("cannot create a symlink on this machine (%v); creating one needs SeCreateSymbolicLinkPrivilege, which Developer Mode grants", err)
+		}
+		t.Fatalf("symlink %s -> %s: %v", newname, oldname, err)
 	}
 }

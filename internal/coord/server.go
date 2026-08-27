@@ -14,10 +14,10 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/api"
+	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 )
 
 // Server is the resident coordinator: the loopback HTTP listener and the
@@ -62,7 +62,7 @@ func NewServer(h *Handler, log *slog.Logger) *Server {
 func (s *Server) Serve(ctx context.Context, addr string) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		if errors.Is(err, syscall.EADDRINUSE) {
+		if platform.IsAddrInUse(err) {
 			return fmt.Errorf("cannot listen on --addr %s: the port is already in use — stop the process holding it, or pass --addr with a different port", addr)
 		}
 		return fmt.Errorf("listening on --addr %s: %w", addr, err)

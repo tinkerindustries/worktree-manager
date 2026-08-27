@@ -84,12 +84,15 @@ func TestInstallSupervisorPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	file := string(data)
-	if !strings.Contains(file, "com.mrgeoffrich.wtd") {
-		t.Errorf("registration file lacks the label:\n%s", file)
-	}
+	// The label is in the file on launchd (Label) and systemd (the unit
+	// names its socket), and is asserted in those branches. On Windows it
+	// is not in the file at all: the task's name is the /TN argument
+	// schtasks is given, and the XML holds the action alone — which is
+	// also why the file is UTF-16 and cannot be searched as a Go string.
 	switch runtime.GOOS {
 	case "darwin":
 		for _, want := range []string{
+			LaunchAgentLabel,
 			"<key>Label</key>",
 			"<string>" + LaunchAgentLabel + "</string>",
 			"<key>ProgramArguments</key>",
@@ -108,6 +111,7 @@ func TestInstallSupervisorPrefix(t *testing.T) {
 	case "linux":
 		for _, want := range []string{
 			"[Unit]",
+			LaunchAgentLabel,
 			"Requires=" + SystemdSocketFilename,
 			"After=" + SystemdSocketFilename,
 			`ExecStart="` + wtd + `" --activate`,

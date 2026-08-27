@@ -33,10 +33,7 @@ func testEntry() Entry {
 // int, the same normalisation the JSON file applied.
 func TestRegistryRoundTrip(t *testing.T) {
 	root := tempRoot(t)
-	st, err := Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := openStore(t, root)
 	want := testEntry()
 	if err := st.UpsertEntry(want); err != nil {
 		t.Fatalf("UpsertEntry: %v", err)
@@ -72,10 +69,7 @@ func TestRegistryRoundTrip(t *testing.T) {
 // TestGetEntry: one row by app and slug, with the not-found outcome
 // distinct from an error.
 func TestGetEntry(t *testing.T) {
-	st, err := Open(tempRoot(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := openStore(t, tempRoot(t))
 	if e, ok, err := st.GetEntry("compose-app", "brisk-otter"); err != nil || ok || e != nil {
 		t.Errorf("GetEntry of a missing entry = (%v, %v, %v), want (nil, false, nil)", e, ok, err)
 	}
@@ -97,10 +91,7 @@ func TestGetEntry(t *testing.T) {
 // slot) inserted directly through the store — no coordinator, no mutex —
 // with the second refused by the database's UNIQUE (app, slot) index.
 func TestDuplicateSlotRefusedByDatabase(t *testing.T) {
-	st, err := Open(tempRoot(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := openStore(t, tempRoot(t))
 	first := testEntry()
 	if err := st.UpsertEntry(first); err != nil {
 		t.Fatalf("first upsert: %v", err)
@@ -125,10 +116,7 @@ func TestDuplicateSlotRefusedByDatabase(t *testing.T) {
 // TestEntryLifecycle: the state transition and last-seen move, and the
 // entry drop, all through the row-level mutations.
 func TestEntryLifecycle(t *testing.T) {
-	st, err := Open(tempRoot(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := openStore(t, tempRoot(t))
 	if err := st.UpsertEntry(testEntry()); err != nil {
 		t.Fatal(err)
 	}
@@ -161,12 +149,9 @@ func TestEntryLifecycle(t *testing.T) {
 // nothing — the half-apply rail the coordinator leans on for teardown
 // state writes and reclamation.
 func TestWithTxRollsBack(t *testing.T) {
-	st, err := Open(tempRoot(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := openStore(t, tempRoot(t))
 	boom := errors.New("boom")
-	err = st.WithTx(func(tx *Tx) error {
+	err := st.WithTx(func(tx *Tx) error {
 		if err := tx.UpsertEntry(testEntry()); err != nil {
 			return err
 		}
@@ -214,10 +199,7 @@ func TestWithTxRollsBack(t *testing.T) {
 // and a read, bases with their spans and reservations with their ports,
 // names and note.
 func TestBandsRoundTrip(t *testing.T) {
-	st, err := Open(tempRoot(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := openStore(t, tempRoot(t))
 	if err := st.UpsertBand(Band{App: "compose-app", Bases: map[string]int{"api": 4200, "proxy": 4200}, Spans: map[string]int{"api": 64, "proxy": 64}}); err != nil {
 		t.Fatalf("UpsertBand: %v", err)
 	}
@@ -244,10 +226,7 @@ func TestBandsRoundTrip(t *testing.T) {
 // with fewer resources drops the stale bases rather than leaving them
 // behind.
 func TestBandReRegistrationReplaces(t *testing.T) {
-	st, err := Open(tempRoot(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := openStore(t, tempRoot(t))
 	full := Band{App: "compose-app", Bases: map[string]int{"api": 4200, "proxy": 4300}, Spans: map[string]int{"api": 64, "proxy": 64}}
 	if err := st.UpsertBand(full); err != nil {
 		t.Fatal(err)
@@ -270,10 +249,7 @@ func TestBandReRegistrationReplaces(t *testing.T) {
 
 // TestClientsRoundTrip: the client table survives upserts and deletes.
 func TestClientsRoundTrip(t *testing.T) {
-	st, err := Open(tempRoot(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := openStore(t, tempRoot(t))
 	now := "2026-08-13T09:00:00.123456789Z"
 	host := ClientEntry{Identity: "4242", Kind: "host", LastSeen: now}
 	eph := ClientEntry{Identity: "s1a2b3", Kind: "ephemeral", LastSeen: now, Ephemeral: true}
@@ -314,10 +290,7 @@ func TestClientsRoundTrip(t *testing.T) {
 // TestSpecsCacheRoundTrip: the per-app spec cache survives an upsert and
 // a delete, and a fresh store is an empty cache.
 func TestSpecsCacheRoundTrip(t *testing.T) {
-	st, err := Open(tempRoot(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := openStore(t, tempRoot(t))
 	sp := spec.Spec{Version: 1, App: "compose-app"}
 	if err := st.UpsertSpec("compose-app", sp); err != nil {
 		t.Fatal(err)
@@ -346,10 +319,7 @@ func TestSpecsCacheRoundTrip(t *testing.T) {
 // schema is read well enough to list — the lenient read decodes it and
 // reports the database's own version — while the strict read refuses.
 func TestReadRegistryListReadsNewerSchema(t *testing.T) {
-	st, err := Open(tempRoot(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := openStore(t, tempRoot(t))
 	if err := st.UpsertEntry(testEntry()); err != nil {
 		t.Fatal(err)
 	}

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -30,7 +31,12 @@ func tempDir(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("resolving the temp dir: %v", err)
 	}
-	return dir
+	// A fixture root is handed to git, so it must be in the spelling an
+	// external tool accepts. RealPath's Windows output is the
+	// extended-length form, which git rejects as an argument; ExternalPath
+	// is the way back and the identity on unix, where the symlink
+	// resolution above is the whole point.
+	return platform.ExternalPath(dir)
 }
 
 func gitIn(t *testing.T, dir string, args ...string) string {
@@ -139,7 +145,15 @@ func main() {
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("go build ./... of the generated reader failed: %v\n%s", err, out)
 	}
-	bin := filepath.Join(mod, "runner-bin")
+	// The extension matters: exec.Command on Windows resolves an
+	// executable through PATHEXT, so a binary named without one cannot be
+	// run at all — it fails with an empty output, which reads as "the
+	// reader resolved nothing".
+	exe := ""
+	if runtime.GOOS == "windows" {
+		exe = ".exe"
+	}
+	bin := filepath.Join(mod, "runner-bin"+exe)
 	buildBin := exec.Command("go", "build", "-o", bin, "./runner")
 	buildBin.Dir = mod
 	if out, err := buildBin.CombinedOutput(); err != nil {
@@ -157,6 +171,12 @@ func run(t *testing.T, bin, dir, flagEnv, explicit string, extraEnv ...string) (
 	cmd.Env = append(os.Environ(), extraEnv...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if len(out) == 0 {
+			// A refusal always says something; silence means the binary
+			// never ran, and reporting that as "no refusal, no values"
+			// hides the real failure behind six nil comparisons.
+			t.Fatalf("the runner %s could not be run in %s: %v", bin, dir, err)
+		}
 		return nil, string(out)
 	}
 	var env map[string]any

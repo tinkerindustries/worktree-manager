@@ -80,9 +80,7 @@ func TestNestedInsideNegative(t *testing.T) {
 func TestNestedInsideThroughSymlink(t *testing.T) {
 	worktree, clone, _ := buildNestedRepo(t)
 	link := filepath.Join(t.TempDir(), "via-link")
-	if err := os.Symlink(clone, link); err != nil {
-		t.Fatalf("symlinking the clone: %v", err)
-	}
+	symlinkOrSkip(t, clone, link)
 	enclosing, err := NestedInside(link, commonDir(t, clone))
 	if err != nil {
 		t.Fatalf("NestedInside through a symlink: %v", err)

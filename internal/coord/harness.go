@@ -27,13 +27,22 @@ type Harness struct {
 }
 
 // NewHarness opens a store at root and builds the handler over it. The
-// test handle makes a harness failure a test failure.
+// test handle makes a harness failure a test failure, and it is also what
+// closes the store: the database handle is registered for cleanup here so
+// no test has to remember, and so the store's directory is deletable when
+// the test ends. (Windows refuses to unlink an open file, which is what
+// made the leak visible; the leak was there on every platform.)
 func NewHarness(t testing.TB, root string) *Harness {
 	t.Helper()
 	st, err := store.Open(root)
 	if err != nil {
 		t.Fatalf("harness: opening the store at %s: %v", root, err)
 	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("harness: closing the store at %s: %v", root, err)
+		}
+	})
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	h, err := NewHandler(st, log)
 	if err != nil {

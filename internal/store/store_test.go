@@ -21,6 +21,38 @@ func tempRoot(t *testing.T) string {
 	return dir
 }
 
+// openStore opens a store and closes it when the test ends.
+//
+// An open SQLite handle holds wt.db and its -wal/-shm sidecars, and a
+// handle left open is a leak on every platform. Windows is the one that
+// says so: it refuses to unlink an open file, so t.TempDir()'s own
+// RemoveAll fails and the test that leaked the store is the test that
+// fails. Every store a test opens goes through here.
+func openStore(t *testing.T, root string) *Store {
+	t.Helper()
+	st, err := Open(root)
+	if err != nil {
+		t.Fatalf("Open(%s): %v", root, err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("closing the store at %s: %v", root, err)
+		}
+	})
+	return st
+}
+
+// homeEnv is the variable that names the user's home directory on this
+// platform: os.UserHomeDir — which Root() calls — reads USERPROFILE on
+// Windows and HOME everywhere else, so a test that sets HOME on Windows
+// changes nothing.
+func homeEnv() string {
+	if runtime.GOOS == "windows" {
+		return "USERPROFILE"
+	}
+	return "HOME"
+}
+
 func TestRootResolution(t *testing.T) {
 	t.Setenv("WT_HOME", "/tmp/wt-home-test")
 	got, err := Root()
@@ -32,16 +64,16 @@ func TestRootResolution(t *testing.T) {
 	}
 
 	t.Setenv("WT_HOME", "")
-	t.Setenv("HOME", filepath.Join(tempRoot(t), "home"))
+	t.Setenv(homeEnv(), filepath.Join(tempRoot(t), "home"))
 	got, err = Root()
 	if err != nil {
 		t.Fatalf("Root: %v", err)
 	}
-	if got != filepath.Join(os.Getenv("HOME"), ".wt") {
-		t.Errorf("Root with $HOME = %q, want $HOME/.wt", got)
+	if got != filepath.Join(os.Getenv(homeEnv()), ".wt") {
+		t.Errorf("Root with the home directory set = %q, want <home>/.wt", got)
 	}
 
-	t.Setenv("HOME", "")
+	t.Setenv(homeEnv(), "")
 	if _, err := Root(); err == nil {
 		t.Error("Root with WT_HOME and $HOME both unset succeeded, want a refusal to invent a location")
 	}
@@ -49,10 +81,7 @@ func TestRootResolution(t *testing.T) {
 
 func TestOpenCreatesPrivateDir(t *testing.T) {
 	root := filepath.Join(tempRoot(t), "wt")
-	st, err := Open(root)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
+	st := openStore(t, root)
 	if st.Root() != root {
 		t.Errorf("Root() = %q, want %q", st.Root(), root)
 	}
@@ -98,10 +127,7 @@ func TestOpenUnwritableRootNamesThePath(t *testing.T) {
 // schema is in place.
 func TestOpenCreatesPrivateDatabase(t *testing.T) {
 	root := filepath.Join(tempRoot(t), "wt")
-	st, err := Open(root)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
+	st := openStore(t, root)
 	if st.Root() != root {
 		t.Errorf("Root() = %q, want %q", st.Root(), root)
 	}
@@ -181,14 +207,11 @@ func TestOpenRefusesBrokenDatabase(t *testing.T) {
 // (02-coordination.md §11) — while the lenient read still lists it.
 func TestSchemaVersionRefusal(t *testing.T) {
 	root := filepath.Join(tempRoot(t), "wt")
-	st, err := Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := openStore(t, root)
 	if _, err := st.db.Exec("UPDATE meta SET value = '2' WHERE key = 'schema_version'"); err != nil {
 		t.Fatal(err)
 	}
-	_, err = st.ReadRegistry()
+	_, err := st.ReadRegistry()
 	var ve *VersionError
 	if !errors.As(err, &ve) {
 		t.Fatalf("ReadRegistry = %v, want a VersionError", err)

@@ -57,7 +57,7 @@ func TestWindowsTaskXMLShape(t *testing.T) {
 	// The TCP variant carries the surface's configuration in the action's
 	// Arguments — the token is validated whitespace-free so it stays one
 	// argument in the task's command line.
-	raw2 := windowsTaskXML(wtd, "127.0.0.1:7331", "tcp-token-0123456789abcdef", nil)
+	raw2 := windowsTaskXML(wtd, "127.0.0.1:7331", "tcp-token-0123456789abcdef", []string{"host.docker.internal"})
 	u2 := make([]uint16, len(raw2)/2)
 	for i := range u2 {
 		u2[i] = uint16(raw2[2*i]) | uint16(raw2[2*i+1])<<8
@@ -67,8 +67,9 @@ func TestWindowsTaskXMLShape(t *testing.T) {
 	}
 	xml2 := string(utf16.Decode(u2))
 	for _, want := range []string{
-		"--tcp 127.0.0.1:7331",
-		"--tcp-token tcp-token-0123456789abcdef",
+		"--addr 127.0.0.1:7331",
+		"--container-token tcp-token-0123456789abcdef",
+		"--allow-host host.docker.internal",
 	} {
 		if !strings.Contains(xml2, want) {
 			t.Errorf("the TCP task XML lacks %q:\n%s", want, xml2)

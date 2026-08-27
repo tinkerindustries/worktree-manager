@@ -30,3 +30,17 @@ func ProbeBind(port int) error {
 	}
 	return l.Close()
 }
+
+// IsAddrInUse reports whether err is a bind's "the address is already in
+// use" answer — the classification ProbeBind's callers make, and the one
+// that separates "the port is held" from "the probe could not run".
+//
+// The errno differs by platform and the difference is not cosmetic: unix
+// returns EADDRINUSE, Windows returns WSAEADDRINUSE, and
+// errors.Is(err, syscall.EADDRINUSE) is false for the Windows one. Every
+// caller comparing against the unix errno alone read every held port on
+// Windows as unprobeable, which turned a port collision into "could not be
+// probed" in the port driver and made `wt daemon install` refuse instead
+// of stepping to the next free port. The branch lives here, where GOOS
+// branches are allowed.
+func IsAddrInUse(err error) bool { return isAddrInUse(err) }

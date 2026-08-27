@@ -70,7 +70,11 @@ func ClassifyCached(cwd string, standalone bool, cacheDir string) (*Classificati
 
 	// A hit: the recorded root still exists with the same identity.
 	entry, rerr := readCacheEntry(path)
-	if rerr == nil && entry.Version == cacheVersion && entryValid(*entry) {
+	valid, gone := false, false
+	if rerr == nil && entry.Version == cacheVersion {
+		valid, gone = entryStatus(*entry)
+	}
+	if valid {
 		return &Classification{
 			Outcome:          outcomeFromString(entry.Outcome),
 			WorktreeRoot:     entry.WorktreeRoot,
@@ -84,7 +88,7 @@ func ClassifyCached(cwd string, standalone bool, cacheDir string) (*Classificati
 	// cache that cannot be written degrades to an uncached guard, never to
 	// a refused one).
 	note := ""
-	if rerr == nil && entry.Version == cacheVersion && !entryValid(*entry) {
+	if gone {
 		// The cached root vanished or changed: the worktree was removed
 		// mid-session (or replaced). The session hears about it once, even
 		// when the reclassification itself fails because the cwd is gone,
@@ -117,15 +121,29 @@ func ClassifyCached(cwd string, standalone bool, cacheDir string) (*Classificati
 	return cls, note, nil
 }
 
-// entryValid reports whether the recorded root still exists with the same
-// identity: the worktree-removed-mid-session case is exactly a vanished or
-// replaced root.
-func entryValid(e guardCacheEntry) bool {
-	dev, ino, mtime, err := platform.FileIdentity(cacheIdentityTarget(e.WorktreeRoot))
-	if err != nil {
-		return false
+// entryStatus reports two different things about a cache entry, because
+// two different things can be wrong with one: whether it is still valid,
+// and whether the recorded root has gone away or been replaced.
+//
+// Only the second is the worktree-removed-mid-session case the note names.
+// An entry that cannot be checked at all — the filesystem reports no file
+// identity, so there is nothing to compare — is not valid and is not a
+// removal: the guard reclassifies and says nothing, because telling a
+// session its worktree vanished when it did not is worse than a cache
+// miss.
+func entryStatus(e guardCacheEntry) (valid, gone bool) {
+	target := cacheIdentityTarget(e.WorktreeRoot)
+	if _, err := os.Stat(target); err != nil {
+		return false, true
 	}
-	return dev == e.Dev && ino == e.Ino && mtime == e.MtimeNanos
+	dev, ino, mtime, err := platform.FileIdentity(target)
+	if err != nil {
+		return false, false
+	}
+	if dev == e.Dev && ino == e.Ino && mtime == e.MtimeNanos {
+		return true, false
+	}
+	return false, true
 }
 
 // cacheIdentityTarget is the path whose identity a cache entry is

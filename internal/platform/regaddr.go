@@ -12,11 +12,9 @@ package platform
 // and pass --addr by hand.
 
 import (
-	"errors"
 	"fmt"
 	"net"
 	"strconv"
-	"syscall"
 )
 
 // registrationProbeSpan is how many consecutive ports from the default are
@@ -54,7 +52,7 @@ func ChooseRegistrationAddr(defaultAddr string) (addr string, chosen bool, err e
 		if berr == nil {
 			return net.JoinHostPort(host, strconv.Itoa(p)), p != base, nil
 		}
-		if !errors.Is(berr, syscall.EADDRINUSE) {
+		if !IsAddrInUse(berr) {
 			// The probe itself could not run — a sandbox with no network,
 			// a permissions problem. That is not "the port is taken", and
 			// reporting it as such would send the operator hunting for a
