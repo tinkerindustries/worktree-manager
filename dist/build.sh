@@ -154,6 +154,26 @@ stage_for() { # goos goarch ext bin-ext
 	CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -ldflags "$LDFLAGS" -o "$DIR/wtd$BINEXT" ./cmd/wtd
 	cp "$OUT/README.txt" "$DIR/README.txt"
 
+	# Optional: sign the two darwin binaries with a Developer ID
+	# Application identity, the same kind macapp/Scripts/sign.sh signs the
+	# menu bar app with. Off by default and inert unless
+	# WT_DARWIN_SIGNING_IDENTITY is set — with no identity configured this
+	# whole block does not run, so the archives it produces are unchanged
+	# (build.sh's output is byte-identical with and without this addition
+	# when the variable is unset). A browser-downloaded release archive is
+	# quarantined by Gatekeeper, and wtd — a resident process that
+	# registers itself with launchd — is exactly the shape Gatekeeper is
+	# suspicious of, which is the motivation for offering this at all.
+	if [ "$GOOS" = "darwin" ] && [ -n "${WT_DARWIN_SIGNING_IDENTITY:-}" ]; then
+		if ! command -v codesign >/dev/null 2>&1; then
+			echo "build.sh: WT_DARWIN_SIGNING_IDENTITY is set but codesign is not on this machine" >&2
+			exit 1
+		fi
+		echo "signing wt$BINEXT and wtd$BINEXT for $GOOS/$GOARCH..."
+		codesign --options runtime --timestamp --sign "$WT_DARWIN_SIGNING_IDENTITY" "$DIR/wt$BINEXT"
+		codesign --options runtime --timestamp --sign "$WT_DARWIN_SIGNING_IDENTITY" "$DIR/wtd$BINEXT"
+	fi
+
 	# The archive's own manifest: a SHA256SUMS covering the two binaries,
 	# which the installer verifies against before copying anything. It sits
 	# inside the archive — the outside manifest covers the archives

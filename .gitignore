@@ -1,2 +1,5 @@
 # build outputs from dist/build.sh (never committed)
 dist/out/
+
+# SwiftPM build output for the menu bar app (never committed)
+macapp/.build/

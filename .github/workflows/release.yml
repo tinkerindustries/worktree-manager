@@ -6,8 +6,16 @@ name: release
 # and must be `v` followed by a semantic version (RELEASE.md, "Versioning";
 # semver.org 2.0.0) — a tag that is not is refused here before anything is
 # built, because the tag is the only name the binaries carry. Nothing is
-# published to a package manager channel and nothing is signed — the
-# PLAN-SCOPE.md non-goals for packaging.
+# published to a package manager channel — the PLAN-SCOPE.md non-goal for
+# packaging.
+#
+# The macapp job (below) is the menu bar app's phase-4 shipping half
+# (macapp/PLAN.md): it builds, signs and notarizes WorktreeMenu.app and
+# attaches the result to the same release. It runs only when the six
+# signing secrets are configured on this repository; with none of them
+# set it logs why and does nothing else, so a tag push behaves exactly as
+# it does today until a Developer ID certificate and an App Store Connect
+# key are added.
 on:
   push:
     tags:
@@ -20,6 +28,11 @@ jobs:
   build:
     name: build and publish the distribution
     runs-on: ubuntu-latest
+    # Exposed so the macapp job (below) can name the same version without
+    # re-deriving it from the tag itself; this does not change anything
+    # this job does.
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -79,3 +92,98 @@ jobs:
             --title "Worktree Manager $GITHUB_REF_NAME" \
             --notes "$notes" \
             $flags
+
+  macapp:
+    name: build, sign and notarize the menu bar app
+    runs-on: macos-14
+    needs: build
+    steps:
+      - uses: actions/checkout@v7
+      # None of this job's remaining steps run without all six secrets:
+      # a Developer ID Application certificate (as a base64 .p12) and its
+      # import password, the identity string codesign signs with, and
+      # the three App Store Connect API key values notarytool needs to
+      # submit unattended. This repository carries none of them today —
+      # there is no Developer ID certificate and no App Store Connect key
+      # in the environment this job was written in — so this step is
+      # expected to report "not configured" and every step after it is
+      # skipped, leaving the rest of this release exactly as build (above)
+      # produced it.
+      - name: check for signing credentials
+        id: creds
+        env:
+          MACAPP_SIGNING_IDENTITY: ${{ secrets.MACAPP_SIGNING_IDENTITY }}
+          MACAPP_CERTIFICATE_P12: ${{ secrets.MACAPP_CERTIFICATE_P12 }}
+          MACAPP_CERTIFICATE_PASSWORD: ${{ secrets.MACAPP_CERTIFICATE_PASSWORD }}
+          MACAPP_NOTARY_KEY_ID: ${{ secrets.MACAPP_NOTARY_KEY_ID }}
+          MACAPP_NOTARY_KEY_ISSUER: ${{ secrets.MACAPP_NOTARY_KEY_ISSUER }}
+          MACAPP_NOTARY_KEY_P8: ${{ secrets.MACAPP_NOTARY_KEY_P8 }}
+        run: |
+          if [ -n "$MACAPP_SIGNING_IDENTITY" ] && [ -n "$MACAPP_CERTIFICATE_P12" ] &&
+            [ -n "$MACAPP_CERTIFICATE_PASSWORD" ] && [ -n "$MACAPP_NOTARY_KEY_ID" ] &&
+            [ -n "$MACAPP_NOTARY_KEY_ISSUER" ] && [ -n "$MACAPP_NOTARY_KEY_P8" ]; then
+            echo "present=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "present=false" >>"$GITHUB_OUTPUT"
+            echo "::notice::macapp signing secrets are not fully configured (need MACAPP_SIGNING_IDENTITY, MACAPP_CERTIFICATE_P12, MACAPP_CERTIFICATE_PASSWORD, MACAPP_NOTARY_KEY_ID, MACAPP_NOTARY_KEY_ISSUER, MACAPP_NOTARY_KEY_P8); the signed menu bar app is not attached to this release"
+          fi
+      - name: build WorktreeMenu.app
+        if: steps.creds.outputs.present == 'true'
+        run: macapp/Scripts/bundle.sh --configuration release
+      # The standard shape for getting a Developer ID certificate onto a
+      # hosted runner: decode the .p12 into a fresh, job-local keychain
+      # and unlock it, so codesign can find the identity without a
+      # GUI prompt. The runner is destroyed after the job either way;
+      # deleting the keychain below is belt and braces.
+      - name: import the signing certificate into a temporary keychain
+        if: steps.creds.outputs.present == 'true'
+        env:
+          MACAPP_CERTIFICATE_P12: ${{ secrets.MACAPP_CERTIFICATE_P12 }}
+          MACAPP_CERTIFICATE_PASSWORD: ${{ secrets.MACAPP_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/macapp-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+          CERT_PATH="$RUNNER_TEMP/macapp-certificate.p12"
+          echo "$MACAPP_CERTIFICATE_P12" | base64 --decode -o "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$MACAPP_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" "$(security default-keychain -d user | tr -d ' "')"
+          rm -f "$CERT_PATH"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >>"$GITHUB_ENV"
+      - name: sign, notarize and staple
+        if: steps.creds.outputs.present == 'true'
+        env:
+          MACAPP_SIGNING_IDENTITY: ${{ secrets.MACAPP_SIGNING_IDENTITY }}
+          MACAPP_NOTARY_KEY_ID: ${{ secrets.MACAPP_NOTARY_KEY_ID }}
+          MACAPP_NOTARY_KEY_ISSUER: ${{ secrets.MACAPP_NOTARY_KEY_ISSUER }}
+          MACAPP_NOTARY_KEY_P8: ${{ secrets.MACAPP_NOTARY_KEY_P8 }}
+        run: |
+          KEY_PATH="$RUNNER_TEMP/macapp-notary-key.p8"
+          printf '%s' "$MACAPP_NOTARY_KEY_P8" >"$KEY_PATH"
+          export MACAPP_NOTARY_KEY_PATH="$KEY_PATH"
+          macapp/Scripts/sign.sh --version "${{ needs.build.outputs.version }}" --out "$RUNNER_TEMP/macapp-out"
+          rm -f "$KEY_PATH"
+      - name: remove the temporary keychain
+        if: always() && steps.creds.outputs.present == 'true'
+        run: |
+          if [ -n "${KEYCHAIN_PATH:-}" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+          fi
+      # The outer SHA256SUMS already exists as a release asset (the build
+      # job attached it); this downloads it, appends the new zip's
+      # digest, and re-uploads it in place, the same manifest a downloader
+      # already trusts extended by one line.
+      - name: attach the signed app to the release
+        if: steps.creds.outputs.present == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ needs.build.outputs.version }}"
+          ZIP="$RUNNER_TEMP/macapp-out/WorktreeMenu-$VERSION.zip"
+          gh release upload "$GITHUB_REF_NAME" "$ZIP"
+          gh release download "$GITHUB_REF_NAME" -p SHA256SUMS -O "$RUNNER_TEMP/SHA256SUMS" --clobber
+          (cd "$RUNNER_TEMP/macapp-out" && shasum -a 256 "WorktreeMenu-$VERSION.zip") >>"$RUNNER_TEMP/SHA256SUMS"
+          gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/SHA256SUMS" --clobber
