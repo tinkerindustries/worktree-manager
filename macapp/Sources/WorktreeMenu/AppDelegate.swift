@@ -23,10 +23,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var lastError: Error?
     private var lastUpdated: Date?
     private var refreshTimer: Timer?
+    private var currentRefreshInterval: TimeInterval = PreferencesKeys.defaultRefreshIntervalSeconds
     /// Makes overlapping refreshes resolve deterministically: whichever
     /// refresh started last is the one whose result is kept, regardless
     /// of which finishes first (WorktreeMenuCore.RefreshCoordinator).
     private let refreshCoordinator = RefreshCoordinator()
+
+    private var preferencesWindowController: PreferencesWindowController?
+    private var defaultsObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -44,9 +48,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.menu = menu
         statusItem = item
 
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+        startRefreshTimer(interval: readRefreshInterval())
+        defaultsObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
             Task { @MainActor in
-                self?.refresh(updatingOpenMenu: true)
+                self?.reconcileRefreshInterval()
             }
         }
         refresh(updatingOpenMenu: false)
@@ -54,6 +63,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         refreshTimer?.invalidate()
+        if let defaultsObserver {
+            NotificationCenter.default.removeObserver(defaultsObserver)
+        }
+    }
+
+    /// Reads the preference's stored refresh interval, falling back to
+    /// the phase-1 default when nothing has been set.
+    private func readRefreshInterval() -> TimeInterval {
+        (UserDefaults.standard.object(forKey: PreferencesKeys.refreshIntervalSeconds) as? Double)
+            ?? PreferencesKeys.defaultRefreshIntervalSeconds
+    }
+
+    private func startRefreshTimer(interval: TimeInterval) {
+        refreshTimer?.invalidate()
+        currentRefreshInterval = interval
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.refresh(updatingOpenMenu: true)
+            }
+        }
+    }
+
+    /// Restarts the refresh timer when the preferences window has changed
+    /// the stored interval. `UserDefaults.didChangeNotification` fires on
+    /// any default changing, not only this one, so this only acts when
+    /// the value actually moved.
+    private func reconcileRefreshInterval() {
+        let interval = readRefreshInterval()
+        guard interval != currentRefreshInterval else { return }
+        startRefreshTimer(interval: interval)
     }
 
     /// Renders the cached snapshot immediately, then starts a refresh
@@ -108,6 +147,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
+        let preferencesItem = NSMenuItem(title: "Preferences…", action: #selector(openPreferences), keyEquivalent: ",")
+        preferencesItem.target = self
+        menu.addItem(preferencesItem)
         let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
@@ -135,11 +177,98 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Builds the real menu item for one row. A row that is enabled and
+    /// carries a path gets a click action; a disabled row (`stale`,
+    /// `path_visible == false`) or the placeholder row (no `path`) stays
+    /// unclickable, matching phase 2's rule that those rows must not be
+    /// wired up (PLAN.md).
     private func menuItem(for row: MenuRow) -> NSMenuItem {
         let item = NSMenuItem(title: row.title, action: nil, keyEquivalent: "")
         item.isEnabled = row.isEnabled
         item.toolTip = row.tooltip
+        if row.isEnabled, let path = row.path {
+            item.target = self
+            item.action = #selector(rowClicked(_:))
+            item.representedObject = path
+        }
         return item
+    }
+
+    /// Reads which modifier keys are held at the moment of the click and
+    /// routes to the matching action. The routing decision itself
+    /// (`EditorLauncher.action(for:)`) is a pure function tested in
+    /// `WorktreeMenuCoreTests`; this method only does the AppKit
+    /// translation and the actual `NSWorkspace` call (PLAN.md).
+    @objc private func rowClicked(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? String else { return }
+
+        var modifiers: LaunchModifiers = []
+        let flags = NSEvent.modifierFlags
+        if flags.contains(.option) {
+            modifiers.insert(.option)
+        }
+        if flags.contains(.shift) {
+            modifiers.insert(.shift)
+        }
+
+        switch EditorLauncher.action(for: modifiers) {
+        case .openEditor:
+            openInEditor(path: path)
+        case .openTerminal:
+            openInTerminal(path: path)
+        case .revealInFinder:
+            revealInFinder(path: path)
+        }
+    }
+
+    /// Resolves the user's chosen editor template against the installed
+    /// editors, builds the URL, and hands it to `NSWorkspace`. Detection
+    /// is redone on every click rather than cached: it is one
+    /// `urlForApplication` call per built-in scheme, which is cheap next
+    /// to the `wt list` round trip this menu already does on every open.
+    private func openInEditor(path: String) {
+        let defaults = UserDefaults.standard
+        let installed = InstalledEditors.detect()
+        guard let template = EditorLauncher.resolveTemplate(
+            selectedID: defaults.string(forKey: PreferencesKeys.editorID),
+            customTemplate: defaults.string(forKey: PreferencesKeys.customEditorTemplate),
+            installed: installed
+        ), let url = EditorLauncher.url(forTemplate: template, path: path) else {
+            NSSound.beep()
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Opens Terminal.app at `path` via `NSWorkspace`, not AppleScript:
+    /// Apple Events would need an Automation entitlement and a consent
+    /// prompt, and would only buy a pre-typed `cd` command (PLAN.md).
+    /// Terminal opens a new window at the working directory of a folder
+    /// URL handed to it this way, which is the same effect.
+    private func openInTerminal(path: String) {
+        guard let terminalURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") else {
+            NSSound.beep()
+            return
+        }
+        let folderURL = URL(fileURLWithPath: path, isDirectory: true)
+        NSWorkspace.shared.open(
+            [folderURL],
+            withApplicationAt: terminalURL,
+            configuration: NSWorkspace.OpenConfiguration()
+        )
+    }
+
+    private func revealInFinder(path: String) {
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path, isDirectory: true)])
+    }
+
+    @objc private func openPreferences() {
+        if preferencesWindowController == nil {
+            preferencesWindowController = PreferencesWindowController()
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        preferencesWindowController?.showWindow(nil)
+        preferencesWindowController?.window?.makeKeyAndOrderFront(nil)
     }
 
     private func disabledItem(_ title: String) -> NSMenuItem {

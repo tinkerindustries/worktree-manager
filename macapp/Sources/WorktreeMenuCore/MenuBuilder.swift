@@ -27,16 +27,21 @@ public struct AppMenuGroup: Equatable, Sendable {
 }
 
 /// One menu item's worth of rendered data: its title, an optional
-/// tooltip, and whether it should be enabled.
+/// tooltip, whether it should be enabled, and the worktree path a click
+/// on it should act on. `path` is `nil` for a row with nothing behind it
+/// — the empty-registry placeholder — so `WorktreeMenu` knows not to wire
+/// up a click action rather than wiring one up to an empty path.
 public struct MenuRow: Equatable, Sendable {
     public let title: String
     public let tooltip: String?
     public let isEnabled: Bool
+    public let path: String?
 
-    public init(title: String, tooltip: String? = nil, isEnabled: Bool = true) {
+    public init(title: String, tooltip: String? = nil, isEnabled: Bool = true, path: String? = nil) {
         self.title = title
         self.tooltip = tooltip
         self.isEnabled = isEnabled
+        self.path = path
     }
 }
 
@@ -118,7 +123,7 @@ public enum MenuBuilder {
         // nothing (PLAN.md).
         let isEnabled = entry.pathVisible && !flags.contains("stale")
 
-        return MenuRow(title: title, tooltip: entry.description, isEnabled: isEnabled)
+        return MenuRow(title: title, tooltip: entry.description, isEnabled: isEnabled, path: entry.path)
     }
 
     /// The first port-type resource, chosen by sorting `resources`' keys

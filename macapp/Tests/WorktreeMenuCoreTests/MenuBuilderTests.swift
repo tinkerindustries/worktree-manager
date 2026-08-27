@@ -227,6 +227,24 @@ final class MenuBuilderTests: XCTestCase {
         XCTAssertEqual(group.rows[0].tooltip, "the menu bar app")
     }
 
+    // MARK: path (phase 3: which worktree a click acts on)
+
+    func testRowCarriesTheEntrysPathForClickHandling() {
+        let nodes = MenuBuilder.build(from: [entry(slug: "a", slot: 0)])
+        guard case .group(let group) = nodes[0] else {
+            return XCTFail("expected a group")
+        }
+        XCTAssertEqual(group.rows[0].path, "/tmp/a")
+    }
+
+    func testEmptyRegistryPlaceholderRowCarriesNoPath() {
+        let nodes = MenuBuilder.build(from: [])
+        guard case .row(let row) = nodes[0] else {
+            return XCTFail("expected a plain row")
+        }
+        XCTAssertNil(row.path)
+    }
+
     // MARK: empty registry
 
     func testEmptyRegistryProducesOneDisabledRow() {
