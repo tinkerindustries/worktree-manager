@@ -14,6 +14,16 @@ import (
 	"os/exec"
 )
 
+// ShellPath is the POSIX shell this platform runs hook commands with:
+// `sh` from PATH on unix, and on Windows `sh.exe` from PATH or a Git for
+// Windows install. It returns the same refusal ShellCommand does where
+// there is none, so a caller that runs a script file rather than a
+// command line resolves the shell the one way this package defines
+// rather than hardcoding /bin/sh.
+func ShellPath() (string, error) {
+	return shellPath()
+}
+
 // ShellCommand builds the command that runs one hook line. The context
 // carries the hook's declared timeout; pass context.Background() for a hook
 // without one.

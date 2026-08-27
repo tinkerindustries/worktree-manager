@@ -18,10 +18,25 @@ import (
 
 	"github.com/mrgeoffrich/worktree-manager/internal/descriptor"
 	"github.com/mrgeoffrich/worktree-manager/internal/managed"
+	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 )
 
 // fixtureSpec is the plain-app spec the artefact tests render.
+// shellForTest resolves the POSIX shell the way internal/platform does,
+// so these scripts run under Git for Windows' sh.exe on Windows rather
+// than a /bin/sh that exists on no such machine. A host with no POSIX
+// shell skips: the generated hooks are shell scripts, and that host
+// cannot run them at all.
+func shellForTest(t *testing.T) string {
+	t.Helper()
+	sh, err := platform.ShellPath()
+	if err != nil {
+		t.Skipf("no POSIX shell on this machine: %v", err)
+	}
+	return sh
+}
+
 func fixtureSpec(t *testing.T) *spec.Spec {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "fixtures", "plain-app", "wt.yaml"))
@@ -299,7 +314,7 @@ func TestTripwireScriptRuntime(t *testing.T) {
 
 	run := func(dir string) string {
 		t.Helper()
-		cmd := exec.Command("/bin/sh", hookPath)
+		cmd := exec.Command(shellForTest(t), hookPath)
 		cmd.Dir = dir
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -383,7 +398,7 @@ exit "$code"
 
 	run := func(env []string, stdin string) (int, string, string) {
 		t.Helper()
-		cmd := exec.Command("/bin/sh", hookPath)
+		cmd := exec.Command(shellForTest(t), hookPath)
 		cmd.Env = append(os.Environ(), "PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 		cmd.Env = append(cmd.Env, env...)
 		cmd.Stdin = strings.NewReader(stdin)
@@ -434,7 +449,7 @@ exit "$code"
 	}
 
 	// wt missing: fail open.
-	cmd := exec.Command("/bin/sh", hookPath)
+	cmd := exec.Command(shellForTest(t), hookPath)
 	cmd.Env = append(os.Environ(), "PATH="+t.TempDir())
 	cmd.Stdin = strings.NewReader(payload)
 	outb, _ := cmd.CombinedOutput()
