@@ -75,6 +75,21 @@ public enum EditorLauncher {
     /// The placeholder a template substitutes the worktree's path into.
     private static let pathPlaceholder = "{path}"
 
+    /// The characters a path keeps unencoded: the unreserved set plus the
+    /// separator. Everything else is percent-encoded.
+    ///
+    /// `.urlPathAllowed` is wrong here because a template may put the
+    /// path in a query parameter — the JetBrains one does — and that set
+    /// leaves `&`, `=` and `+` alone. A worktree under a directory named
+    /// `foo & bar` would then end the query early and the editor would
+    /// receive a truncated path. Encoding conservatively is correct in
+    /// both positions, so one set covers every template.
+    private static let pathAllowed: CharacterSet = {
+        var set = CharacterSet.alphanumerics
+        set.insert(charactersIn: "-._~/")
+        return set
+    }()
+
     /// Fills `path`, percent-encoded, into `template` and parses the
     /// result as a URL. Returns `nil` rather than throwing or crashing
     /// when the template is empty, holds no placeholder to substitute
@@ -86,7 +101,7 @@ public enum EditorLauncher {
         guard !template.isEmpty, template.contains(pathPlaceholder) else {
             return nil
         }
-        guard let encodedPath = path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else {
+        guard let encodedPath = path.addingPercentEncoding(withAllowedCharacters: pathAllowed) else {
             return nil
         }
         let filled = template.replacingOccurrences(of: pathPlaceholder, with: encodedPath)

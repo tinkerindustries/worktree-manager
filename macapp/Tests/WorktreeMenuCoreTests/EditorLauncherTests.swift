@@ -53,6 +53,33 @@ final class EditorLauncherTests: XCTestCase {
         XCTAssertEqual(url?.absoluteString, "vscode://file/Users/geoff/caf%C3%A9")
     }
 
+    func testEncodesQueryDelimitersSoAQueryTemplateSurvives() {
+        // The JetBrains template puts the path in a query parameter. An
+        // unencoded ampersand there would end the parameter early and
+        // hand the editor a truncated path.
+        let url = EditorLauncher.url(
+            forTemplate: "jetbrains://idea/navigate/reference?path={path}",
+            path: "/Users/geoff/foo & bar/app"
+        )
+        XCTAssertEqual(
+            url?.absoluteString,
+            "jetbrains://idea/navigate/reference?path=/Users/geoff/foo%20%26%20bar/app"
+        )
+    }
+
+    func testEncodesPlusAndEqualsInThePath() {
+        // A query parser reads a bare plus as a space and a bare equals
+        // as the start of a value.
+        let url = EditorLauncher.url(
+            forTemplate: "jetbrains://idea/navigate/reference?path={path}",
+            path: "/Users/geoff/c++/a=b"
+        )
+        XCTAssertEqual(
+            url?.absoluteString,
+            "jetbrains://idea/navigate/reference?path=/Users/geoff/c%2B%2B/a%3Db"
+        )
+    }
+
     func testDoesNotEncodeThePathSeparator() {
         // The slashes that separate path components must survive
         // encoding, or the result would not point at the right directory.
