@@ -22,16 +22,35 @@ import (
 // applet, which ignores every flag) is exactly why /proc is preferred
 // where it exists.
 func listeners(ports []int) ([]Holder, error) {
-	if _, err := os.Stat("/proc/net/tcp"); err == nil {
+	if hasProcNet() {
 		return listenersProc(ports)
 	}
 	return listenersLsof(ports)
 }
 
+// hasProcNet reports whether this machine offers /proc/net/tcp. It is the
+// one predicate that decides between the two unix implementations, so
+// discovery and listenerHelpers cannot disagree about which tool a scan
+// will reach for.
+func hasProcNet() bool {
+	_, err := os.Stat("/proc/net/tcp")
+	return err == nil
+}
+
+// listenerHelpers names what discovery shells out to here. A machine with
+// /proc needs nothing: the scan reads files. Without it — macOS, and a
+// Linux with /proc unmounted — the scan runs lsof.
+func listenerHelpers() []string {
+	if hasProcNet() {
+		return nil
+	}
+	return []string{"lsof"}
+}
+
 // allListeners discovers every LISTEN TCP socket, with the same two
 // implementations as listeners: /proc where it exists, lsof otherwise.
 func allListeners() ([]Holder, error) {
-	if _, err := os.Stat("/proc/net/tcp"); err == nil {
+	if hasProcNet() {
 		return allListenersProc()
 	}
 	return allListenersLsof()

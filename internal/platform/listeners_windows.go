@@ -15,6 +15,13 @@ import (
 // package is written and cross-compiled, and proved by whatever a Windows
 // runner can prove (PLAN-SCOPE.md, "Verification that needs hardware this
 // machine does not have").
+// listenerHelpers names what discovery shells out to here: netstat for
+// the sockets and tasklist for the owning image names. Both ship with
+// Windows. lsof does not exist on this platform and is never reached for.
+func listenerHelpers() []string {
+	return []string{"netstat", "tasklist"}
+}
+
 func listeners(ports []int) ([]Holder, error) {
 	netstat, err := exec.LookPath("netstat")
 	if err != nil {

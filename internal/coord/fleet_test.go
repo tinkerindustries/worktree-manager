@@ -1286,9 +1286,33 @@ func TestDoctorHelperVisibility(t *testing.T) {
 				t.Errorf("no spec declares a resource needing %s, so it must not be checked: %v", unwanted, bare)
 			}
 		}
-		for _, want := range []string{"git", "gh", "lsof"} {
+		for _, want := range []string{"git", "gh"} {
 			if !slices.Contains(bare, want) {
 				t.Errorf("%s is needed whatever a spec says, so it must always be checked: %v", want, bare)
+			}
+		}
+	})
+
+	// The listener-discovery helper is the platform's answer, not a name
+	// this package holds. Hardcoding lsof reported a Windows machine
+	// missing a binary Windows does not have, and a Linux machine missing
+	// one its /proc scan never runs.
+	t.Run("the port-scan helper is whatever this platform actually runs", func(t *testing.T) {
+		var bare []string
+		h, sess := newHarness(t, nil, &bare)
+		helperFinding(t, h, sess)
+		want := platform.ListenerHelpers()
+		for _, bin := range want {
+			if !slices.Contains(bare, bin) {
+				t.Errorf("%s is what a port scan runs here, so it must be checked: %v", bin, bare)
+			}
+		}
+		for _, bin := range []string{"lsof", "netstat", "tasklist"} {
+			if slices.Contains(want, bin) {
+				continue
+			}
+			if slices.Contains(bare, bin) {
+				t.Errorf("a port scan never runs %s here, so it must not be checked: %v", bin, bare)
 			}
 		}
 	})
