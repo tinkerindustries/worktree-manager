@@ -292,6 +292,68 @@ func TestAcceptanceTeardownContinuesPastFailure(t *testing.T) {
 	}
 }
 
+// TestAcceptanceForeignNetworkEndpointClearedBeforeNetworkRemoval is item 2
+// against a real daemon: a container attached to the project's network
+// without the compose-project label makes the network's removal fail
+// outright ("has active endpoints") until it is cleared, which this proves
+// against docker's actual error rather than a fake's approximation of it.
+func TestAcceptanceForeignNetworkEndpointClearedBeforeNetworkRemoval(t *testing.T) {
+	requireDocker(t)
+	d := NewDocker()
+	project := acceptanceProject(t)
+	cleanupProject(t, d, project)
+
+	networkName := project + "-net"
+	runDockerCLI(t, "network", "create", "--label", "com.docker.compose.project="+project, networkName)
+	createLabeledContainer(t, project, project+"-app")
+	runDockerCLI(t, "network", "connect", networkName, project+"-app")
+
+	// A container the application attached at runtime through the Docker
+	// API rather than through compose: no project label at all, so the
+	// label-only listing never finds it, and its presence alone blocks the
+	// network's removal.
+	foreign := project + "-agent-sidecar"
+	runDockerCLI(t, "run", "-d", "--network", networkName, "--name", foreign, "busybox:latest", "sleep", "3600")
+	t.Cleanup(func() { exec.Command("docker", "rm", "-f", foreign).Run() })
+
+	// Sanity: docker itself refuses the network's removal while the
+	// foreign container is still attached, which is the failure this rail
+	// exists to route around rather than hit.
+	if out, err := exec.Command("docker", "network", "rm", networkName).CombinedOutput(); err == nil {
+		t.Fatalf("test setup: the network removed cleanly with a container still attached — %s", out)
+	} else if !strings.Contains(string(out), "active endpoints") {
+		t.Fatalf("test setup: expected docker's active-endpoints refusal, got: %s", out)
+	}
+
+	_, env, res := nsFixture(t, d, t.TempDir())
+	env.Resolved["compose"] = spec.Resolved{Type: "namespace", Value: project}
+	env.Resolved["compose_test"] = spec.Resolved{Type: "namespace", Value: project + "-test"}
+
+	err := (&Namespace{}).Teardown(res, project, env)
+	te, ok := err.(*TeardownError)
+	if !ok {
+		t.Fatalf("Teardown = %v, want a *TeardownError carrying the removal note", err)
+	}
+	if len(te.Survivors) != 0 {
+		t.Fatalf("nothing may survive: the foreign container is force-removable, got %+v", te.Survivors)
+	}
+	found := false
+	for _, n := range te.Notes {
+		if strings.Contains(n, foreign) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("notes = %v, want the foreign container named", te.Notes)
+	}
+	if n := projectCount(t, d, project); n != 0 {
+		t.Fatalf("%d project object(s) survived the teardown", n)
+	}
+	if out, err := exec.Command("docker", "inspect", foreign).CombinedOutput(); err == nil {
+		t.Errorf("the foreign container should have been force-removed, but docker inspect still finds it: %s", out)
+	}
+}
+
 // TestAcceptancePortProbeSeesPublishedContainerPort is exit criterion 5 at
 // the driver level: the probe sees a port published by a container. The
 // coordinator-level half lives in internal/coord.
