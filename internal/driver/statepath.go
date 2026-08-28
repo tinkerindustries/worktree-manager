@@ -216,10 +216,10 @@ func (sp *StatePath) Verify(r *spec.Resource, value any, env Env) ([]Finding, er
 	if err != nil {
 		if os.IsNotExist(err) {
 			if mode == "shared" {
-				findings = append(findings, Finding{Resource: r.Name, Level: LevelInfo,
+				findings = append(findings, Finding{Resource: r.Name, Kind: "shared-path-absent", Level: LevelInfo,
 					Message: fmt.Sprintf("shared path %s does not exist yet (nothing has created it)", path)})
 			} else {
-				findings = append(findings, Finding{Resource: r.Name, Level: LevelError,
+				findings = append(findings, Finding{Resource: r.Name, Kind: "path-missing", Level: LevelError,
 					Message: fmt.Sprintf("path %s does not exist (apply has not run, or the directory was deleted by hand); re-run wt init", path)})
 			}
 			return findings, nil
@@ -231,14 +231,14 @@ func (sp *StatePath) Verify(r *spec.Resource, value any, env Env) ([]Finding, er
 		probe := filepath.Join(path, ".wt-write-probe")
 		f, perr := os.OpenFile(probe, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if perr != nil {
-			findings = append(findings, Finding{Resource: r.Name, Level: LevelError,
+			findings = append(findings, Finding{Resource: r.Name, Kind: "path-not-writable", Level: LevelError,
 				Message: fmt.Sprintf("%s is not writable: %v", path, perr)})
 		} else {
 			f.Close()
 			os.Remove(probe)
 		}
 	} else if f, perr := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0); perr != nil {
-		findings = append(findings, Finding{Resource: r.Name, Level: LevelError,
+		findings = append(findings, Finding{Resource: r.Name, Kind: "path-not-writable", Level: LevelError,
 			Message: fmt.Sprintf("%s is not writable: %v", path, perr)})
 	} else {
 		f.Close()
@@ -247,10 +247,10 @@ func (sp *StatePath) Verify(r *spec.Resource, value any, env Env) ([]Finding, er
 	if mode == "seeded" {
 		at, from, ok := sp.readMarker(path)
 		if !ok {
-			findings = append(findings, Finding{Resource: r.Name, Level: LevelWarning,
+			findings = append(findings, Finding{Resource: r.Name, Kind: "seed-marker-missing", Level: LevelWarning,
 				Message: fmt.Sprintf("no seed marker found beside %s; when it was seeded is unknown (seeded by hand, or before markers existed)", path)})
 		} else {
-			findings = append(findings, Finding{Resource: r.Name, Level: LevelInfo,
+			findings = append(findings, Finding{Resource: r.Name, Kind: "seeded", Level: LevelInfo,
 				Message: fmt.Sprintf("seeded from %s at %s — a snapshot taken at creation, not a live mirror", from, at)})
 		}
 	}

@@ -876,9 +876,14 @@ func TestDoctorFindingsEachNameACommand(t *testing.T) {
 	defer l.Close()
 
 	// The entry that claims it: drift is a recorded port some other
-	// process holds, so the fixture needs both halves.
+	// process holds, so the fixture needs both halves. The entry is not
+	// active, because a port bound while the worktree is running is that
+	// worktree's own service — the state init worked to produce, reported
+	// as an observation rather than as drift (doctorEntry).
 	drift := baseFleetEntry(worktree, true)
 	drift.App, drift.Slug, drift.Slot = sp.App, "wt-drift", 8
+	drift.State = store.StateTearingDown
+	drift.TeardownNote = "the fixture's outstanding teardown"
 	drift.Resources = map[string]spec.Resolved{"api": {Type: "port", Value: driftPort}}
 	fleetEntry(t, h, drift)
 
@@ -919,7 +924,7 @@ func TestDoctorFindingsEachNameACommand(t *testing.T) {
 		"the worktree directory",                   // entry present, directory gone → wt rm / wt reconcile
 		"present but has no registry entry",        // directory present, no entry → wt init
 		"managed key",                              // duplicate managed key outside the block → wt init
-		fmt.Sprintf("port %d is bound", driftPort), // resource drift → wt init
+		fmt.Sprintf("port %d is bound", driftPort), // resource drift → wt rm --dry-run
 		"bands of app",                             // band ledger overlap → wt bands reserve
 		"approaching its slot ceiling",             // slot ceiling → wt cleanup / wt rm
 		"names no reaper binaries",                 // reaper can never signal → reaper.binaries

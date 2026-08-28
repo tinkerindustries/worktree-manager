@@ -1824,14 +1824,32 @@ components:
           type: string
         slug:
           type: string
+        kind:
+          description: Kind names the check that produced the finding, as a stable slug ("worktree-missing", "generated-file-drift"). Two findings of one kind are the same problem about different subjects, which is what makes grouping and filtering possible without reading Message.
+          type: string
         level:
+          type: string
+        summary:
+          description: Summary is the finding in one short line, naming the subject. It is what a list shows; Message is what the reader opens.
           type: string
         message:
           type: string
         remedy:
           type: string
+        repo:
+          description: Repo is the repository's main checkout, for a finding about a repository rather than one entry. Path is the file or directory the finding is about, so a reader can open it.
+          type: string
+        path:
+          type: string
+        details:
+          description: Details carries the individual items behind a finding that collapses several — the fields that drifted in one generated file, say. One file with six moved fields is one problem with six details, not six problems.
+          type: array
+          items:
+            type: string
       required:
+      - kind
       - level
+      - summary
       - message
     ReconcileArgs:
       type: object

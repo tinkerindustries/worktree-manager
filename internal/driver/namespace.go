@@ -297,7 +297,7 @@ func (*Namespace) Verify(r *spec.Resource, value any, env Env) ([]Finding, error
 		data, err := os.ReadFile(p)
 		if err != nil {
 			if os.IsNotExist(err) {
-				findings = append(findings, Finding{Resource: r.Name, Level: LevelWarning,
+				findings = append(findings, Finding{Resource: r.Name, Kind: "compose-file-absent", Level: LevelWarning,
 					Message: fmt.Sprintf("compose file %s cannot be checked from here: it is not present in the worktree (the directory may be gone)", file)})
 				continue
 			}
@@ -305,12 +305,12 @@ func (*Namespace) Verify(r *spec.Resource, value any, env Env) ([]Finding, error
 		}
 		name, perr := pinnedComposeName(data)
 		if perr != nil {
-			findings = append(findings, Finding{Resource: r.Name, Level: LevelWarning,
+			findings = append(findings, Finding{Resource: r.Name, Kind: "compose-file-unparseable", Level: LevelWarning,
 				Message: fmt.Sprintf("compose file %s could not be parsed: %v", file, perr)})
 			continue
 		}
 		if name != "" {
-			findings = append(findings, Finding{Resource: r.Name, Level: LevelError,
+			findings = append(findings, Finding{Resource: r.Name, Kind: "compose-name-pinned", Level: LevelError,
 				Message: fmt.Sprintf("compose file %s pins name: %q — a second worktree would silently attach to the first one's containers (D2); pass -p %s explicitly, which beats the file's name:", file, name, value)})
 		}
 	}

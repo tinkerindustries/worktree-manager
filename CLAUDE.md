@@ -266,6 +266,12 @@ configuration; neither binary branches on repo identity.
   `.wt-installed.json`, written with them and removed with them.
 - `internal/generate` — the generated Go descriptor reader, stdlib-only
   and gofmt-clean by construction.
+  Every finding carries a `kind` — the check that produced it, as a stable
+  slug — a one-line `summary` beside the full message, and the `repo` and
+  `path` it is about, so a reader and the menu bar app can group, sort and
+  act on a report without pattern-matching prose. A bound port on a
+  running worktree is that worktree's own service and is reported as an
+  observation, never as drift with a remedy that rebuilds nothing.
 - `internal/api` — the HTTP surface both binaries share: the `*Args` and
   `*Result` types, the single `Routes` table mapping verb to method and
   path (frozen — client and server both derive from it, so a route added
@@ -314,7 +320,14 @@ configuration; neither binary branches on repo identity.
   ledger) and the generated-artefact drift check: `doctor` scans each
   repo's tracked files for the managed marker, compares the recorded
   `# wt-field:` records against the current spec and band ledger, and
-  reports the generated file and the field that moved. `doctor` also reports the helper binaries the coordinator cannot
+  reports the generated file, with the fields that moved as the finding's
+  details — one file is one finding, because a block that predates a
+  rename moves every field it records at once. Two files are not compared:
+  one governed by a nested `wt.yaml` (a fixture repository committed
+  inside another one is that spec's artefact, not this one's) and one
+  whose markers do not close the file (the block is being quoted as an
+  example, which the onboarding skill's own reference does). Both bounds
+  are stated as notes. `doctor` also reports the helper binaries the coordinator cannot
   reach, asked through `platform.LookHelper` in the coordinator's own
   process — git and gh always, whatever `platform.ListenerHelpers` says a
   port scan runs on this machine (lsof on macOS, netstat and tasklist on

@@ -247,7 +247,7 @@ func (*Machine) Verify(r *spec.Resource, value any, env Env) ([]Finding, error) 
 	}
 	instances, err := machineList(env)
 	if err != nil {
-		return []Finding{{Resource: r.Name, Level: LevelInfo,
+		return []Finding{{Resource: r.Name, Kind: "machine-unverified", Level: LevelInfo,
 			Message: fmt.Sprintf("the machine %s cannot be checked: %s", name, err)}}, nil
 	}
 	for _, in := range instances {
@@ -255,7 +255,7 @@ func (*Machine) Verify(r *spec.Resource, value any, env Env) ([]Finding, error) 
 			return nil, nil // the instance exists, running or not
 		}
 	}
-	return []Finding{{Resource: r.Name, Level: LevelWarning,
+	return []Finding{{Resource: r.Name, Kind: "machine-missing", Level: LevelWarning,
 		Message: fmt.Sprintf("the machine %s does not exist on this machine — the VM is missing", name)}}, nil
 }
 

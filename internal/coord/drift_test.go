@@ -58,8 +58,9 @@ func TestDoctorReportsMovedBandNamesFileAndField(t *testing.T) {
 		if f.Level != "warning" {
 			continue
 		}
-		if strings.Contains(f.Message, "docs/wt.md") && strings.Contains(f.Message, "band api") &&
-			strings.Contains(f.Message, "8200") && strings.Contains(f.Message, "8300") {
+		text := driftText(f)
+		if strings.Contains(text, "docs/wt.md") && strings.Contains(text, "band api") &&
+			strings.Contains(text, "8200") && strings.Contains(text, "8300") {
 			matched = true
 		}
 		if f.Remedy == "" {
@@ -109,7 +110,8 @@ func TestDoctorReportsRenamedResource(t *testing.T) {
 	findings := runDoctorFindings(t, h, sess, ctx)
 	matched := false
 	for _, f := range findings {
-		if strings.Contains(f.Message, "resources") && strings.Contains(f.Message, "api") && strings.Contains(f.Message, "api2") {
+		text := driftText(f)
+		if strings.Contains(text, "resources") && strings.Contains(text, "api") && strings.Contains(text, "api2") {
 			matched = true
 		}
 	}
@@ -229,4 +231,11 @@ func gitT(t *testing.T, dir string, args ...string) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(out)))
 	}
+}
+
+// driftText is one drift finding's whole statement: a generated file is one
+// finding, and the fields that moved are its details, so the exit
+// criterion's two facts — the file and the field — are read together.
+func driftText(f api.DoctorFinding) string {
+	return strings.Join(append([]string{f.Summary, f.Message}, f.Details...), "\n")
 }

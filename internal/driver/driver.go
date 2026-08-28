@@ -233,6 +233,12 @@ func (a *ApplyResult) Note(format string, args ...any) {
 type Finding struct {
 	// Resource is the resource name the finding belongs to.
 	Resource string `json:"resource"`
+	// Kind names what the driver found, as a stable slug ("port-bound",
+	// "path-missing"). A caller that must treat one finding differently
+	// from another of the same level — the coordinator reads a bound port
+	// on a running worktree as the expected state, and an unprobeable one
+	// as unverified — keys on this rather than on the message text.
+	Kind string `json:"kind"`
 	// Level is "info", "warning" or "error".
 	Level string `json:"level"`
 	// Message is the finding, naming the remedy where one exists.

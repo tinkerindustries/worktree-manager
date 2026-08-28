@@ -63,9 +63,17 @@ func TestRunListJSONAndTable(t *testing.T) {
 func TestRunDoctorJSONAndClean(t *testing.T) {
 	ep := fakeCoordServer(t, map[string]func(*api.Request) *api.Response{
 		"doctor": cannedT(&api.DoctorResult{Findings: []api.DoctorFinding{
-			{App: "compose-app", Slug: "wt-1", Level: "error",
+			{App: "compose-app", Slug: "wt-1", Kind: "worktree-missing", Level: "error",
+				Summary: "its worktree directory is gone, but its resources are still allocated",
 				Message: "the worktree directory /gone is gone",
 				Remedy:  "run 'wt rm --slug wt-1' (or 'wt reconcile') to tear the resources down and drop the entry"},
+			// A repository-wide finding carrying details: no slug, and the
+			// individual items indented under the one-line statement.
+			{App: "compose-app", Kind: "generated-file-drift", Level: "warning",
+				Summary: "docs/wt.md is out of date (2 fields have moved)",
+				Message: "the generated file docs/wt.md records spec fields that no longer match",
+				Remedy:  "re-run the onboarding skill's generate phase to regenerate docs/wt.md",
+				Details: []string{"band api: recorded as \"8200\"; it is now \"8300\"", "resources: recorded as \"api\"; it is now \"api2\""}},
 		}, Notes: []string{"the docker daemon is unreachable; the compose-project-gone check was skipped"}}),
 	})
 	t.Setenv("WT_ENDPOINT", ep)
@@ -78,7 +86,7 @@ func TestRunDoctorJSONAndClean(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &res); err != nil {
 		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
 	}
-	if len(res.Findings) != 1 || res.Findings[0].Remedy == "" {
+	if len(res.Findings) != 2 || res.Findings[0].Remedy == "" || res.Findings[0].Kind == "" {
 		t.Errorf("findings = %+v", res.Findings)
 	}
 
@@ -86,8 +94,23 @@ func TestRunDoctorJSONAndClean(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("doctor exit = %d", code)
 	}
-	if !strings.Contains(stdout, "error: the worktree directory") || !strings.Contains(stdout, "fix: run 'wt rm") {
-		t.Errorf("table lacks the finding and its fix:\n%s", stdout)
+	// The report opens with the count, groups under the app, states each
+	// finding in one line and indents its details and its fix.
+	for _, want := range []string{
+		"doctor: 1 error, 1 warning.",
+		"\ncompose-app\n",
+		"error    wt-1: its worktree directory is gone",
+		"fix: run 'wt rm",
+		"warning  docs/wt.md is out of date (2 fields have moved)",
+		"- band api: recorded as \"8200\"; it is now \"8300\"",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("the report lacks %q:\n%s", want, stdout)
+		}
+	}
+	// The error sorts above the warning within the app.
+	if strings.Index(stdout, "error    wt-1") > strings.Index(stdout, "warning  docs/wt.md") {
+		t.Errorf("the findings are not ordered worst-first:\n%s", stdout)
 	}
 	if !strings.Contains(stderr, "note: the docker daemon is unreachable") {
 		t.Errorf("stderr lacks the coverage note:\n%s", stderr)

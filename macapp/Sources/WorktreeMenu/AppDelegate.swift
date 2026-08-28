@@ -52,6 +52,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private static let doctorIntervalMultiplier: TimeInterval = 5
 
     private var preferencesWindowController: PreferencesWindowController?
+    /// The doctor report window, kept across openings so the sections the
+    /// reader collapsed stay collapsed.
+    private var doctorWindowController: DoctorReportWindowController?
     private var defaultsObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -231,6 +234,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
             guard doctorRefreshCoordinator.isCurrent(ticket) else { return }
             updateStatusBadge()
+            updateDoctorWindow()
             if updatingOpenMenu, let menu = statusItem?.menu {
                 render(into: menu)
             }
@@ -313,27 +317,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
     }
 
-    /// Opens the full doctor report in a modal alert — the "menu item
-    /// opens the full report" requirement (PLAN.md phase 5). A plain
-    /// `NSAlert` rather than a new window: the report is read-only text,
-    /// and this is the same weight the app already uses for nothing else
-    /// blocking, so no new window-management code is needed for it.
+    /// Opens the full doctor report — the "menu item opens the full
+    /// report" requirement (PLAN.md phase 5). A window rather than the
+    /// `NSAlert` this started as: an alert renders the whole report as one
+    /// unscrollable block of `informativeText`, which a report of any size
+    /// outgrows, and it gives the reader nothing to act on but their own
+    /// typing. The window groups the findings, scrolls, and puts the fix
+    /// behind a button (`DoctorReportWindow.swift`).
     @objc private func openDoctorReport() {
-        let alert = NSAlert()
-        if let lastDoctorResult {
-            alert.messageText = DoctorCore.summaryLine(lastDoctorResult)
-            alert.informativeText = DoctorCore.formatReport(lastDoctorResult)
-        } else if let lastDoctorError {
-            alert.messageText = "Doctor report unavailable"
-            alert.informativeText = describe(lastDoctorError)
-        } else {
-            alert.messageText = "Doctor report"
-            alert.informativeText = "Still checking…"
+        doctorReportWindow().show(doctorWindowContent())
+    }
+
+    /// The report window, made on first use and kept, so re-opening it
+    /// returns to the sections the reader left open.
+    private func doctorReportWindow() -> DoctorReportWindowController {
+        if let doctorWindowController {
+            return doctorWindowController
         }
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "OK")
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
+        let controller = DoctorReportWindowController { [weak self] in
+            // "Check again" runs the same refresh the timer does; its
+            // result reaches the window through updateDoctorWindow.
+            self?.refreshDoctorAndVersion(updatingOpenMenu: true)
+        }
+        doctorWindowController = controller
+        return controller
+    }
+
+    /// What the window should show right now, from the same three states
+    /// the menu row words itself from.
+    private func doctorWindowContent() -> DoctorReportWindowController.Content {
+        if let lastDoctorResult {
+            // A check that failed leaves the previous report on screen, and
+            // says so: the same rule the menu's stale line follows.
+            return .report(lastDoctorResult, staleReason: lastDoctorError.map(describe))
+        }
+        if let lastDoctorError {
+            return .failed(describe(lastDoctorError))
+        }
+        return .checking
+    }
+
+    /// Pushes a finished doctor check into the window when it is open. A
+    /// closed window is left closed: a background refresh is not a reason
+    /// to put a window in front of somebody.
+    private func updateDoctorWindow() {
+        doctorWindowController?.update(doctorWindowContent())
     }
 
     /// Turns `MenuBuilder`'s pure description into real `NSMenuItem`s —
