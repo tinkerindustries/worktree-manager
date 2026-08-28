@@ -85,12 +85,12 @@ func (*Port) Verify(r *spec.Resource, value any, env Env) ([]Finding, error) {
 	}
 	switch p := (&Port{}).Probe(r, value, env); p {
 	case ProbeFree:
-		return []Finding{{Resource: r.Name, Level: LevelInfo, Message: fmt.Sprintf("port %d is free", port)}}, nil
+		return []Finding{{Resource: r.Name, Kind: "port-free", Level: LevelInfo, Message: fmt.Sprintf("port %d is free", port)}}, nil
 	case ProbeHeld:
-		return []Finding{{Resource: r.Name, Level: LevelWarning,
-			Message: fmt.Sprintf("port %d is bound; this check does not identify the holder (run 'wt rm --dry-run' to see what the reaper finds)", port)}}, nil
+		return []Finding{{Resource: r.Name, Kind: "port-bound", Level: LevelWarning,
+			Message: fmt.Sprintf("port %d is bound, and this check does not identify the holder", port)}}, nil
 	default:
-		return []Finding{{Resource: r.Name, Level: LevelWarning,
+		return []Finding{{Resource: r.Name, Kind: "port-unprobeable", Level: LevelWarning,
 			Message: fmt.Sprintf("port %d could not be probed (the bind could not be attempted); treat it as unverified", port)}}, nil
 	}
 }

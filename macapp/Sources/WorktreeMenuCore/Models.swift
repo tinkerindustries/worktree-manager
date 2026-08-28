@@ -131,19 +131,55 @@ public enum DoctorLevel: String, Decodable, Equatable, Comparable, Sendable {
 /// a finding that is not about one particular entry; `remedy` is absent
 /// for an info-level observation, which has nothing to fix
 /// (`internal/api.DoctorFinding`).
+///
+/// `kind`, `summary`, `repo`, `path` and `details` come from a coordinator
+/// that sends them and are absent from an older one, so every one of them
+/// is optional and the report builder falls back to `message`. The app
+/// ships separately from the binaries and will meet both.
 public struct DoctorFinding: Decodable, Equatable, Sendable {
     public let app: String?
     public let slug: String?
+    /// The check that produced the finding, as a stable slug
+    /// ("worktree-missing", "generated-file-drift").
+    public let kind: String?
     public let level: DoctorLevel
+    /// The finding in one line. `message` is the fuller statement the
+    /// reader opens.
+    public let summary: String?
     public let message: String
     public let remedy: String?
+    /// The repository's main checkout, for a finding about a repository
+    /// rather than one entry.
+    public let repo: String?
+    /// The file or directory the finding is about, which the report window
+    /// offers to reveal.
+    public let path: String?
+    /// The individual items behind a finding that collapses several — the
+    /// fields that drifted in one generated file.
+    public let details: [String]?
 
-    public init(app: String? = nil, slug: String? = nil, level: DoctorLevel, message: String, remedy: String? = nil) {
+    public init(
+        app: String? = nil,
+        slug: String? = nil,
+        kind: String? = nil,
+        level: DoctorLevel,
+        summary: String? = nil,
+        message: String,
+        remedy: String? = nil,
+        repo: String? = nil,
+        path: String? = nil,
+        details: [String]? = nil
+    ) {
         self.app = app
         self.slug = slug
+        self.kind = kind
         self.level = level
+        self.summary = summary
         self.message = message
         self.remedy = remedy
+        self.repo = repo
+        self.path = path
+        self.details = details
     }
 }
 

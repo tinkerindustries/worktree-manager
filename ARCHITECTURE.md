@@ -716,11 +716,16 @@ something the mutex alone must prevent. The entry's fields are
   against the current spec (walk-up from the main checkout) and the band
   ledger — `artefact.FieldsFor` is the field set on both sides. A moved
   band, a renamed resource, a changed descriptor filename or shared list
-  is a warning naming the generated file and the field that moved, with
-  the remedy naming the skill's generate phase (hand edits outside the
-  block survive regeneration). The scan is the convention, not
-  inference, and is bounded (10,000 files, 1 MiB each) with the bound
-  stated when it trips.
+  is one warning per generated file, naming the file, carrying the fields
+  that moved as its details, with the remedy naming the skill's generate
+  phase (hand edits outside the block survive regeneration). The scan is
+  the convention, not inference, and is bounded (10,000 files, 1 MiB
+  each) with the bound stated when it trips. Two more bounds are stated
+  the same way: a file whose governing spec — the walk-up from the file's
+  own directory — is not the repo's own belongs to a nested adopted
+  repository and is compared against nothing here, and a file whose
+  marker pair does not close it carries a quoted example of the
+  convention rather than a generated block.
 - Reclamation runs on the coordinator's sweeper: every
   `ReclaimIntervalDefault` (24 hours — the R3 answer, chosen and reasoned
   in fleet.go) the aged-out ephemeral clients' entries are torn down by

@@ -422,12 +422,36 @@ type ListResult struct {
 // it (06-fleet.md §4, a hard rule). Info-level rows are observations
 // (unverifiable, port free) and carry no remedy because there is nothing
 // to fix.
+//
+// Kind, Summary, Repo, Path and Details are what a reader needs before the
+// prose: which check fired, in one line, about which repository and which
+// file. A report is read by a person scanning for the two rows that matter
+// among forty that do not, and by the menu bar app, which groups and sorts
+// by these fields rather than by pattern-matching Message.
 type DoctorFinding struct {
-	App     string `json:"app,omitempty"`
-	Slug    string `json:"slug,omitempty"`
-	Level   string `json:"level"` // info | warning | error
+	App  string `json:"app,omitempty"`
+	Slug string `json:"slug,omitempty"`
+	// Kind names the check that produced the finding, as a stable slug
+	// ("worktree-missing", "generated-file-drift"). Two findings of one
+	// kind are the same problem about different subjects, which is what
+	// makes grouping and filtering possible without reading Message.
+	Kind  string `json:"kind"`
+	Level string `json:"level"` // info | warning | error
+	// Summary is the finding in one short line, naming the subject. It is
+	// what a list shows; Message is what the reader opens.
+	Summary string `json:"summary"`
 	Message string `json:"message"`
 	Remedy  string `json:"remedy,omitempty"`
+	// Repo is the repository's main checkout, for a finding about a
+	// repository rather than one entry. Path is the file or directory the
+	// finding is about, so a reader can open it.
+	Repo string `json:"repo,omitempty"`
+	Path string `json:"path,omitempty"`
+	// Details carries the individual items behind a finding that collapses
+	// several — the fields that drifted in one generated file, say. One
+	// file with six moved fields is one problem with six details, not six
+	// problems.
+	Details []string `json:"details,omitempty"`
 }
 
 // DoctorResult is the whole report: the findings plus the bounded-coverage

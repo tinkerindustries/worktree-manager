@@ -149,7 +149,9 @@ func (h *Handler) doctor(s *Session, req *api.Request) *api.Response {
 		// unreadability is its first finding. (A database that cannot be
 		// opened at all is refused at wtd startup, not here.)
 		findings = append(findings, api.DoctorFinding{
+			Kind:    "registry-unreadable",
 			Level:   "error",
+			Summary: "the registry database cannot be read",
 			Message: fmt.Sprintf("the registry is not readable: %v", err),
 			Remedy:  "restore the store database (wt.db) from a backup; an unreadable registry is never truncated and recreated — rebuilding it from descriptors is not possible, because the registry is the only source of repository locations and a rebuild from one repo's worktrees would silently drop every other repo's (and every other client's) entries",
 		})
@@ -157,7 +159,9 @@ func (h *Handler) doctor(s *Session, req *api.Request) *api.Response {
 	}
 	if reg.SchemaVersion > store.SchemaVersion {
 		findings = append(findings, api.DoctorFinding{
+			Kind:    "registry-schema-newer",
 			Level:   "warning",
+			Summary: "the registry is newer than this coordinator understands; entries are not checked",
 			Message: fmt.Sprintf("the registry carries schema version %d but this coordinator understands %d; entries are listed, not checked", reg.SchemaVersion, store.SchemaVersion),
 			Remedy:  "upgrade wtd, then re-run 'wt doctor'",
 		})
@@ -217,7 +221,8 @@ func (h *Handler) doctorEntry(e *store.Entry, clients store.ClientsFile, specs s
 	app, slug := e.App, e.Slug
 	if e.Ephemeral && clientAgedOut(clients, e.Owner, e.OwnerKind, now, interval) {
 		*findings = append(*findings, api.DoctorFinding{
-			App: app, Slug: slug, Level: "warning",
+			App: app, Slug: slug, Kind: "entry-owner-aged-out", Level: "warning", Path: e.Path,
+			Summary: fmt.Sprintf("its ephemeral %s owner has aged out; the entry can be reclaimed", e.OwnerKind),
 			Message: fmt.Sprintf("the ephemeral owner %s client %s, last seen %s, has aged out past the reclamation interval; the entry will be reclaimed by handle",
 				e.OwnerKind, redactKey(e.OwnerKind, e.Owner), e.LastSeen),
 			Remedy: "run 'wt reconcile' to reclaim it now (or rescue anything it holds first)",
@@ -229,14 +234,16 @@ func (h *Handler) doctorEntry(e *store.Entry, clients store.ClientsFile, specs s
 		// stat: unverifiable, never stale, and nothing path-dependent can be
 		// checked (ARCHITECTURE.md §10.3). An observation, so no remedy.
 		*findings = append(*findings, api.DoctorFinding{
-			App: app, Slug: slug, Level: "info",
+			App: app, Slug: slug, Kind: "entry-path-unverifiable", Level: "info", Path: e.Path,
+			Summary: "its path is visible only inside a container, so its checks are skipped",
 			Message: fmt.Sprintf("the entry's path %s is not visible to the coordinator (it exists only inside a container); unverifiable — the entry is never called stale, and its checks are skipped", e.Path),
 		})
 		return
 	}
 	if _, serr := os.Stat(e.Path); serr != nil {
 		*findings = append(*findings, api.DoctorFinding{
-			App: app, Slug: slug, Level: "error",
+			App: app, Slug: slug, Kind: "worktree-missing", Level: "error", Path: e.Path,
+			Summary: "its worktree directory is gone, but its resources are still allocated",
 			Message: fmt.Sprintf("the worktree directory %s is gone", e.Path),
 			Remedy:  fmt.Sprintf("run 'wt rm --slug %s' (or 'wt reconcile') to tear the resources down and drop the entry", slug),
 		})
@@ -247,7 +254,8 @@ func (h *Handler) doctorEntry(e *store.Entry, clients store.ClientsFile, specs s
 	if e.State == store.StateReserving {
 		if created, perr := time.Parse(time.RFC3339Nano, e.CreatedAt); perr == nil && now.Sub(created) >= ReservingTimeout {
 			*findings = append(*findings, api.DoctorFinding{
-				App: app, Slug: slug, Level: "warning",
+				App: app, Slug: slug, Kind: "entry-reserving-stale", Level: "warning", Path: e.Path,
+				Summary: fmt.Sprintf("it has been reserving since %s, past its %s timeout", e.CreatedAt, ReservingTimeout),
 				Message: fmt.Sprintf("the entry has been reserving since %s, past its %s timeout — a client died mid-sequence, or materialisation is stuck", e.CreatedAt, ReservingTimeout),
 				Remedy:  "run 'wt reconcile' to roll the allocation back",
 			})
@@ -255,7 +263,8 @@ func (h *Handler) doctorEntry(e *store.Entry, clients store.ClientsFile, specs s
 	}
 	if e.State == store.StateTearingDown {
 		*findings = append(*findings, api.DoctorFinding{
-			App: app, Slug: slug, Level: "warning",
+			App: app, Slug: slug, Kind: "entry-tearing-down", Level: "warning", Path: e.Path,
+			Summary: "it is tearing down with resources still outstanding",
 			Message: fmt.Sprintf("the entry is tearing-down with resources outstanding: %s", teardownNoteText(e)),
 			Remedy:  fmt.Sprintf("fix the cause named above, then re-run 'wt rm --slug %s'", slug),
 		})
@@ -268,7 +277,8 @@ func (h *Handler) doctorEntry(e *store.Entry, clients store.ClientsFile, specs s
 	sp := h.specForEntry(e, specs)
 	if sp == nil {
 		*findings = append(*findings, api.DoctorFinding{
-			App: app, Slug: slug, Level: "warning",
+			App: app, Slug: slug, Kind: "spec-missing", Level: "warning", Path: e.Path,
+			Summary: "no wt.yaml can be found for it, so its descriptor, .env and drift checks are skipped",
 			Message: fmt.Sprintf("no spec can be found for the entry (walking up from %s found nothing, and no spec is cached for app %q); the descriptor, .env and drift checks are skipped", e.Path, app),
 			Remedy:  "commit wt.yaml at the repository root (or run 'wt init' in the worktree), then re-run 'wt doctor'",
 		})
@@ -276,7 +286,8 @@ func (h *Handler) doctorEntry(e *store.Entry, clients store.ClientsFile, specs s
 	}
 	if sp.App != app {
 		*findings = append(*findings, api.DoctorFinding{
-			App: app, Slug: slug, Level: "error",
+			App: app, Slug: slug, Kind: "spec-app-mismatch", Level: "error", Path: e.Path,
+			Summary: fmt.Sprintf("its wt.yaml declares app %q, but the entry belongs to app %q", sp.App, app),
 			Message: fmt.Sprintf("the spec found from %s declares app %q but the entry belongs to app %q", e.Path, sp.App, app),
 			Remedy:  "fix the spec's app field, then re-run 'wt init' in the worktree",
 		})
@@ -295,13 +306,15 @@ func (h *Handler) doctorEntry(e *store.Entry, clients store.ClientsFile, specs s
 	}
 	if _, derr := os.Stat(dpath); derr != nil {
 		*findings = append(*findings, api.DoctorFinding{
-			App: app, Slug: slug, Level: "error",
+			App: app, Slug: slug, Kind: "descriptor-missing", Level: "error", Path: dpath,
+			Summary: fmt.Sprintf("its descriptor %s is missing, so nothing in the worktree can read its ports", filepath.Base(dpath)),
 			Message: fmt.Sprintf("the descriptor at %s is missing", dpath),
 			Remedy:  fmt.Sprintf("run 'wt init' in %s (it re-emits the descriptor from the entry)", e.Path),
 		})
 	} else if _, derr := descriptor.Read(dpath, sp.Emit.Descriptor.Format); derr != nil {
 		*findings = append(*findings, api.DoctorFinding{
-			App: app, Slug: slug, Level: "error",
+			App: app, Slug: slug, Kind: "descriptor-unreadable", Level: "error", Path: dpath,
+			Summary: fmt.Sprintf("its descriptor %s cannot be read", filepath.Base(dpath)),
 			Message: fmt.Sprintf("the descriptor at %s is unreadable: %v", dpath, derr),
 			Remedy:  fmt.Sprintf("run 'wt init' in %s (it re-emits the descriptor from the entry)", e.Path),
 		})
@@ -314,8 +327,10 @@ func (h *Handler) doctorEntry(e *store.Entry, clients store.ClientsFile, specs s
 		envPath := spec.WorktreePath(e.Path, sp.Emit.Env.Path)
 		if outside, oerr := envfile.OutsideBlockKeys(envPath, sp.Emit.Env.Keys); oerr == nil && len(outside) > 0 {
 			*findings = append(*findings, api.DoctorFinding{
-				App: app, Slug: slug, Level: "warning",
+				App: app, Slug: slug, Kind: "env-keys-outside-block", Level: "warning", Path: envPath,
+				Summary: fmt.Sprintf("%d managed key(s) in its .env sit outside the managed block and will be stripped", len(outside)),
 				Message: fmt.Sprintf("managed key(s) defined outside the .env block at %s: %s", envPath, strings.Join(outside, ", ")),
+				Details: outside,
 				Remedy:  fmt.Sprintf("run 'wt init' in %s (it re-emits the block and strips the duplicates)", e.Path),
 			})
 		}
@@ -361,8 +376,20 @@ func (h *Handler) doctorEntry(e *store.Entry, clients store.ClientsFile, specs s
 				*notes = append(*notes, fmt.Sprintf("%s/%s: %s", app, slug, f.Message))
 				continue
 			}
+			// A port allocated to a running worktree is bound by that
+			// worktree's own service, which is the state init worked to
+			// produce. The driver cannot know that, because it is handed a
+			// port and not an entry; reported as drift, it makes a warning
+			// out of every healthy worktree and hands the reader a remedy
+			// ("run wt init to rebuild") for nothing that is wrong. The
+			// observation is kept as a note.
+			if f.Kind == "port-bound" && e.State == store.StateActive {
+				*notes = append(*notes, fmt.Sprintf("%s/%s: %s (expected while the worktree is running)", app, slug, f.Message))
+				continue
+			}
 			*findings = append(*findings, api.DoctorFinding{
-				App: app, Slug: slug, Level: f.Level,
+				App: app, Slug: slug, Kind: "resource-drift", Level: f.Level, Path: e.Path,
+				Summary: fmt.Sprintf("resource %s: %s", res.Name, f.Message),
 				Message: f.Message,
 				Remedy:  driftRemedy(f, res, e.Path),
 			})
@@ -375,7 +402,8 @@ func (h *Handler) doctorEntry(e *store.Entry, clients store.ClientsFile, specs s
 				if verr := env.Docker.Version(); verr == nil {
 					if objs, oerr := projectObjectsCount(env.Docker, project); oerr == nil && objs == 0 {
 						*findings = append(*findings, api.DoctorFinding{
-							App: app, Slug: slug, Level: "error",
+							App: app, Slug: slug, Kind: "compose-project-gone", Level: "error", Path: e.Path,
+							Summary: fmt.Sprintf("its compose stack %s is gone while the entry is active", project),
 							Message: fmt.Sprintf("the compose project %s has no objects — the stack is gone while the entry is active", project),
 							Remedy:  fmt.Sprintf("run 'wt init' in %s to rebuild", e.Path),
 						})
@@ -414,12 +442,19 @@ func teardownNoteText(e *store.Entry) string {
 }
 
 // driftRemedy names the command that fixes one driver verify finding.
-// Every drift finding fixes with init's repair path; the pinned-name
-// finding additionally names the compose-file edit that makes init's
-// -p invocation win (D2, M3 §4.2).
+// Most drift fixes with init's repair path; the findings that do not are
+// named by kind, because init rebuilds what the tool allocates and a port
+// held by a stranger or a name pinned in a compose file is not that.
 func driftRemedy(f driver.Finding, res *spec.Resource, worktree string) string {
-	if strings.Contains(f.Message, "pins name") {
+	switch f.Kind {
+	case "compose-name-pinned":
 		return fmt.Sprintf("remove the pinned name: from the compose file, then run 'wt init' in %s", worktree)
+	case "port-bound":
+		// Init would re-emit the same port and change nothing: the port is
+		// held by a process this entry does not own.
+		return fmt.Sprintf("run 'wt rm --dry-run' in %s to see what the reaper finds holding it", worktree)
+	case "port-unprobeable":
+		return "nothing to fix yet: re-run 'wt doctor' when the port can be probed"
 	}
 	return fmt.Sprintf("run 'wt init' in %s to rebuild", worktree)
 }
@@ -460,9 +495,13 @@ func (h *Handler) doctorRepos(reg store.RegistryFile, repos map[string]bool, fin
 				continue
 			}
 			*findings = append(*findings, api.DoctorFinding{
+				Kind:    "worktree-unadopted",
 				Level:   "warning",
+				Summary: fmt.Sprintf("the worktree %s has no registry entry", filepath.Base(path)),
 				Message: fmt.Sprintf("the worktree %s is present but has no registry entry — it was never initialised, or its entry was dropped", path),
 				Remedy:  fmt.Sprintf("run 'wt init' in %s", path),
+				Repo:    main,
+				Path:    path,
 			})
 		}
 		if main != "" {
@@ -530,7 +569,9 @@ func (h *Handler) doctorBands(bands store.BandsFile, findings *[]api.DoctorFindi
 				continue
 			}
 			*findings = append(*findings, api.DoctorFinding{
-				Level: "error",
+				Kind:    "band-overlap",
+				Level:   "error",
+				Summary: fmt.Sprintf("the port bands of apps %q and %q overlap", a.app, b.app),
 				Message: fmt.Sprintf("the port bands of app %q (%s: %d..%d) and app %q (%s: %d..%d) overlap",
 					a.app, a.name, a.lo, a.hi, b.app, b.name, b.lo, b.hi),
 				Remedy: fmt.Sprintf("move one app's band: 'wt bands reserve --base <name>=<port>...' for %q (or %q), then re-run 'wt doctor'", a.app, b.app),
@@ -551,7 +592,8 @@ func (h *Handler) doctorCeilings(appSpecs map[string]*spec.Spec, occupiedByApp m
 		free := max - occupied
 		if free*4 < max {
 			*findings = append(*findings, api.DoctorFinding{
-				App: app, Level: "warning",
+				App: app, Kind: "slot-ceiling", Level: "warning",
+				Summary: fmt.Sprintf("only %d of its %d worktree slots are free", free, max),
 				Message: fmt.Sprintf("app %q is approaching its slot ceiling: %d of %d slots are occupied (%d free)", app, occupied, max, free),
 				Remedy:  "run 'wt cleanup' to reclaim your slots, or 'wt rm --slug <slug>' to free one entry's slot",
 			})
@@ -570,7 +612,8 @@ func (h *Handler) doctorReapers(appSpecs map[string]*spec.Spec, findings *[]api.
 		}
 		if len(sp.Reaper.Binaries) == 0 {
 			*findings = append(*findings, api.DoctorFinding{
-				App: app, Level: "warning",
+				App: app, Kind: "reaper-no-binaries", Level: "warning",
+				Summary: "its wt.yaml names no reaper binaries, so the reaper can signal nothing",
 				Message: fmt.Sprintf("the spec of app %q names no reaper binaries, so the reaper can signal nothing: every process bound to this app's ports would be reported and never signalled", app),
 				Remedy:  "set reaper.binaries in the app's wt.yaml (the binaries the reaper may signal), then re-run 'wt doctor'",
 			})
@@ -1029,7 +1072,9 @@ func (h *Handler) doctorMachines(appSpecs map[string]*spec.Spec, findings *[]api
 				parts = append(parts, fmt.Sprintf("%s (tear down with %q)", n, runner.DeleteCommand(n)))
 			}
 			*findings = append(*findings, api.DoctorFinding{
-				App: app, Level: "warning",
+				App: app, Kind: "machine-capacity", Level: "warning",
+				Summary: fmt.Sprintf("%d of its %d VM instances are running; the next new one is refused", len(running), max),
+				Details: parts,
 				Message: fmt.Sprintf("app %q is approaching the machine capacity: %d of %d instances are running (%s); the next new instance is refused by the capacity guard",
 					app, len(running), max, strings.Join(parts, ", ")),
 				Remedy: "tear one instance down with the command named above, then re-run 'wt doctor'",
@@ -1144,7 +1189,10 @@ func (h *Handler) doctorHelpers(appSpecs map[string]*spec.Spec, findings *[]api.
 		where = strings.Join(dirs, ", ")
 	}
 	*findings = append(*findings, api.DoctorFinding{
-		Level: "warning",
+		Kind:    "helpers-unreachable",
+		Level:   "warning",
+		Summary: fmt.Sprintf("the coordinator cannot reach %d helper binaries: %s", len(missing), strings.Join(missing, ", ")),
+		Details: missing,
 		Message: fmt.Sprintf("the coordinator cannot reach %d of the helper binaries it shells out to: %s. It searched its own PATH and then %s",
 			len(missing), strings.Join(missing, ", "), where),
 		Remedy: fmt.Sprintf("if you can run the helper in your own shell, it is installed somewhere the coordinator does not search: set %s to the directory holding it and restart the coordinator. If you cannot run it either, install it first",

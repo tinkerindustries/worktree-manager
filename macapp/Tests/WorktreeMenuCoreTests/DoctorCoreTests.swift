@@ -79,13 +79,120 @@ final class DoctorCoreTests: XCTestCase {
         ])
         let text = DoctorCore.formatReport(result)
         XCTAssertTrue(text.contains("[error]"))
-        XCTAssertTrue(text.contains("worktree-manager/macapp"))
-        XCTAssertTrue(text.contains("port in use"))
+        // The app is the section heading; the slug prefixes its own row.
+        XCTAssertTrue(text.contains("worktree-manager"))
+        XCTAssertTrue(text.contains("macapp: port in use"))
         XCTAssertTrue(text.contains("wt rm macapp"))
     }
 
     func testFormatReportAppendsNotes() {
         let result = DoctorResult(findings: [], notes: ["skipped: no gh"])
         XCTAssertTrue(DoctorCore.formatReport(result).contains("skipped: no gh"))
+    }
+
+    func testFormatReportListsDetailsUnderTheirFinding() {
+        let result = DoctorResult(findings: [drift])
+        let text = DoctorCore.formatReport(result)
+        XCTAssertTrue(text.contains("docs/wt.md is out of date (2 fields have moved)"))
+        XCTAssertTrue(text.contains("- band api: was 8200, now 8300"))
+        XCTAssertTrue(text.contains("fix: re-run the generate phase"))
+    }
+
+    // MARK: report
+
+    /// A repository-wide drift finding: no slug, a summary shorter than the
+    /// message, and the moved fields as details.
+    private var drift: DoctorFinding {
+        DoctorFinding(
+            app: "print-pipeline",
+            kind: "generated-file-drift",
+            level: .warning,
+            summary: "docs/wt.md is out of date (2 fields have moved)",
+            message: "the generated file docs/wt.md records spec fields that no longer match the spec",
+            remedy: "re-run the generate phase",
+            repo: "/repos/print-pipeline",
+            path: "/repos/print-pipeline/docs/wt.md",
+            details: ["band api: was 8200, now 8300", "resources: was api, now api2"]
+        )
+    }
+
+    func testReportGroupsFindingsByApp() {
+        let result = DoctorResult(findings: [
+            finding(level: .warning),
+            drift,
+            DoctorFinding(app: "print-pipeline", slug: "wt-2", level: .info, message: "unverifiable"),
+        ])
+        let report = DoctorCore.report(result)
+        XCTAssertEqual(report.sections.map(\.title), ["print-pipeline", "worktree-manager"])
+        XCTAssertEqual(report.sections[0].rows.count, 2)
+    }
+
+    func testReportFilesAnAppLessFindingUnderTheCoordinator() {
+        let result = DoctorResult(findings: [
+            DoctorFinding(kind: "helpers-unreachable", level: .warning, message: "cannot reach gh"),
+        ])
+        let report = DoctorCore.report(result)
+        XCTAssertEqual(report.sections.map(\.title), [DoctorCore.coordinatorSection])
+    }
+
+    func testReportOrdersSectionsAndRowsWorstFirst() {
+        let result = DoctorResult(findings: [
+            DoctorFinding(app: "quiet-app", level: .warning, message: "a warning"),
+            DoctorFinding(app: "broken-app", slug: "b", level: .warning, message: "a warning"),
+            DoctorFinding(app: "broken-app", slug: "a", level: .error, message: "an error"),
+        ])
+        let report = DoctorCore.report(result)
+        // The app carrying the error sorts above the one carrying only a
+        // warning, whatever the alphabet says.
+        XCTAssertEqual(report.sections.map(\.title), ["broken-app", "quiet-app"])
+        XCTAssertEqual(report.sections[0].rows.map(\.level), [.error, .warning])
+    }
+
+    func testRowPrefixesTheSlugAndCarriesTheDetails() {
+        let report = DoctorCore.report(DoctorResult(findings: [
+            DoctorFinding(app: "a", slug: "wt-1", level: .error,
+                          summary: "its worktree directory is gone", message: "the worktree directory /gone is gone",
+                          remedy: "wt rm --slug wt-1", path: "/gone"),
+        ]))
+        let row = report.sections[0].rows[0]
+        XCTAssertEqual(row.title, "wt-1: its worktree directory is gone")
+        XCTAssertEqual(row.message, "the worktree directory /gone is gone")
+        XCTAssertEqual(row.remedy, "wt rm --slug wt-1")
+        XCTAssertEqual(row.path, "/gone")
+    }
+
+    /// A coordinator too old to send a summary still renders: the message
+    /// becomes the title, and the row does not then repeat it as its body.
+    func testRowFallsBackToTheMessageWhenNoSummaryIsSent() {
+        let report = DoctorCore.report(DoctorResult(findings: [
+            DoctorFinding(app: "a", level: .warning, message: "something moved"),
+        ]))
+        let row = report.sections[0].rows[0]
+        XCTAssertEqual(row.title, "something moved")
+        XCTAssertNil(row.message)
+    }
+
+    func testRowFallsBackToTheRepoWhenTheFindingNamesNoPath() {
+        let report = DoctorCore.report(DoctorResult(findings: [
+            DoctorFinding(app: "a", level: .warning, message: "m", repo: "/repos/a"),
+        ]))
+        XCTAssertEqual(report.sections[0].rows[0].path, "/repos/a")
+    }
+
+    // MARK: headline
+
+    func testHeadlineOfACleanReport() {
+        XCTAssertEqual(DoctorCore.headline(DoctorResult(findings: [])), "Nothing to fix")
+    }
+
+    func testHeadlineCountsEveryLevelIncludingObservations() {
+        let result = DoctorResult(findings: [
+            finding(level: .error), finding(level: .warning), finding(level: .warning), finding(level: .info),
+        ])
+        XCTAssertEqual(DoctorCore.headline(result), "1 error, 2 warnings and 1 observation")
+    }
+
+    func testHeadlineOfASingleFinding() {
+        XCTAssertEqual(DoctorCore.headline(DoctorResult(findings: [finding(level: .error)])), "1 error")
     }
 }

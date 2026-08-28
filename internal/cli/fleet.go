@@ -81,8 +81,11 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		}, writeDoctorReport)
 }
 
-// writeDoctorReport prints the findings on stdout, each with the command
-// that fixes it, and the bounded-coverage notes on stderr.
+// writeDoctorReport prints the findings on stdout, grouped by the app they
+// belong to and ordered worst-first, and the bounded-coverage notes on
+// stderr. A report is read by somebody looking for the row that matters, so
+// it opens with the count, states each finding in one line, and indents the
+// detail and the fix under it.
 func writeDoctorReport(stdout, stderr io.Writer, res *api.DoctorResult) int {
 	for _, n := range res.Notes {
 		fmt.Fprintf(stderr, "note: %s\n", n)
@@ -91,13 +94,94 @@ func writeDoctorReport(stdout, stderr io.Writer, res *api.DoctorResult) int {
 		fmt.Fprintln(stdout, "doctor: no findings; nothing was written.")
 		return ExitOK
 	}
-	for _, f := range res.Findings {
-		fmt.Fprintf(stdout, "%s: %s\n", f.Level, f.Message)
+
+	findings := append([]api.DoctorFinding(nil), res.Findings...)
+	sort.SliceStable(findings, func(i, j int) bool {
+		a, b := findings[i], findings[j]
+		if doctorGroup(a) != doctorGroup(b) {
+			return doctorGroup(a) < doctorGroup(b)
+		}
+		if doctorRank(a.Level) != doctorRank(b.Level) {
+			return doctorRank(a.Level) > doctorRank(b.Level)
+		}
+		return a.Slug < b.Slug
+	})
+
+	fmt.Fprintf(stdout, "doctor: %s.\n", doctorCounts(findings))
+	current := ""
+	for _, f := range findings {
+		if g := doctorGroup(f); g != current {
+			current = g
+			fmt.Fprintf(stdout, "\n%s\n", current)
+		}
+		// The slug prefixes the line only when the finding is about one
+		// worktree; a repository-wide finding has none, and a column of
+		// dashes is not worth the width.
+		line := doctorSummary(f)
+		if f.Slug != "" {
+			line = f.Slug + ": " + line
+		}
+		fmt.Fprintf(stdout, "  %-8s %s\n", f.Level, line)
+		for _, d := range f.Details {
+			fmt.Fprintf(stdout, "           - %s\n", d)
+		}
 		if f.Remedy != "" {
-			fmt.Fprintf(stdout, "  fix: %s\n", f.Remedy)
+			fmt.Fprintf(stdout, "           fix: %s\n", f.Remedy)
 		}
 	}
 	return ExitOK
+}
+
+// doctorGroup is the heading a finding is printed under: its app, or the
+// coordinator itself for a finding that belongs to no one app (the band
+// ledger, the helper binaries, the registry).
+func doctorGroup(f api.DoctorFinding) string {
+	if f.App == "" {
+		return "(the coordinator)"
+	}
+	return f.App
+}
+
+// doctorSummary is the finding's one-line statement, falling back to the
+// message for a finding from a coordinator too old to send one.
+func doctorSummary(f api.DoctorFinding) string {
+	if f.Summary != "" {
+		return f.Summary
+	}
+	return f.Message
+}
+
+// doctorRank orders the levels worst-first.
+func doctorRank(level string) int {
+	switch level {
+	case "error":
+		return 2
+	case "warning":
+		return 1
+	}
+	return 0
+}
+
+// doctorCounts is the headline: how many findings of each level, worst
+// first, so the reader knows the size of the report before reading it.
+func doctorCounts(findings []api.DoctorFinding) string {
+	n := map[string]int{}
+	for _, f := range findings {
+		n[f.Level]++
+	}
+	var parts []string
+	for _, level := range []string{"error", "warning", "info"} {
+		c := n[level]
+		if c == 0 {
+			continue
+		}
+		word := level
+		if c != 1 {
+			word += "s"
+		}
+		parts = append(parts, fmt.Sprintf("%d %s", c, word))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // runClients implements `wt clients [--json]`: the known clients, their

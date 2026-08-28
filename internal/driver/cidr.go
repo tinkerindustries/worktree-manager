@@ -118,7 +118,7 @@ func (*CIDR) Verify(r *spec.Resource, value any, env Env) ([]Finding, error) {
 		return nil, nil
 	}
 	if note := FallbackNote(r, cidr, env.Slot); note != "" {
-		return []Finding{{Resource: r.Name, Level: LevelWarning, Message: note}}, nil
+		return []Finding{{Resource: r.Name, Kind: "cidr-unverified", Level: LevelWarning, Message: note}}, nil
 	}
 	return nil, nil
 }
