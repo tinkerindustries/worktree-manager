@@ -403,3 +403,159 @@ func TestEmbeddedSkillMatchesTheRepositorysCopy(t *testing.T) {
 		t.Fatalf("walking the repository's skill: %v", err)
 	}
 }
+
+// hasAction reports whether any change carries the action, and returns the
+// first one that does.
+func hasAction(changes []Change, action string) (Change, bool) {
+	for _, c := range changes {
+		if c.Action == action {
+			return c, true
+		}
+	}
+	return Change{}, false
+}
+
+// TestRefreshOnlyCreatesNothingWhenNotInstalled: an upgrade runs this on
+// every machine, including ones that never registered the hooks.
+// Registering them is the user's opt-in and the upgrade does not make it.
+func TestRefreshOnlyCreatesNothingWhenNotInstalled(t *testing.T) {
+	l := layoutIn(t)
+	changes, err := Install(l, Options{WtBinary: "/opt/wt", RefreshOnly: true, Skill: true})
+	if err != nil {
+		t.Fatalf("refresh over an absent installation: %v", err)
+	}
+	if _, ok := hasAction(changes, "skipped"); !ok {
+		t.Errorf("changes = %#v, want a skipped entry", changes)
+	}
+	for _, s := range scripts {
+		if _, err := os.Stat(l.ScriptPath(s.File)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("a refresh created %s on a machine with no installation", s.File)
+		}
+	}
+	if _, err := os.Stat(l.SettingsPath()); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a refresh wrote settings on a machine with no installation")
+	}
+}
+
+// TestRefreshOnlyUpdatesAStaleScript is the case the flag exists for: the
+// scripts are embedded in the binary, so a new wt carries new copies and
+// the ones on disk are whatever version wrote them.
+func TestRefreshOnlyUpdatesAStaleScript(t *testing.T) {
+	l := layoutIn(t)
+	if _, err := Install(l, Options{WtBinary: "/opt/wt"}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	path := l.ScriptPath(createScript)
+	stale := "#!/bin/sh\n# an older wt wrote this\nexit 0\n\n" +
+		managed.StartMarker + "\n" + managed.FieldPrefix + "wt=/opt/wt\n" + managed.EndMarker + "\n"
+	if err := os.WriteFile(path, []byte(stale), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	changes, err := Install(l, Options{WtBinary: "/opt/wt", RefreshOnly: true})
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if _, ok := hasAction(changes, "replace"); !ok {
+		t.Errorf("changes = %#v, want the stale script replaced", changes)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "an older wt wrote this") {
+		t.Error("the refresh left the stale body in place")
+	}
+}
+
+// TestRefreshOnlySkipsAnEditedScriptAndContinues: a binary upgrade does
+// not fail over a file the user chose to customise, and the rest of the
+// refresh still happens.
+func TestRefreshOnlySkipsAnEditedScriptAndContinues(t *testing.T) {
+	l := layoutIn(t)
+	if _, err := Install(l, Options{WtBinary: "/opt/wt"}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	edited := "#!/bin/sh\n# mine now\nexit 0\n"
+	if err := os.WriteFile(l.ScriptPath(createScript), []byte(edited), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Make the other script stale, so the test can tell that the skip did
+	// not abandon the rest of the refresh.
+	stale := "#!/bin/sh\n# older\nexit 0\n\n" +
+		managed.StartMarker + "\n" + managed.FieldPrefix + "wt=/opt/wt\n" + managed.EndMarker + "\n"
+	if err := os.WriteFile(l.ScriptPath(removeScript), []byte(stale), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	changes, err := Install(l, Options{WtBinary: "/opt/wt", RefreshOnly: true})
+	if err != nil {
+		t.Fatalf("refresh over an edited script: %v", err)
+	}
+	skip, ok := hasAction(changes, "skipped")
+	if !ok {
+		t.Fatalf("changes = %#v, want the edited script skipped", changes)
+	}
+	if !strings.Contains(skip.Detail, "--force") {
+		t.Errorf("the skip does not name the flag that would overwrite it: %q", skip.Detail)
+	}
+	got, err := os.ReadFile(l.ScriptPath(createScript))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != edited {
+		t.Error("the refresh overwrote a script the user had edited")
+	}
+	other, err := os.ReadFile(l.ScriptPath(removeScript))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(other), "# older") {
+		t.Error("the skip abandoned the rest of the refresh")
+	}
+}
+
+// TestRefreshOnlySkipsAForeignRegistration: the same rule at the settings
+// layer — a registration the user repointed is reported and left alone
+// rather than failing the upgrade.
+func TestRefreshOnlySkipsAForeignRegistration(t *testing.T) {
+	l := layoutIn(t)
+	if _, err := Install(l, Options{WtBinary: "/opt/wt"}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	existing := `{"hooks": {"WorktreeCreate": [{"hooks": [{"type": "command", "command": "/opt/mine.sh"}]}]}}`
+	if err := os.WriteFile(l.SettingsPath(), []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	changes, err := Install(l, Options{WtBinary: "/opt/wt", RefreshOnly: true})
+	if err != nil {
+		t.Fatalf("refresh over a foreign registration: %v", err)
+	}
+	if _, ok := hasAction(changes, "skipped"); !ok {
+		t.Errorf("changes = %#v, want the refresh skipped", changes)
+	}
+	if got, want := commandFor(t, readSettingsFile(t, l), CreateEvent), "/opt/mine.sh"; got != want {
+		t.Errorf("the refresh repointed the registration to %q, want %q left alone", got, want)
+	}
+}
+
+// TestInstalledReportsWhatIsThere pins the signal RefreshOnly turns on.
+func TestInstalledReportsWhatIsThere(t *testing.T) {
+	l := layoutIn(t)
+	switch present, err := Installed(l); {
+	case err != nil:
+		t.Fatalf("Installed on an empty directory: %v", err)
+	case present:
+		t.Error("Installed = true on a directory with no hooks")
+	}
+	if _, err := Install(l, Options{WtBinary: "/opt/wt"}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	switch present, err := Installed(l); {
+	case err != nil:
+		t.Fatalf("Installed after install: %v", err)
+	case !present:
+		t.Error("Installed = false after install wrote both scripts")
+	}
+}

@@ -186,6 +186,16 @@ running coordinator keeps executing the old image until it exits; Windows
 ends the logon task first, because it cannot rename over a running
 executable.
 
+An install then runs `wt claude install --refresh-only`, which brings an
+existing Claude Code integration up to date. The two hook scripts and the
+onboarding skill are embedded in the binary, so a new `wt` carries new
+copies while the ones on disk stay at whatever version wrote them; without
+this an upgrade never reaches them. It creates no installation — the hooks
+are the user's opt-in, made by `wt claude install`, and an upgrade does not
+make it for them — and it leaves a file the user has edited alone, naming
+what it skipped. A `--prefix` install is self-contained and loads nothing,
+so it does not touch `~/.claude`, and `--client-only` never gets this far.
+
 `--uninstall` never removes the store, and it refuses — exit 3, nothing
 changed — while the registry still holds entries, naming `wt list` and
 `wt rm`. The entry count comes from the coordinator's `list`, because the

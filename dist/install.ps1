@@ -299,6 +299,9 @@ if ($DryRun) {
     if ($ContainerToken) { $cmd += " --container-token <token>" }
     foreach ($h in $AllowHost) { $cmd += " --allow-host $h" }
     Write-Host "would run: $cmd"
+    if (-not $RegPrefix) {
+        Write-Host "would run: & $(Join-Path $BinDir 'wt.exe') claude install --refresh-only"
+    }
     Write-Host "dry run: nothing was changed"
     exit 0
 }
@@ -359,6 +362,23 @@ if ($ContainerToken -ne "" -and $RegPrefix -eq "") {
 }
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
+}
+
+# Bring an existing Claude Code integration up to date. The hook scripts
+# and the onboarding skill are embedded in the binary, so a new wt carries
+# new copies of both while the ones on disk stay at whatever version wrote
+# them; without this an upgrade never reaches them. --refresh-only creates
+# no installation — registering the hooks is the user's opt-in, made by
+# `wt claude install`, and an upgrade does not make it for them — and it
+# leaves a file the user has edited alone. A -Prefix install is
+# self-contained and loads nothing, so it does not touch ~/.claude. A
+# failure here is reported and does not fail the install: the binaries are
+# already in place and the coordinator is already registered.
+if ($RegPrefix -eq "") {
+    & $wt claude install --refresh-only
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "note: could not refresh the Claude Code hooks; run '$wt claude install' by hand"
+    }
 }
 
 Write-Host "verify with: wt daemon status"

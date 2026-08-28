@@ -33,6 +33,10 @@ type claudeResult struct {
 	LogPath   string              `json:"log_path"`
 	SkillDir  string              `json:"skill_dir,omitempty"`
 	Changes   []claudehook.Change `json:"changes"`
+	// NothingInstalled marks a --refresh-only run that found no
+	// installation to refresh, so the closing sentence does not claim an
+	// integration that is not there.
+	NothingInstalled bool `json:"nothing_installed,omitempty"`
 }
 
 func runClaude(args []string, stdout, stderr io.Writer) int {
@@ -66,6 +70,8 @@ type claudeFlags struct {
 	force   *bool
 	prefix  *string
 	skill   *bool
+	// refreshOnly is install's alone; uninstall leaves it nil.
+	refreshOnly *bool
 }
 
 func newClaudeFlags(name string, stderr io.Writer, skillUsage string) *claudeFlags {
@@ -111,16 +117,22 @@ func (c *claudeFlags) options() claudehook.Options {
 		self = ""
 	}
 	return claudehook.Options{
-		WtBinary: self,
-		Force:    *c.force,
-		DryRun:   *c.dryRun,
-		Skill:    *c.skill,
+		WtBinary:    self,
+		Force:       *c.force,
+		DryRun:      *c.dryRun,
+		Skill:       *c.skill,
+		RefreshOnly: c.refreshOnly != nil && *c.refreshOnly,
 	}
 }
 
 func runClaudeInstall(args []string, stdout, stderr io.Writer) int {
 	c := newClaudeFlags("claude install", stderr,
 		"install the worktree-onboarding skill into the user skills directory too")
+	// An upgrade runs this: the scripts and the skill live in the binary,
+	// so a new wt carries new copies, but registering the hooks at all is
+	// the user's opt-in and an upgrade never makes it for them.
+	c.refreshOnly = c.fs.Bool("refresh-only", false,
+		"update an existing installation and create none; changes nothing when the hooks are not installed")
 	if err := c.fs.Parse(args); err != nil {
 		return ExitUsage
 	}
@@ -161,6 +173,17 @@ func runClaudeOp(
 		WriteError(stderr, cerr)
 		return cerr.Code
 	}
+	// Asked before the operation, because the operation is what would
+	// create the installation this reports the absence of.
+	nothingInstalled := false
+	if c.refreshOnly != nil && *c.refreshOnly {
+		present, ierr := claudehook.Installed(layout)
+		if ierr != nil {
+			WriteError(stderr, New(ExitFailure, ierr.Error(), ""))
+			return ExitFailure
+		}
+		nothingInstalled = !present
+	}
 	changes, err := op(layout, c.options())
 	if err != nil {
 		var conflict *claudehook.ConflictError
@@ -180,6 +203,8 @@ func runClaudeOp(
 		Settings:  layout.SettingsPath(),
 		LogPath:   layout.LogPath(),
 		Changes:   changes,
+
+		NothingInstalled: nothingInstalled,
 	}
 	if *c.skill {
 		result.SkillDir = layout.SkillDir()
@@ -197,6 +222,14 @@ func runClaudeOp(
 // writeClaudeText renders the change list, then the one sentence that says
 // what the machine will now do when a worktree is created.
 func writeClaudeText(stdout, stderr io.Writer, r claudeResult) int {
+	// A refresh with nothing to refresh has one thing to say and says it
+	// on one line: an upgrade runs this on every machine, including the
+	// ones that never registered the hooks, and a table plus a paragraph
+	// there is noise about a non-event.
+	if r.NothingInstalled {
+		fmt.Fprintf(stdout, "nothing to refresh: no Claude Code hooks in %s — run 'wt claude install' to add them\n", r.Dir)
+		return ExitOK
+	}
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "ACTION\tPATH\tDETAIL")
 	for _, c := range r.Changes {

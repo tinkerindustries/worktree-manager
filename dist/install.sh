@@ -372,6 +372,9 @@ if [ -n "$DRY_RUN" ]; then
 		echo "container clients: not admitted (no --container-token)"
 	fi
 	echo "would run: $(supervisor_command)"
+	if [ -z "$REG_PREFIX" ]; then
+		echo "would run: $BINDIR/wt claude install --refresh-only"
+	fi
 	echo "dry run: nothing was changed"
 	exit 0
 fi
@@ -435,6 +438,21 @@ else
 fi
 if [ -n "$CONTAINER_TOKEN" ] && [ -z "$REG_PREFIX" ]; then
 	echo "container clients admitted; a container sets WT_ENDPOINT to the address above and WT_CLIENT_TOKEN to the token"
+fi
+
+# Bring an existing Claude Code integration up to date. The hook scripts
+# and the onboarding skill are embedded in the binary, so a new wt carries
+# new copies of both while the ones on disk stay at whatever version wrote
+# them; without this an upgrade never reaches them. --refresh-only creates
+# no installation — registering the hooks is the user's opt-in, made by
+# `wt claude install`, and an upgrade does not make it for them — and it
+# leaves a file the user has edited alone. A --prefix install is
+# self-contained and loads nothing, so it does not touch ~/.claude. A
+# failure here is reported and does not fail the install: the binaries are
+# already in place and the coordinator is already registered.
+if [ -z "$REG_PREFIX" ]; then
+	"$BINDIR/wt" claude install --refresh-only ||
+		echo "note: could not refresh the Claude Code hooks; run '$BINDIR/wt claude install' by hand"
 fi
 
 echo "verify with: wt daemon status"

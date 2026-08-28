@@ -104,7 +104,12 @@ func installSkill(l Layout, opts Options) ([]Change, error) {
 			changes = append(changes, Change{Action: "unchanged", Path: path, Detail: "already current"})
 			continue
 		case !opts.Force:
-			return nil, &ConflictError{Path: path, Found: "edited since the worktree-onboarding skill was installed", Flag: "--force"}
+			ce := &ConflictError{Path: path, Found: "edited since the worktree-onboarding skill was installed", Flag: "--force"}
+			if opts.RefreshOnly {
+				changes = append(changes, Change{Action: "skipped", Path: path, Detail: skipDetail(ce)})
+				continue
+			}
+			return nil, ce
 		default:
 			changes = append(changes, Change{Action: "replace", Path: path})
 		}
