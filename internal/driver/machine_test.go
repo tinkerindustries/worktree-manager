@@ -13,6 +13,9 @@ package driver
 
 import (
 	"errors"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -40,7 +43,10 @@ func (f *fakeMachine) Binary() string { return f.binary }
 func (f *fakeMachine) List() ([]platform.MachineInstance, error) {
 	return f.instances, f.listErr
 }
-func (f *fakeMachine) Start(name string) error {
+func (f *fakeMachine) Start(name string, output io.Writer) error {
+	if output != nil {
+		io.WriteString(output, "fake: starting "+name+"\n")
+	}
 	if f.startErr != nil {
 		return f.startErr
 	}
@@ -128,6 +134,79 @@ func TestMachineApplyStartsInBackground(t *testing.T) {
 	}
 	if !strings.Contains(ar.Notes[0], "background") || !strings.Contains(ar.Notes[0], "does not wait") {
 		t.Errorf("the note must state the background warm-up: %s", ar.Notes[0])
+	}
+}
+
+// TestMachineApplyWritesAndNamesTheLogFile is 1b: the coordinator's
+// per-instance log directory is where a starting VM's output actually
+// goes — not wtd's own stderr, which is nowhere a person looks under a
+// supervisor — and the apply note tells the operator where to find it.
+func TestMachineApplyWritesAndNamesTheLogFile(t *testing.T) {
+	m := newFakeMachine()
+	_, env, res := machineFixture(t, m, false)
+	env.MachineLogDir = t.TempDir()
+	name := machineValue(t, env.Spec)
+
+	ar, err := (&Machine{}).Apply(res, name, env)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	logPath := filepath.Join(env.MachineLogDir, "machine-"+name+".log")
+	if len(ar.Notes) != 1 || !strings.Contains(ar.Notes[0], logPath) {
+		t.Fatalf("the note must name the log file %s: %v", logPath, ar.Notes)
+	}
+	contents, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("reading the log file: %v", err)
+	}
+	if !strings.Contains(string(contents), "fake: starting "+name) {
+		t.Errorf("the log file must carry the child's output, got %q", contents)
+	}
+}
+
+// TestMachineApplyWithNoLogDirConfiguredStillStarts: an empty
+// MachineLogDir (a test harness, or a coordinator wired without one) must
+// not block starting the VM — a machine that cannot have its boot logged
+// is still worth starting, and the note says nothing was logged rather
+// than naming a file that does not exist.
+func TestMachineApplyWithNoLogDirConfiguredStillStarts(t *testing.T) {
+	m := newFakeMachine()
+	_, env, res := machineFixture(t, m, false)
+	name := machineValue(t, env.Spec)
+
+	ar, err := (&Machine{}).Apply(res, name, env)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(m.started) != 1 {
+		t.Fatalf("started = %v, want one start", m.started)
+	}
+	if len(ar.Notes) != 1 || strings.Contains(ar.Notes[0], ".log") {
+		t.Errorf("with no log directory configured the note must not name a log file: %v", ar.Notes)
+	}
+}
+
+// TestMachineApplyStartFailureNamesTheLogFile: when the runner reports an
+// early exit (1a), the wrapping error still names the log file, so an
+// operator reading it knows exactly where the child's full output landed
+// even though the error text itself already quotes a copy of it.
+func TestMachineApplyStartFailureNamesTheLogFile(t *testing.T) {
+	m := newFakeMachine()
+	m.startErr = errors.New("exited during startup: exit status 1: boom: missing sibling binary")
+	_, env, res := machineFixture(t, m, false)
+	env.MachineLogDir = t.TempDir()
+	name := machineValue(t, env.Spec)
+
+	_, err := (&Machine{}).Apply(res, name, env)
+	if err == nil {
+		t.Fatal("Apply must report the runner's early-exit error")
+	}
+	logPath := filepath.Join(env.MachineLogDir, "machine-"+name+".log")
+	if !strings.Contains(err.Error(), logPath) {
+		t.Errorf("the error must name the log file %s: %v", logPath, err)
+	}
+	if !strings.Contains(err.Error(), "boom: missing sibling binary") {
+		t.Errorf("the error must still carry the runner's own message: %v", err)
 	}
 }
 

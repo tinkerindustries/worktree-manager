@@ -168,6 +168,13 @@ type Env struct {
 	// installed, which every machine-touching operation reports as
 	// unavailable.
 	Machine platform.MachineRunner
+	// MachineLogDir is the directory the machine driver writes a starting
+	// instance's output into, one file per instance
+	// (machine-<instance>.log). The coordinator sets it to
+	// <store root>/logs; an empty value means no destination is
+	// configured, and the machine driver still runs the grace-period wait
+	// (1a) but the child's output past that point is not kept anywhere.
+	MachineLogDir string
 }
 
 // Reservation is one host-global reservation as the ledger declares it:

@@ -8,6 +8,8 @@ package platform
 // names the platform that has a runner — a silent degrade reads as success
 // (plan.md §3), so the driver never pretends a machine exists here.
 
+import "io"
+
 // Machine returns no runner on this platform.
 func Machine() MachineRunner { return unsupportedMachine{} }
 
@@ -23,7 +25,7 @@ func (unsupportedMachine) List() ([]MachineInstance, error) {
 }
 
 // Start cannot run.
-func (unsupportedMachine) Start(name string) error {
+func (unsupportedMachine) Start(name string, output io.Writer) error {
 	return machineUnavailable("the machine driver runs Colima on macOS and WSL2 on Windows")
 }
 

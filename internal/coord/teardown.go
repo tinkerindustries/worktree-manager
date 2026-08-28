@@ -7,6 +7,7 @@ package coord
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/api"
@@ -152,7 +153,11 @@ func (h *Handler) machine() platform.MachineRunner {
 // entryEnv builds the driver environment for one entry: everything an
 // operation needs beyond the resolved value, read fresh from the store at
 // call time — the ledger's bases and reservations, the coordinator's home,
-// the docker seam. It is the shared construction behind teardown,
+// the docker seam, and the machine log directory (<store root>/logs) a
+// starting VM's output is written into (1b) — the store's own root is
+// the one place already private on both platforms, so the machine driver
+// need not invent a second permission model for a directory that carries
+// nothing secret today. It is the shared construction behind teardown,
 // materialise and the rm verb, so the three cannot drift apart on what an
 // operation may see (03-drivers.md §2).
 func (h *Handler) entryEnv(e *store.Entry, sp *spec.Spec) (driver.Env, *api.Error) {
@@ -174,9 +179,10 @@ func (h *Handler) entryEnv(e *store.Entry, sp *spec.Spec) (driver.Env, *api.Erro
 	env := driver.Env{
 		Spec: sp, App: e.App, Slug: e.Slug, Slot: e.Slot,
 		Home: home, Worktree: e.Path,
-		Resolved: e.Resources,
-		Docker:   h.docker(),
-		Machine:  h.machine(),
+		Resolved:      e.Resources,
+		Docker:        h.docker(),
+		Machine:       h.machine(),
+		MachineLogDir: filepath.Join(h.st.Root(), "logs"),
 	}
 	if band := findBand(bands, e.App); band != nil {
 		env.Bases = band.Bases

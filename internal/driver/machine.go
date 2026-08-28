@@ -41,6 +41,9 @@ package driver
 import (
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -160,14 +163,61 @@ func (*Machine) Apply(r *spec.Resource, value any, env Env) (ApplyResult, error)
 	if alreadyRunning {
 		return ApplyResult{Notes: []string{fmt.Sprintf("%s: the instance is already running; nothing to start", name)}}, nil
 	}
-	if err := env.Machine.Start(name); err != nil {
+
+	logFile, logPath, logErr := openMachineLog(env.MachineLogDir, name)
+	if logFile != nil {
+		defer logFile.Close()
+	}
+	var out io.Writer
+	if logFile != nil {
+		out = logFile
+	}
+	if err := env.Machine.Start(name, out); err != nil {
 		if errors.Is(err, platform.ErrMachineUnavailable) {
 			return ApplyResult{}, &ErrUnavailable{Reason: err.Error()}
 		}
-		return ApplyResult{}, fmt.Errorf("machine driver: starting %s: %w", name, err)
+		msg := fmt.Sprintf("machine driver: starting %s: %v", name, err)
+		if logFile != nil {
+			msg += fmt.Sprintf(" (its output is in %s)", logPath)
+		}
+		return ApplyResult{}, errors.New(msg)
 	}
-	return ApplyResult{Notes: []string{fmt.Sprintf(
-		"%s: %s start %s launched in the background — warm-up is measured in minutes, and init does not wait for it (B4.4)", name, env.Machine.Binary(), name)}}, nil
+	note := fmt.Sprintf(
+		"%s: %s start %s survived its first %s without exiting and is running in the background — warm-up is measured in minutes, and init does not wait for the rest of it (B4.4)",
+		name, env.Machine.Binary(), name, platform.MachineStartGrace())
+	switch {
+	case logFile != nil:
+		note += fmt.Sprintf("; its output is in %s", logPath)
+	case logErr != nil:
+		note += fmt.Sprintf("; its output could not be logged: %v", logErr)
+	}
+	return ApplyResult{Notes: []string{note}}, nil
+}
+
+// openMachineLog opens the coordinator's per-instance log file for a
+// starting machine, creating the log directory with the store's own
+// permission model first (platform.EnsurePrivateDir — 0700 on unix, the
+// current-user ACL on Windows). A machine resource carries nothing secret
+// today, but the store's directory convention is the one to follow rather
+// than inventing a second one. An empty dir means no destination was
+// configured (a test, or a coordinator wired without one); a directory
+// that cannot be created or a file that cannot be opened is reported
+// through the error return rather than failing the apply — a VM that
+// cannot have its boot logged is still worth starting, and Start's own
+// grace-period error carries the output regardless of where else it went.
+func openMachineLog(dir, instance string) (*os.File, string, error) {
+	if dir == "" {
+		return nil, "", nil
+	}
+	if err := platform.EnsurePrivateDir(dir); err != nil {
+		return nil, "", fmt.Errorf("creating the machine log directory %s: %w", dir, err)
+	}
+	path := filepath.Join(dir, fmt.Sprintf("machine-%s.log", instance))
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, "", fmt.Errorf("opening the machine log %s: %w", path, err)
+	}
+	return f, path, nil
 }
 
 // Teardown destroys the instance, unless the keep flag is given — which

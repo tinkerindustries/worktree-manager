@@ -9,8 +9,9 @@ package platform
 // against a fake runner (driver/machine_test.go).
 
 import (
+	"bytes"
 	"fmt"
-	"os"
+	"io"
 	"strings"
 )
 
@@ -45,19 +46,35 @@ func (colimaRunner) List() ([]MachineInstance, error) {
 	return instances, nil
 }
 
-// Start launches `colima start <name>` in the background and returns
-// immediately: warm-up is measured in minutes and must not block init
+// Start launches `colima start <name>`, waits out the grace period
+// (awaitMachineStart, in machine.go) and then returns, leaving the process
+// running detached: warm-up is measured in minutes and must not block init
 // (B4.4). The profile is created if it does not exist — colima start is
-// the create-and-start command. The child's output follows the
-// coordinator's stderr, which is where wtd's own log goes.
-func (colimaRunner) Start(name string) error {
+// the create-and-start command. output receives the child's stdout and
+// stderr for as long as it runs; the coordinator wires its own
+// per-instance log file here, which is where a person actually looks —
+// before this grace period existed, the child's output went to wtd's own
+// stderr, nowhere anyone looks under launchd, and a `colima start` that
+// died on a missing limactl looked identical to one that was booting.
+func (colimaRunner) Start(name string, output io.Writer) error {
 	cmd, err := HelperCommand("colima", "start", name)
 	if err != nil {
 		return colimaUnavailable(err)
 	}
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	return cmd.Start()
+	var buf bytes.Buffer
+	w := io.Writer(&buf)
+	if output != nil {
+		w = io.MultiWriter(output, &buf)
+	}
+	cmd.Stdout = w
+	cmd.Stderr = w
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("colima start %s: %w", name, err)
+	}
+	if err := awaitMachineStart(cmd, &buf); err != nil {
+		return fmt.Errorf("colima start %s %w", name, err)
+	}
+	return nil
 }
 
 // Delete runs the documented destroy command.

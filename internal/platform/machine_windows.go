@@ -10,8 +10,9 @@ package platform
 // driver's logic is proved against a fake runner (driver/machine_test.go).
 
 import (
+	"bytes"
 	"fmt"
-	"os"
+	"io"
 	"strings"
 )
 
@@ -61,19 +62,37 @@ func (wslRunner) List() ([]MachineInstance, error) {
 	return instances, nil
 }
 
-// Start boots the distro by running a trivial command inside it, in the
-// background: the VM warm-up must not block init (B4.4). Creating a distro
-// is `wsl --import <name> <dir> <rootfs>` — a person's job, stated in the
-// reference doc rather than attempted here; the driver starts distros the
-// onboarding skill or a developer already created.
-func (wslRunner) Start(name string) error {
+// Start boots the distro by running a trivial command inside it, waits out
+// the grace period (awaitMachineStart, in machine.go) and then returns,
+// leaving the process running detached: the VM warm-up must not block init
+// (B4.4). Creating a distro is `wsl --import <name> <dir> <rootfs>` — a
+// person's job, stated in the reference doc rather than attempted here;
+// the driver starts distros the onboarding skill or a developer already
+// created, so an instant exit here is an unknown distro name or a broken
+// WSL install, not a cold boot. output receives the child's stdout and
+// stderr for as long as it runs; the coordinator wires its own
+// per-instance log file here, which is where a person actually looks —
+// the child's output going to wtd's own stderr is nowhere anyone looks
+// under the Task Scheduler.
+func (wslRunner) Start(name string, output io.Writer) error {
 	cmd, err := HelperCommand("wsl", "--distribution", name, "--exec", "/bin/true")
 	if err != nil {
 		return wslUnavailable()
 	}
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	return cmd.Start()
+	var buf bytes.Buffer
+	w := io.Writer(&buf)
+	if output != nil {
+		w = io.MultiWriter(output, &buf)
+	}
+	cmd.Stdout = w
+	cmd.Stderr = w
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("wsl --distribution %s: %w", name, err)
+	}
+	if err := awaitMachineStart(cmd, &buf); err != nil {
+		return fmt.Errorf("wsl --distribution %s %w", name, err)
+	}
+	return nil
 }
 
 // Delete runs the documented destroy command.

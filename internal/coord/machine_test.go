@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,7 +59,7 @@ func (f *coordFakeMachine) List() ([]platform.MachineInstance, error) {
 	}
 	return f.instances, nil
 }
-func (f *coordFakeMachine) Start(name string) error {
+func (f *coordFakeMachine) Start(name string, output io.Writer) error {
 	f.started = append(f.started, name)
 	return nil
 }
