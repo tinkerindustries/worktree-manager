@@ -101,10 +101,17 @@ The same script is the whole release when the workflow cannot run — a
 runner outage, or a repository whose Actions minutes are unavailable:
 
 ```sh
-dist/build.sh 0.2.0            # writes dist/out/
+# on a Mac, so the darwin archives can carry the menu bar app
+macapp/Scripts/bundle.sh --configuration release
+WT_MACAPP_BUNDLE="$PWD/macapp/.build/WorktreeMenu.app" dist/build.sh 0.2.0
 gh release create v0.2.0 dist/out/wt-*.tar.gz dist/out/wt-*.zip \
   dist/out/SHA256SUMS --title "Worktree Manager v0.2.0"
 ```
+
+One machine can build every cell this way, because the Go half
+cross-compiles and only the app needs a Mac. `WT_CELLS` restricts the run
+to some of them, which is what the two release jobs pass. Without
+`WT_MACAPP_BUNDLE` the darwin archives carry the two binaries alone.
 
 A local build needs no release at all: the archives in `dist/out/` *are*
 the distribution, and a Dockerfile can `COPY` one in rather than
@@ -134,8 +141,8 @@ downloading it.
 
 | Artefact | Contains |
 |---|---|
-| `wt-<version>-darwin-arm64.tar.gz`, `-darwin-amd64.tar.gz` | `wt`, `wtd`, `install.sh`, `README.txt`, `SHA256SUMS` |
-| `wt-<version>-linux-amd64.tar.gz`, `-linux-arm64.tar.gz` | as above |
+| `wt-<version>-darwin-arm64.tar.gz`, `-darwin-amd64.tar.gz` | `wt`, `wtd`, `install.sh`, `README.txt`, `SHA256SUMS`, `WorktreeMenu.app` |
+| `wt-<version>-linux-amd64.tar.gz`, `-linux-arm64.tar.gz` | the same without the app |
 | `wt-<version>-windows-amd64.zip` | `wt.exe`, `wtd.exe`, `install.ps1`, `README.txt`, `SHA256SUMS` |
 | `SHA256SUMS` | the sha256 of every archive |
 
@@ -159,9 +166,10 @@ is built by the stdlib-only `dist/ziphelper.go`, so cutting a release needs
 no `zip` binary.
 
 Nothing else ships: no Homebrew tap, no winget manifest, no apt or rpm
-package, no coordinator image, no signing or notarisation, and no
-`wt upgrade` — the PLAN-SCOPE.md packaging non-goals. A release is an
-archive and an installer.
+package, no coordinator image and no `wt upgrade` — the PLAN-SCOPE.md
+packaging non-goals. A release is an archive and an installer. The macOS
+half is signed where a Developer ID is configured, which is the one
+addition to that list; see "The menu bar app" below.
 
 ## Installing on a host
 
@@ -184,6 +192,7 @@ status` should then say `running`.
 | `--container-token` / `-ContainerToken` | admit container clients (16+ characters, no whitespace). `WT_CONTAINER_TOKEN` sets it without putting it in shell history |
 | `--allow-host` / `-AllowHost` | a `Host` header value the coordinator accepts beyond loopback and its own address (repeatable) — see below |
 | `--client-only` / `-ClientOnly` | install the `wt` client alone: no `wtd`, no registration |
+| `--no-menubar` / — | skip the macOS menu bar app, which a darwin archive otherwise installs into `/Applications` and starts |
 | `--skip-verify` / `-SkipVerify` | install without checking the binaries against `SHA256SUMS` |
 | `--dry-run` / `-DryRun` | print every action, change nothing |
 | `--uninstall` / `-Uninstall` | drive `wt daemon uninstall`, then remove the binaries |
@@ -229,26 +238,72 @@ refusal too. `wt daemon uninstall --force` is the only way past either.
 
 ## The menu bar app
 
-`WorktreeMenu.app` is in no release. The release workflow's macapp job
-builds, signs and notarizes it only when the six signing secrets are
-configured on the repository; with none set it logs why and stops, so a
-release carries the archives alone.
+`WorktreeMenu.app` ships inside the two macOS archives, and `install.sh`
+installs it into `/Applications` and starts it. `--no-menubar` skips it.
+It is skipped anyway under `--client-only`, because a container has no
+desktop, and under `--prefix`, because a prefix install is self-contained
+and `/Applications` sits outside any prefix.
 
-Build and install it locally instead. `Scripts/bundle.sh` ad-hoc signs
-the bundle, which is enough to launch it on the machine that built it:
+The app is a Swift build and cannot be cross-compiled, which is why the
+release splits across two runners: the linux and windows archives are
+assembled on Linux, the darwin archives on macOS with the built bundle
+staged into them through `WT_MACAPP_BUNDLE`, and a publish job joins the
+halves into one release with one `SHA256SUMS` over every archive.
+
+The bundle carries no `SHA256SUMS` line of its own. A code signature
+covers the whole bundle and says who signed it, which a digest of one file
+inside it does not, so `install.sh` checks it with `codesign` and removes
+it again when it does not verify.
+
+Replacing a running copy is part of installing it. The installer asks the
+app to quit, waits, and terminates it by name when it does not answer — a
+background-only app does not reliably respond to the request, and a
+process that keeps running while its bundle is replaced underneath it
+leaves `open` re-activating the old build with nothing to show that
+anything went wrong.
+
+### Signing
+
+With the six signing secrets configured on the repository the app is
+signed with a Developer ID, notarized and stapled, and Gatekeeper accepts
+it without asking Apple at launch. Without them it is ad-hoc signed, which
+runs only where a quarantine attribute is absent, so `install.sh` clears
+that attribute for an ad-hoc bundle and says it did, and leaves a
+Developer ID bundle alone.
+
+| Secret | What it is |
+|---|---|
+| `MACAPP_SIGNING_IDENTITY` | the identity codesign signs with, e.g. `Developer ID Application: Name (TEAMID)` |
+| `MACAPP_CERTIFICATE_P12` | the Developer ID Application certificate and its key, exported as a `.p12` and base64 encoded |
+| `MACAPP_CERTIFICATE_PASSWORD` | the password that `.p12` was exported with |
+| `MACAPP_NOTARY_KEY_ID` | the App Store Connect API key id |
+| `MACAPP_NOTARY_KEY_ISSUER` | that key's issuer id |
+| `MACAPP_NOTARY_KEY_P8` | the contents of the key's `.p8` file |
+
+The same identity signs `wt` and `wtd` in the darwin archives, through
+`build.sh`'s `WT_DARWIN_SIGNING_IDENTITY`.
+
+### Building it locally
+
+For a development loop, `Scripts/bundle.sh` ad-hoc signs a bundle in
+`macapp/.build`:
 
 ```sh
 macapp/Scripts/bundle.sh --configuration release
-osascript -e 'quit app "WorktreeMenu"'      # only when replacing a running copy
+```
+
+Installing that bundle by hand is the same three steps the installer
+takes, and a running copy has to go first or `open` re-activates it:
+
+```sh
+pkill -f /Applications/WorktreeMenu.app/Contents/MacOS/WorktreeMenu
 rm -rf /Applications/WorktreeMenu.app
 cp -R macapp/.build/WorktreeMenu.app /Applications/
 open /Applications/WorktreeMenu.app
 ```
 
 The app shells out to `wt` and renders what comes back, so it uses
-whichever binary the host install put on the path. Install `wt` first.
-An ad-hoc signature is valid on the machine that made it and nowhere
-else: a copy handed to someone else is refused by Gatekeeper.
+whichever binary the host install put on the path.
 
 ## Installing into a container
 

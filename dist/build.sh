@@ -77,6 +77,28 @@ LDFLAGS="-X github.com/mrgeoffrich/worktree-manager/internal/cli.version=$VERSIO
 -X github.com/mrgeoffrich/worktree-manager/internal/cli.commit=$COMMIT \
 -X main.version=$VERSION -X main.commit=$COMMIT"
 
+# WT_CELLS restricts which platform cells this run assembles, as a
+# space-separated list of <os>/<arch>. The darwin archives are assembled
+# on a macOS runner because the menu bar app is a Swift build and cannot
+# be cross-compiled, while the linux and windows archives are assembled on
+# Linux; the two runs publish one release between them, each writing a
+# SHA256SUMS over the archives it produced. Unset, every cell is built,
+# which is what a local dist/build.sh does.
+CELLS="${WT_CELLS:-darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64}"
+
+# WT_MACAPP_BUNDLE names a built WorktreeMenu.app to ship inside the
+# darwin archives, so one download installs the client, the coordinator
+# and the menu bar app. The bundle is built and signed before this script
+# runs — macapp/Scripts/bundle.sh, then macapp/Scripts/sign.sh where a
+# Developer ID is configured — and this script copies it without signing
+# it. Unset, the darwin archives carry the two binaries alone, as every
+# release before this one did.
+MACAPP_BUNDLE="${WT_MACAPP_BUNDLE:-}"
+if [ -n "$MACAPP_BUNDLE" ] && [ ! -d "$MACAPP_BUNDLE" ]; then
+	echo "build.sh: WT_MACAPP_BUNDLE names $MACAPP_BUNDLE, which is not a directory; point it at a built WorktreeMenu.app" >&2
+	exit 2
+fi
+
 OUT="$ROOT/dist/out"
 rm -rf "$OUT"
 mkdir -p "$OUT"
@@ -93,6 +115,9 @@ nothing else needs installing. This archive contains:
                              the binaries against it before copying
                              anything (--skip-verify overrides)
   install.sh                 the unix installer (install.ps1 on Windows)
+  WorktreeMenu.app           the macOS menu bar app (macOS archives only);
+                             install.sh puts it in /Applications and
+                             starts it, and --no-menubar skips it
 
 Install:
 
@@ -154,6 +179,17 @@ stage_for() { # goos goarch ext bin-ext
 	CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -ldflags "$LDFLAGS" -o "$DIR/wtd$BINEXT" ./cmd/wtd
 	cp "$OUT/README.txt" "$DIR/README.txt"
 
+	# The menu bar app rides in the darwin archives when one was built and
+	# handed to this script. It is a bundle directory rather than a file, so
+	# it is copied whole and named as a directory in the archive file list
+	# below. Its integrity is its own code signature, which install.sh
+	# checks with codesign, rather than a line in SHA256SUMS: a signature
+	# covers the whole bundle and says who signed it, which a digest of one
+	# file inside it does not.
+	if [ "$GOOS" = "darwin" ] && [ -n "$MACAPP_BUNDLE" ]; then
+		cp -R "$MACAPP_BUNDLE" "$DIR/WorktreeMenu.app"
+	fi
+
 	# Optional: sign the two darwin binaries with a Developer ID
 	# Application identity, the same kind macapp/Scripts/sign.sh signs the
 	# menu bar app with. Off by default and inert unless
@@ -199,9 +235,14 @@ stage_for() { # goos goarch ext bin-ext
 		# The file list stays explicit rather than archiving the directory
 		# whole: the archive holds what this script put there and nothing
 		# a stray file in the stage could add.
-		tar -C "$STAGE" -czf "$OUT/$NAME.tar.gz" \
-			"$NAME/wt$BINEXT" "$NAME/wtd$BINEXT" \
+		# The file list stays explicit; the menu bar app joins it only when
+		# this cell staged one.
+		set -- "$NAME/wt$BINEXT" "$NAME/wtd$BINEXT" \
 			"$NAME/install.sh" "$NAME/README.txt" "$NAME/SHA256SUMS"
+		if [ -d "$DIR/WorktreeMenu.app" ]; then
+			set -- "$@" "$NAME/WorktreeMenu.app"
+		fi
+		tar -C "$STAGE" -czf "$OUT/$NAME.tar.gz" "$@"
 		;;
 	zip)
 		cp "$ROOT/dist/install.ps1" "$DIR/install.ps1"
@@ -213,19 +254,22 @@ stage_for() { # goos goarch ext bin-ext
 	rm -rf "$STAGE"
 }
 
-build_cell() { # goos goarch
-	stage_for "$1" "$2" tar.gz ""
-}
-
-build_cell darwin arm64
-build_cell darwin amd64
-build_cell linux amd64
 # linux/arm64 is not only a Linux desktop cell: it is the architecture a
 # container built on an Apple Silicon machine runs, so the client that goes
 # into a local Docker image comes from here (RELEASE.md, "Container
 # clients"). Both linux cells therefore ship on every release.
-build_cell linux arm64
-stage_for windows amd64 zip .exe
+# The cells this run assembles come from CELLS, so a release can split
+# them across two runners and still produce one distribution.
+for cell in $CELLS; do
+	case "$cell" in
+	windows/*) stage_for "${cell%/*}" "${cell#*/}" zip .exe ;;
+	*/*) stage_for "${cell%/*}" "${cell#*/}" tar.gz "" ;;
+	*)
+		echo "build.sh: WT_CELLS entry \"$cell\" is not <os>/<arch>" >&2
+		exit 2
+		;;
+	esac
+done
 
 # The manifest: enough for a person (or a script) to verify every archive
 # byte-for-byte before installing it. sha256sum on Linux, shasum -a 256 on

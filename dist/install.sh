@@ -54,6 +54,7 @@ usage() {
 	cat <<'EOF'
 usage: install.sh [--prefix <dir>] [--addr <addr>] [--container-token <tok>]
                   [--allow-host <host>] [--client-only] [--skip-verify]
+                  [--no-menubar]
                   [--dry-run] [--uninstall]
 
   --prefix <dir>          install the binaries into <dir>/bin and write the
@@ -79,6 +80,10 @@ usage: install.sh [--prefix <dir>] [--addr <addr>] [--container-token <tok>]
                           through WT_ENDPOINT and WT_CLIENT_TOKEN. Refuses
                           alongside --addr and --container-token, which
                           configure a coordinator this install has not got.
+  --no-menubar            skip the macOS menu bar app, which a darwin
+                          archive otherwise installs into /Applications
+                          and starts. Ignored where the archive carries no
+                          app, under --client-only and under --prefix.
   --skip-verify           install without checking the binaries against the
                           archive's SHA256SUMS (deliberate override; the
                           check runs by default and refuses on a mismatch
@@ -103,6 +108,7 @@ DRY_RUN=""
 SKIP_VERIFY=""
 CLIENT_ONLY=""
 ALLOW_HOSTS=""
+NO_MENUBAR=""
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -133,6 +139,10 @@ while [ $# -gt 0 ]; do
 		;;
 	--client-only)
 		CLIENT_ONLY=1
+		shift
+		;;
+	--no-menubar)
+		NO_MENUBAR=1
 		shift
 		;;
 	--skip-verify)
@@ -292,6 +302,122 @@ supervisor_command() {
 	echo "$cmd"
 }
 
+# The menu bar app ships inside the darwin archives (dist/build.sh's
+# WT_MACAPP_BUNDLE), so one download installs the client, the coordinator
+# and the app. APP_SRC exists only in those archives, and every other
+# platform takes the path it always took.
+APP_SRC="$SCRIPT_DIR/WorktreeMenu.app"
+APP_DEST="/Applications/WorktreeMenu.app"
+
+# menubar_wanted reports whether this run installs the app. A --client-only
+# install is a container's and has no desktop. A --prefix install is
+# self-contained and loads nothing, and /Applications sits outside any
+# prefix. --no-menubar is the explicit opt-out.
+menubar_wanted() {
+	[ -z "$NO_MENUBAR" ] || return 1
+	[ -z "$CLIENT_ONLY" ] || return 1
+	[ -z "$REG_PREFIX" ] || return 1
+	[ "$(uname -s)" = "Darwin" ] || return 1
+	[ -d "$APP_SRC" ] || return 1
+}
+
+# menubar_removable reports whether an uninstall should remove the app. It
+# does not look at the archive: an uninstall drives the installed copy and
+# may be run from a distribution that never carried one.
+menubar_removable() {
+	[ -z "$CLIENT_ONLY" ] || return 1
+	[ -z "$REG_PREFIX" ] || return 1
+	[ "$(uname -s)" = "Darwin" ] || return 1
+	[ -d "$APP_DEST" ] || return 1
+}
+
+# quit_menubar ends a running copy so the bundle can be replaced. The
+# polite request goes first, but a background-only app (LSUIElement) does
+# not reliably answer it, and a process that keeps running while its bundle
+# is replaced underneath it is the failure this guards against: `open` then
+# re-activates the surviving process instead of starting what was just
+# installed, and the install looks like it worked while the old build is
+# still in the menu bar. So the request is given a few seconds and then the
+# process is terminated by name. The app holds no documents, so nothing is
+# lost either way.
+quit_menubar() {
+	osascript -e 'quit app "WorktreeMenu"' >/dev/null 2>&1 || true
+	i=0
+	while [ "$i" -lt 3 ]; do
+		menubar_running || return 0
+		sleep 1
+		i=$((i + 1))
+	done
+	pkill -f "$APP_DEST/Contents/MacOS/WorktreeMenu" >/dev/null 2>&1 || true
+	i=0
+	while [ "$i" -lt 3 ]; do
+		menubar_running || return 0
+		sleep 1
+		i=$((i + 1))
+	done
+	pkill -9 -f "$APP_DEST/Contents/MacOS/WorktreeMenu" >/dev/null 2>&1 || true
+	sleep 1
+}
+
+# menubar_running reports whether a copy is executing from the installed
+# bundle. The full path is the match, so a build running from somewhere
+# else — a developer's macapp/.build, say — is left alone.
+menubar_running() {
+	pgrep -f "$APP_DEST/Contents/MacOS/WorktreeMenu" >/dev/null 2>&1
+}
+
+# install_menubar replaces /Applications/WorktreeMenu.app. A failure here
+# is reported and does not fail the install: the binaries are in place and
+# the coordinator is registered by the time it runs.
+install_menubar() {
+	quit_menubar
+	rm -rf "$APP_DEST"
+	cp -R "$APP_SRC" "$APP_DEST"
+	# The bundle carries no SHA256SUMS line, because a code signature
+	# covers the whole bundle and says who signed it, which a digest of one
+	# file inside it does not. A bundle that does not verify is removed
+	# rather than left in /Applications for someone to launch.
+	if ! codesign --verify --deep --strict "$APP_DEST" >/dev/null 2>&1; then
+		rm -rf "$APP_DEST"
+		echo "install.sh: WorktreeMenu.app failed its code signature check and was not installed" >&2
+		echo "install.sh: wt, wtd and the coordinator are installed; re-download the archive for the app" >&2
+		return 1
+	fi
+	# Gatekeeper refuses an ad-hoc signed bundle that carries a quarantine
+	# attribute, which is what a browser download puts on the archive and
+	# what Archive Utility then propagates to everything it extracts. A
+	# Developer ID signature that has been notarized and stapled needs none
+	# of this, so the attribute is cleared only for the ad-hoc case.
+	if codesign -dv "$APP_DEST" 2>&1 | grep -q 'Signature=adhoc'; then
+		xattr -dr com.apple.quarantine "$APP_DEST" 2>/dev/null || true
+		echo "installed $APP_DEST (ad-hoc signed; cleared its quarantine attribute so it launches)"
+	else
+		echo "installed $APP_DEST (Developer ID signed)"
+	fi
+	# Starting it is part of installing it, and the check that it is
+	# actually running is the half that catches a bundle that launches and
+	# immediately exits.
+	open "$APP_DEST" >/dev/null 2>&1 || true
+	i=0
+	while [ "$i" -lt 5 ]; do
+		if menubar_running; then
+			return 0
+		fi
+		sleep 1
+		i=$((i + 1))
+	done
+	echo "note: the menu bar app did not start; open it from /Applications"
+}
+
+# uninstall_menubar quits the app and removes the bundle. The preference
+# the app stores and its launch-at-login registration are the user's, so
+# neither is touched.
+uninstall_menubar() {
+	quit_menubar
+	rm -rf "$APP_DEST"
+	echo "removed $APP_DEST"
+}
+
 if [ -n "$UNINSTALL" ]; then
 	# A --client-only uninstall removes the client and nothing else. It must
 	# not drive `wt daemon uninstall`: this install registered no
@@ -321,6 +447,9 @@ if [ -n "$UNINSTALL" ]; then
 			echo "wt is not installed in $BINDIR; nothing to uninstall"
 		fi
 		echo "would remove: $BINDIR/wt $BINDIR/wtd"
+		if menubar_removable; then
+			echo "would remove: $APP_DEST"
+		fi
 		echo "the store at ${WT_HOME:-$HOME/.wt} is never removed"
 		echo "dry run: nothing was changed"
 		exit 0
@@ -337,6 +466,9 @@ if [ -n "$UNINSTALL" ]; then
 	else
 		echo "wt is not installed in $BINDIR; nothing to uninstall"
 		echo "store: ${WT_HOME:-$HOME/.wt} — left alone (it is the only record of what is allocated on this machine)"
+	fi
+	if menubar_removable; then
+		uninstall_menubar
 	fi
 	rm -f "$BINDIR/wt" "$BINDIR/wtd"
 	echo "removed wt and wtd from $BINDIR"
@@ -374,6 +506,9 @@ if [ -n "$DRY_RUN" ]; then
 	echo "would run: $(supervisor_command)"
 	if [ -z "$REG_PREFIX" ]; then
 		echo "would run: $BINDIR/wt claude install --refresh-only"
+	fi
+	if menubar_wanted; then
+		echo "would install $APP_DEST and start it"
 	fi
 	echo "dry run: nothing was changed"
 	exit 0
@@ -454,6 +589,14 @@ if [ -z "$REG_PREFIX" ]; then
 	"$BINDIR/wt" claude install --refresh-only ||
 		echo "note: could not refresh the Claude Code hooks; run '$BINDIR/wt claude install' by hand"
 fi
+
+# The menu bar app last: it shells out to wt and renders what the
+# coordinator reports, so it starts against binaries already in place and
+# a coordinator already registered.
+if menubar_wanted; then
+	install_menubar || true
+fi
+
 
 echo "verify with: wt daemon status"
 case ":$PATH:" in
