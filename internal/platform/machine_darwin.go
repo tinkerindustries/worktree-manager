@@ -31,9 +31,9 @@ func (colimaRunner) Binary() string { return "colima" }
 // ErrMachineUnavailable; a profile in any state other than Running does not
 // count against the capacity guard.
 func (colimaRunner) List() ([]MachineInstance, error) {
-	bin, err := exec.LookPath("colima")
+	bin, err := LookHelper("colima")
 	if err != nil {
-		return nil, machineUnavailable("colima is not installed or not on PATH; install it with 'brew install colima docker', then re-run")
+		return nil, colimaUnavailable(err)
 	}
 	out, err := exec.Command(bin, "list", "--json").Output()
 	if err != nil {
@@ -52,9 +52,9 @@ func (colimaRunner) List() ([]MachineInstance, error) {
 // the create-and-start command. The child's output follows the
 // coordinator's stderr, which is where wtd's own log goes.
 func (colimaRunner) Start(name string) error {
-	bin, err := exec.LookPath("colima")
+	bin, err := LookHelper("colima")
 	if err != nil {
-		return machineUnavailable("colima is not installed or not on PATH; install it with 'brew install colima docker', then re-run")
+		return colimaUnavailable(err)
 	}
 	cmd := exec.Command(bin, "start", name)
 	cmd.Stdout = os.Stderr
@@ -64,9 +64,9 @@ func (colimaRunner) Start(name string) error {
 
 // Delete runs the documented destroy command.
 func (colimaRunner) Delete(name string) error {
-	bin, err := exec.LookPath("colima")
+	bin, err := LookHelper("colima")
 	if err != nil {
-		return machineUnavailable("colima is not installed or not on PATH; install it with 'brew install colima docker', then re-run")
+		return colimaUnavailable(err)
 	}
 	out, err := exec.Command(bin, "delete", name, "--data", "--force").CombinedOutput()
 	if err != nil {
@@ -78,4 +78,14 @@ func (colimaRunner) Delete(name string) error {
 // DeleteCommand is the documented bypass (B4.5).
 func (colimaRunner) DeleteCommand(name string) string {
 	return fmt.Sprintf("colima delete %s --data --force", name)
+}
+
+// colimaUnavailable turns a failed lookup into ErrMachineUnavailable,
+// naming the locations searched. Homebrew installs colima into
+// /opt/homebrew/bin, which is not on the PATH launchd gives the
+// coordinator, so "not on PATH" alone was never the useful half.
+func colimaUnavailable(err error) error {
+	return machineUnavailable(err.Error() +
+		"; install it with 'brew install colima docker' if it is absent, " +
+		"or set " + HelperDirsEnv + " to the directory holding it")
 }

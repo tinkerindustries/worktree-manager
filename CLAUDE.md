@@ -169,7 +169,12 @@ configuration; neither binary branches on repo identity.
   spelling an external tool accepts — the identity on unix, and the strip
   of the extended-length prefix on Windows, which git rejects as an
   argument), `IsAddrInUse` (a bind's address-taken answer, whose errno
-  differs between unix and Winsock), `FileIdentity` (the dev/inode/mtime
+  differs between unix and Winsock), `LookHelper` (the one resolution of an
+  external helper binary — docker, colima, gh — searching the process PATH
+  first and the platform's known install directories only when that fails,
+  because a supervisor-started `wtd` does not have the user's shell PATH;
+  the fallback never shadows what PATH already resolves, and
+  `WT_HELPER_DIRS` replaces the built-in list), `FileIdentity` (the dev/inode/mtime
   the guard cache validates against, from stat on unix and
   GetFileInformationByHandle on Windows), the
   listen-address and container-token rails (`ValidateListenAddr`,
@@ -345,11 +350,22 @@ configuration; neither binary branches on repo identity.
 
 ## Environment
 
-The six variables are `WT_ENDPOINT` (the coordinator's base URL, e.g.
+The seven variables are `WT_ENDPOINT` (the coordinator's base URL, e.g.
 `http://127.0.0.1:7833`), `WT_HOME`, `WT_STANDALONE`,
-`WT_CLIENT_EPHEMERAL` (=1), `WT_CLIENT_TOKEN` (the container token) and
+`WT_CLIENT_EPHEMERAL` (=1), `WT_CLIENT_TOKEN` (the container token),
 `WT_GUARD_CACHE`, the per-session classification cache directory the
-generated guard hook sets.
+generated guard hook sets, and `WT_HELPER_DIRS`.
+
+`WT_HELPER_DIRS` replaces the built-in list of directories
+`platform.LookHelper` searches after PATH when it resolves docker, colima
+and gh. It exists because `wtd` is started by a supervisor, and a
+supervisor's PATH is not a shell's: launchd gives a LaunchAgent
+`/usr/bin:/bin:/usr/sbin:/sbin`, which holds git and lsof but not the
+`/usr/local/bin` Docker Desktop symlinks its CLI into nor the
+`/opt/homebrew/bin` Homebrew puts colima and gh in. The built-in list
+covers the usual install locations; this variable covers the ones it
+cannot know about. An empty value is a real answer — search nothing beyond
+PATH — which is how a test says a binary is absent.
 
 `WT_HOME` is read by **both** binaries, which is the one change the HTTP
 rearchitecture made to this contract. The client reads only

@@ -352,3 +352,64 @@ func TestEnsurePrivateDir(t *testing.T) {
 		t.Errorf("refusal does not name the path %q: %v", bad, err)
 	}
 }
+
+// TestLaunchdPlistStructure covers launchdPlist, which had no test at all.
+// It pins the keys the agent depends on and the argument-per-element
+// shape: each flag value is its own <string>, which is why a container
+// token needs no escaping beyond the XML text rules.
+func TestLaunchdPlistStructure(t *testing.T) {
+	got := string(launchdPlist("/opt/wt/bin/wtd", "127.0.0.1:7833", "", nil))
+
+	for _, want := range []string{
+		"<key>Label</key>",
+		"<string>" + LaunchAgentLabel + "</string>",
+		"<key>ProgramArguments</key>",
+		"<string>/opt/wt/bin/wtd</string>",
+		"<string>--addr</string>",
+		"<string>127.0.0.1:7833</string>",
+		"<key>RunAtLoad</key>",
+		"<key>KeepAlive</key>",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("plist does not contain %q:\n%s", want, got)
+		}
+	}
+	// An empty token must not be emitted: an empty --container-token
+	// admits no container while looking like it does.
+	if strings.Contains(got, "--container-token") {
+		t.Errorf("plist carries --container-token with no token set:\n%s", got)
+	}
+}
+
+// TestLaunchdPlistEscapesArguments proves the XML text rules are applied
+// to every argument, so a token or an allowed host carrying & or < cannot
+// produce a plist launchd refuses to parse.
+func TestLaunchdPlistEscapesArguments(t *testing.T) {
+	got := string(launchdPlist("/opt/wt/bin/wtd", "", "a&b<c", []string{"h>st"}))
+
+	for _, want := range []string{
+		"<string>a&amp;b&lt;c</string>",
+		"<string>--allow-host</string>",
+		"<string>h&gt;st</string>",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("plist does not contain %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "--addr") {
+		t.Errorf("plist carries --addr with no address set:\n%s", got)
+	}
+}
+
+// TestLaunchdPlistSetsNoEnvironment records the deliberate absence of an
+// EnvironmentVariables key. The docker-on-PATH bug was fixed by resolving
+// helper binaries at call time (platform.LookHelper), not by baking a PATH
+// into the agent — a plist PATH would be a second source of truth, fixed
+// at install time, that the call-time list would drift from. If this test
+// is changed, change helper.go's rationale with it.
+func TestLaunchdPlistSetsNoEnvironment(t *testing.T) {
+	got := string(launchdPlist("/opt/wt/bin/wtd", "", "", nil))
+	if strings.Contains(got, "EnvironmentVariables") {
+		t.Errorf("plist sets EnvironmentVariables; helper resolution is LookHelper's job:\n%s", got)
+	}
+}
