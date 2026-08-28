@@ -362,8 +362,13 @@ func TestCreateUnadoptedKeepsClaudeCodesBehaviour(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr:\n%s", code, stderr)
 	}
-	want := filepath.Join(root, ".claude", "worktrees", "plain")
-	if got := strings.TrimSpace(stdout); got != want {
+	// Compared with the separators normalised. The unadopted branch builds
+	// the path in the shell, so on Windows it carries git's forward slashes,
+	// while the adopted branch gets a native path back from `wt spec path`.
+	// Both name the same directory and Windows accepts either, so the
+	// difference is a spelling and not something to assert on.
+	want := filepath.ToSlash(filepath.Join(root, ".claude", "worktrees", "plain"))
+	if got := filepath.ToSlash(strings.TrimSpace(stdout)); got != want {
 		t.Errorf("path = %q, want %q", got, want)
 	}
 	if !strings.Contains(stderr, "branching plain from main") {
