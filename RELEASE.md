@@ -31,6 +31,13 @@ the checkout, and what it derives is always semver: an exact tag is that
 release (`0.2.0`), a commit past one is `0.2.0-dev.7+gabc1234`, and a
 checkout with no tags is `0.0.0-dev+g<commit>`.
 
+The menu bar app is the exception: `macapp/Resources/Info.plist` carries
+`CFBundleShortVersionString` and `CFBundleVersion` as literals and nothing
+derives them. `bundle.sh` copies the file as it stands and `sign.sh
+--version` only names the zip, so both are bumped by hand in the commit
+that gets tagged. The app reports its own version and `wt`'s separately in
+its menu, which is where a missed bump shows up.
+
 ### The three contract versions
 
 These version independently of the release, and each follows the same
@@ -59,7 +66,11 @@ old binary pair must never be able to half-read a new one.
 **The trigger is pushing the tag.** Nothing else publishes.
 
 ```sh
-# 1. the full gate set passes on main
+# 1. bump macapp/Resources/Info.plist — CFBundleShortVersionString to the
+#    new version and CFBundleVersion to the next integer. Nothing stamps
+#    them, so the app reports the previous release until you do.
+
+# 2. the full gate set passes on main
 go build ./... && go test -race ./... && go vet ./... && staticcheck ./...
 gofmt -l cmd internal          # must print nothing
 for p in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64; do
@@ -72,7 +83,7 @@ go run ./cmd/wtgen
 go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate
 git status --porcelain   # must print nothing
 
-# 2. tag and push — this runs .github/workflows/release.yml
+# 3. tag and push — this runs .github/workflows/release.yml
 git tag -a v0.2.0 -m "Worktree Manager 0.2.0"
 git push origin v0.2.0
 ```
