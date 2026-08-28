@@ -11,7 +11,6 @@ package platform
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 )
 
@@ -31,13 +30,13 @@ func (colimaRunner) Binary() string { return "colima" }
 // ErrMachineUnavailable; a profile in any state other than Running does not
 // count against the capacity guard.
 func (colimaRunner) List() ([]MachineInstance, error) {
-	bin, err := LookHelper("colima")
+	cmd, err := HelperCommand("colima", "list", "--json")
 	if err != nil {
 		return nil, colimaUnavailable(err)
 	}
-	out, err := exec.Command(bin, "list", "--json").Output()
+	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("colima list: %w", err)
+		return nil, HelperError("colima list", err)
 	}
 	instances, err := parseColimaList(out)
 	if err != nil {
@@ -52,11 +51,10 @@ func (colimaRunner) List() ([]MachineInstance, error) {
 // the create-and-start command. The child's output follows the
 // coordinator's stderr, which is where wtd's own log goes.
 func (colimaRunner) Start(name string) error {
-	bin, err := LookHelper("colima")
+	cmd, err := HelperCommand("colima", "start", name)
 	if err != nil {
 		return colimaUnavailable(err)
 	}
-	cmd := exec.Command(bin, "start", name)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	return cmd.Start()
@@ -64,11 +62,11 @@ func (colimaRunner) Start(name string) error {
 
 // Delete runs the documented destroy command.
 func (colimaRunner) Delete(name string) error {
-	bin, err := LookHelper("colima")
+	cmd, err := HelperCommand("colima", "delete", name, "--data", "--force")
 	if err != nil {
 		return colimaUnavailable(err)
 	}
-	out, err := exec.Command(bin, "delete", name, "--data", "--force").CombinedOutput()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("colima delete %s: %s", name, strings.TrimSpace(string(out)))
 	}

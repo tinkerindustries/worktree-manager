@@ -1001,6 +1001,10 @@ The six rules of `docs/ARCHITECTURE.md` §8.6, stated as invariants:
   only symptom that case has: the scheduled sweep logs its `gh` skip and
   reports nothing, and a driver's refusal arrives only when somebody runs
   the verb that needs the helper. The remedy names `WT_HELPER_DIRS`.
+  Doctor asks the same question the drivers do: every call site that runs
+  a helper goes through `platform.HelperCommand`, which resolves the
+  binary and prepends its own directory to the child's PATH, so a helper
+  doctor reports reachable is one the drivers can run.
 - The five environment variables read anywhere are `WT_ENDPOINT` (the
   coordinator's base URL), `WT_HOME`, `WT_STANDALONE`,
   `WT_CLIENT_EPHEMERAL` (`=1`) and `WT_CLIENT_TOKEN` (the container

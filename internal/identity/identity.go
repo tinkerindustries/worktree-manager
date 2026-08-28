@@ -12,7 +12,6 @@ package identity
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -249,11 +248,16 @@ func gitPath(cwd string, args ...string) (string, error) {
 // runGit runs one git command with cwd as the working directory and returns
 // its trimmed stdout. A missing git binary is reported as GitNotFoundError,
 // naming the install command.
+//
+// The lookup is platform.HelperCommand's, so a git that lives only in a
+// known install directory is found here as well as by the coordinator's
+// doctor, and the child is given a PATH leading with the directory git came
+// from — git runs its own subcommands and credential helpers from there.
 func runGit(cwd string, args ...string) (string, error) {
-	if _, err := exec.LookPath("git"); err != nil {
+	cmd, err := platform.HelperCommand("git", args...)
+	if err != nil {
 		return "", &GitNotFoundError{Err: err}
 	}
-	cmd := exec.Command("git", args...)
 	cmd.Dir = cwd
 	out, err := cmd.Output()
 	if err != nil {

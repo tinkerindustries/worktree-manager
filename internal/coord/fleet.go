@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -432,7 +431,7 @@ func driftRemedy(f driver.Finding, res *spec.Resource, worktree string) string {
 // repo's main checkout (drift.go).
 func (h *Handler) doctorRepos(reg store.RegistryFile, repos map[string]bool, findings *[]api.DoctorFinding, notes *[]string) {
 	for common := range repos {
-		out, err := exec.Command("git", "-C", common, "worktree", "list", "--porcelain").Output()
+		out, err := gitOut("-C", common, "worktree", "list", "--porcelain")
 		if err != nil {
 			*notes = append(*notes, fmt.Sprintf("the worktree list of %s could not be read: %v", common, err))
 			continue
@@ -941,7 +940,7 @@ func lastSeenOf(clients store.ClientsFile, identity, kind string) string {
 // worktree path — the input to `git worktree list`, which names every
 // worktree of the repo.
 func gitCommonDir(path string) (string, error) {
-	out, err := exec.Command("git", "-C", path, "rev-parse", "--git-common-dir").Output()
+	out, err := gitOut("-C", path, "rev-parse", "--git-common-dir")
 	if err != nil {
 		return "", fmt.Errorf("git rev-parse --git-common-dir in %s: %w", path, err)
 	}
@@ -1044,6 +1043,23 @@ func (h *Handler) doctorMachines(appSpecs map[string]*spec.Spec, findings *[]api
 type coordinatorHelper struct {
 	binary string
 	needed string
+}
+
+// gitOut runs one git command for the coordinator's own repo reads and
+// returns its stdout. git is resolved through platform.HelperCommand like
+// every other helper, so what doctor reports reachable and what these
+// scans can actually run are the same binary; the error carries git's
+// stderr rather than a bare exit status.
+func gitOut(args ...string) ([]byte, error) {
+	cmd, err := platform.HelperCommand("git", args...)
+	if err != nil {
+		return nil, err
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, platform.HelperError("git "+strings.Join(args, " "), err)
+	}
+	return out, nil
 }
 
 // lookHelper resolves a helper the way every driver does.
