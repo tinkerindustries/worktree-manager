@@ -1,10 +1,13 @@
 # CLAUDE.md — the artefact template directory
 
 This directory holds the templates the phase-7 onboarding skill renders
-into an adopted repository: the `worktree-create` and `worktree-remove`
-skills, the `SessionStart` tripwire and the opt-in `PreToolUse` guard
-hook, the reference doc, and the `CLAUDE.md` tripwire. `internal/artefact`
-embeds these files and substitutes nothing but the managed block.
+into an adopted repository: the `SessionStart` tripwire and the opt-in
+`PreToolUse` guard hook, the reference doc, and the `CLAUDE.md` tripwire.
+`internal/artefact` embeds these files and substitutes nothing but the
+managed block. Creating and removing a worktree are not rendered here:
+Claude Code's `WorktreeCreate` and `WorktreeRemove` hooks are registered
+once per machine by `wt claude install` and answer for every repository
+(`internal/claudehook`).
 
 Rules that bind this directory and everything rendered from it:
 

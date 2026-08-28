@@ -5,4 +5,11 @@ dist/out/
 macapp/.build/
 
 # worktrees created under the repo's default location (never committed)
-.claude/worktrees/
+/.claude/worktrees/
+
+# per-worktree environment, written by `wt init` (never committed)
+/wt-env.json
+/.env
+/.wt-dev/
+/bin/
+/wtd.log

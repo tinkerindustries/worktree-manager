@@ -149,12 +149,15 @@ configuration; neither binary branches on repo identity.
   regeneration, the unbalanced-marker refusal, append-to-a-markerless-file
   (the CLAUDE.md tripwire joining a repo's own text).
 - `internal/artefact` — the phase-7 generated artefacts, rendered per
-  repo: the `worktree-create`/`worktree-remove` skills, the SessionStart
-  tripwire, the opt-in PreToolUse guard hook, the settings entries, the
-  reference doc, the CLAUDE.md tripwire, and the briefing renderer (which
-  refuses with the descriptor missing). Bodies are stable; the managed
-  block records the spec fields each file came from. Not a verb — the
-  onboarding skill and the tests drive it; `cmd/wt` never imports it.
+  repo: the SessionStart tripwire, the opt-in PreToolUse guard hook, the
+  settings entries, the reference doc, the CLAUDE.md tripwire, and the
+  briefing renderer (which refuses with the descriptor missing). Creating
+  and removing a worktree are not among them — `internal/claudehook`'s
+  two hook scripts are registered once per machine and answer for every
+  repository, so a per-repo skill would be a second implementation of the
+  same thing. Bodies are stable; the managed block records the spec
+  fields each file came from. Not a verb — the onboarding skill and the
+  tests drive it; `cmd/wt` never imports it.
 - `internal/platform` — M8: symlink-resolved path realisation (on Windows
   via `GetFinalPathNameByHandleW`, which also canonicalises long paths and
   mapped drives), `SamePath` (the one do-these-name-the-same-directory
@@ -376,3 +379,15 @@ token in shell history.
 `PLAN-SCOPE.md` (frozen scope) → `plan.md` → `docs/ARCHITECTURE.md` →
 `docs/design/03-drivers.md` (authoritative for the spec schema) → the
 other module documents as needed. `docs/` is read-only for every phase.
+# --- managed by wt; edits below are overwritten ---
+# wt-field: app=worktree-manager
+# wt-field: band coord=7840
+# wt-field: descriptor=wt-env.json
+# wt-field: resources=coord, store
+# wt-field: shared=~/.wt/wt.db and 127.0.0.1:7834, ~/.local/bin/wt and ~/.local/bin/wtd, ~/.claude/settings.json, the launchd registration (dev.mrgeoffrich.worktreemanager)
+# wt-field: worktrees=.claude/worktrees/{slug}
+This repository uses per-worktree environments.
+- Never hardcode a port or a path: read them with `wt show`.
+- Something else creates the worktree; `wt init` attaches to it.
+See docs/wt.md for the full reference.
+# --- end ---

@@ -119,10 +119,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func startRefreshTimer(interval: TimeInterval) {
         refreshTimer?.invalidate()
         currentRefreshInterval = interval
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.refresh(updatingOpenMenu: true)
-            }
+        refreshTimer = scheduleOnCommonModes(interval: interval) { [weak self] in
+            self?.refresh(updatingOpenMenu: true)
         }
     }
 
@@ -132,11 +130,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func startDoctorTimer(interval: TimeInterval) {
         doctorTimer?.invalidate()
         let doctorInterval = interval * Self.doctorIntervalMultiplier
-        doctorTimer = Timer.scheduledTimer(withTimeInterval: doctorInterval, repeats: true) { [weak self] _ in
+        doctorTimer = scheduleOnCommonModes(interval: doctorInterval) { [weak self] in
+            self?.refreshDoctorAndVersion(updatingOpenMenu: true)
+        }
+    }
+
+    /// Schedules a repeating timer in `.common` run loop modes rather
+    /// than the `.default` mode `Timer.scheduledTimer` uses. An open
+    /// menu puts the main run loop into event-tracking mode, so a
+    /// default-mode timer stops firing for exactly as long as the menu
+    /// is on screen — the one time the user is looking at it. The
+    /// refresh then only ever happened on open, and a menu held open
+    /// never ticked.
+    private func scheduleOnCommonModes(
+        interval: TimeInterval,
+        body: @escaping @MainActor () -> Void
+    ) -> Timer {
+        let timer = Timer(timeInterval: interval, repeats: true) { _ in
             Task { @MainActor in
-                self?.refreshDoctorAndVersion(updatingOpenMenu: true)
+                body()
             }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        return timer
     }
 
     /// Restarts both timers when the preferences window has changed the
@@ -230,6 +246,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func render(into menu: NSMenu) {
         menu.removeAllItems()
+        // Every item here decides its own enabled state: a stale row,
+        // an app header, the placeholder lines. AppKit's automatic
+        // enabling recomputes all of them from targets and actions and
+        // would disagree.
+        menu.autoenablesItems = false
 
         if let snapshot = lastSnapshot {
             appendEntries(snapshot.entries, to: menu)
@@ -325,9 +346,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case .row(let row):
                 menu.addItem(menuItem(for: row))
             case .group(let group):
+                // The header carries the app's submenu, so it stays
+                // enabled: AppKit will not open the submenu of a
+                // disabled item, which left every app's entries
+                // unreachable. "Disabled" in PLAN.md phase 2 means the
+                // header has no click action of its own, and leaving
+                // `action` nil is what provides that.
                 let header = NSMenuItem(title: group.headerTitle, action: nil, keyEquivalent: "")
-                header.isEnabled = false
                 let submenu = NSMenu()
+                submenu.autoenablesItems = false
                 for row in group.rows {
                     submenu.addItem(menuItem(for: row))
                 }

@@ -212,8 +212,6 @@ func copyFixtureTree(t *testing.T, dst string, withSpec bool) {
 	}
 	for _, rel := range []string{
 		"wt.yaml", "CLAUDE.md", ".gitignore",
-		".claude/skills/worktree-create/SKILL.md",
-		".claude/skills/worktree-remove/SKILL.md",
 		".claude/hooks/wt-session-start.sh",
 		".claude/hooks/wt-guard.sh",
 		".claude/settings.json",
@@ -476,17 +474,17 @@ func TestAcceptancePlainAppAdoptedThroughTheSkill(t *testing.T) {
 	// Phase 5 — generate, idempotently: the fixture already carries the
 	// artefacts; regeneration must preserve a hand edit outside the block
 	// (exit criterion 4, end to end) and refresh the block.
-	skillPath := filepath.Join(env.main, filepath.FromSlash(artefact.SkillCreatePath))
-	data, err := os.ReadFile(skillPath)
+	docPath := filepath.Join(env.main, filepath.FromSlash(artefact.ReferencePath))
+	data, err := os.ReadFile(docPath)
 	if err != nil {
-		t.Fatalf("the fixture's create skill is missing: %v", err)
+		t.Fatalf("the fixture's reference doc is missing: %v", err)
 	}
-	edited := strings.Replace(string(data), "Never auto-stash, never auto-checkout, never\n  silently merge",
-		"Never auto-stash, never auto-checkout, never\n  silently merge — and always ask before force-pushing", 1)
+	edited := strings.Replace(string(data), "## Why",
+		"## Why\n\nA sentence the developer added by hand.", 1)
 	if edited == string(data) {
 		t.Fatal("the hand edit did not match the generated text")
 	}
-	if err := os.WriteFile(skillPath, []byte(edited), 0o644); err != nil {
+	if err := os.WriteFile(docPath, []byte(edited), 0o644); err != nil {
 		t.Fatalf("writing the hand edit: %v", err)
 	}
 	sp := readFixtureSpec(t, env.main)
@@ -497,11 +495,11 @@ func TestAcceptancePlainAppAdoptedThroughTheSkill(t *testing.T) {
 	if err := artefact.Apply(env.main, files); err != nil {
 		t.Fatalf("applying the artefacts: %v", err)
 	}
-	after, err := os.ReadFile(skillPath)
+	after, err := os.ReadFile(docPath)
 	if err != nil {
-		t.Fatalf("re-reading the skill: %v", err)
+		t.Fatalf("re-reading the reference doc: %v", err)
 	}
-	if !strings.Contains(string(after), "always ask before force-pushing") {
+	if !strings.Contains(string(after), "A sentence the developer added by hand.") {
 		t.Errorf("the hand edit did not survive regeneration")
 	}
 	gitT(t, env.main, "add", ".")

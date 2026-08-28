@@ -1,8 +1,12 @@
 // Package artefact renders the phase-7 generated artefacts (M7,
-// 07-agent-surface.md): the `worktree-create` and `worktree-remove`
-// skills, the SessionStart tripwire, the opt-in PreToolUse guard hook,
-// the `.claude/settings.json` entries, the reference doc and the
-// CLAUDE.md tripwire. Every file is generated per adopted repo — the
+// 07-agent-surface.md): the SessionStart tripwire, the opt-in PreToolUse
+// guard hook, the `.claude/settings.json` entries, the reference doc and
+// the CLAUDE.md tripwire. Creating and removing a worktree are not among
+// them. Claude Code's own WorktreeCreate and WorktreeRemove hooks are
+// registered once per machine by `wt claude install` and answer for
+// every repository, so a per-repo skill would be a second implementation
+// of what the hooks already do (internal/claudehook).
+// Every file is generated per adopted repo — the
 // templates under templates/ are the stable instruction text, and the
 // managed block each file closes with records the spec fields it came
 // from (app, descriptor filename, resources, band bases, shared names).
@@ -12,8 +16,8 @@
 // 09-onboarding.md §5), and `wt doctor` compares the recorded fields
 // against the current spec and band ledger, reporting the generated file
 // and the field that moved. Anything a rendered file needs at runtime —
-// the tripwire's descriptor filename, the skills' facts — is therefore
-// read from the block, never baked into the body.
+// the tripwire's descriptor filename, the reference doc's facts — is
+// therefore read from the block, never baked into the body.
 //
 // This package is not a verb: the onboarding skill (a document) describes
 // the same files, and the acceptance tests drive this renderer as the
@@ -37,12 +41,6 @@ import (
 // The embedded templates: the stable bodies of the generated files. The
 // managed block is appended by Render.
 //
-//go:embed templates/skill-create.md
-var skillCreateTemplate []byte
-
-//go:embed templates/skill-remove.md
-var skillRemoveTemplate []byte
-
 //go:embed templates/hook-session-start.sh
 var hookSessionStartTemplate []byte
 
@@ -87,13 +85,11 @@ type Options struct {
 // and doctor share these through this package; the settings file is the
 // one JSON artefact and carries no managed block.
 const (
-	SkillCreatePath = ".claude/skills/worktree-create/SKILL.md"
-	SkillRemovePath = ".claude/skills/worktree-remove/SKILL.md"
-	HookTripwire    = ".claude/hooks/wt-session-start.sh"
-	HookGuard       = ".claude/hooks/wt-guard.sh"
-	SettingsPath    = ".claude/settings.json"
-	ReferencePath   = "docs/wt.md"
-	CLAUDEKPath     = "CLAUDE.md"
+	HookTripwire  = ".claude/hooks/wt-session-start.sh"
+	HookGuard     = ".claude/hooks/wt-guard.sh"
+	SettingsPath  = ".claude/settings.json"
+	ReferencePath = "docs/wt.md"
+	CLAUDEKPath   = "CLAUDE.md"
 )
 
 // Render produces every generated artefact for a spec and its band. band
@@ -107,16 +103,6 @@ func Render(sp *spec.Spec, band map[string]int, opts Options) ([]File, error) {
 	fields := FieldsFor(sp, band)
 
 	files := []File{
-		{
-			Path:   SkillCreatePath,
-			Body:   bytes.TrimSpace(skillCreateTemplate),
-			Fields: fields,
-		},
-		{
-			Path:   SkillRemovePath,
-			Body:   bytes.TrimSpace(skillRemoveTemplate),
-			Fields: fields,
-		},
 		{
 			Path:   HookTripwire,
 			Body:   bytes.TrimSpace(hookSessionStartTemplate),

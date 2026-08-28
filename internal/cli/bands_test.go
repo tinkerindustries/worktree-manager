@@ -254,6 +254,10 @@ func TestRunBandsReserveAppModeUsage(t *testing.T) {
 // TestRunBandsReserveNotAdopted: reserve needs the committed spec; outside
 // a repository it reports not adopted with exit 4, never a socket error.
 func TestRunBandsReserveNotAdopted(t *testing.T) {
+	// A directory with no wt.yaml above it. The package directory no
+	// longer qualifies: this repository committed its own spec at the
+	// root, so the walk-up finds one from anywhere inside the tree.
+	chdir(t, t.TempDir())
 	t.Setenv("WT_ENDPOINT", "http://127.0.0.1:1")
 	code, _, stderr := runCLI(t, "bands", "reserve", "--base", "api=4200")
 	if code != ExitUnavailable {

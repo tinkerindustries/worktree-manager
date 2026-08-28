@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": ".claude/hooks/wt-guard.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": "Edit|Write|MultiEdit"
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": ".claude/hooks/wt-session-start.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ]
+  }
+}
