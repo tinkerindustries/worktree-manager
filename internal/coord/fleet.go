@@ -201,6 +201,7 @@ func (h *Handler) doctor(s *Session, req *api.Request) *api.Response {
 	h.doctorCeilings(appSpecs, occupiedByApp, &findings)
 	h.doctorReapers(appSpecs, &findings)
 	h.doctorMachines(appSpecs, &findings, &notes)
+	h.doctorHelpers(appSpecs, &findings, &notes)
 
 	if len(notes) > 0 {
 		sort.Strings(notes)
@@ -1036,4 +1037,92 @@ func (h *Handler) doctorMachines(appSpecs map[string]*spec.Spec, findings *[]api
 			})
 		}
 	}
+}
+
+// coordinatorHelper is one binary the coordinator shells out to, with the
+// sentence naming what stops working when it cannot be reached.
+type coordinatorHelper struct {
+	binary string
+	needed string
+}
+
+// lookHelper resolves a helper the way every driver does.
+func (h *Handler) lookHelper(bin string) (string, error) {
+	if h.LookHelper != nil {
+		return h.LookHelper(bin)
+	}
+	return platform.LookHelper(bin)
+}
+
+// doctorHelpers reports the helper binaries the coordinator cannot reach.
+//
+// platform.LookHelper resolves a helper at call time — this process's
+// PATH, then the known install directories — which is what stops a
+// supervised coordinator reporting docker missing on a machine where
+// docker runs. It cannot know about a genuinely custom install location,
+// and that residue is what this finding is for: the sweep's gh failure
+// logged its skip and reported nothing, and a driver's refusal only
+// arrives when somebody runs the verb that needs the helper. Doctor asks
+// before either.
+//
+// The question is asked in the coordinator's own process, because the
+// coordinator's environment is the one that decides. It cannot tell an
+// uninstalled helper from an unreachable one, and the remedy says both.
+//
+// Which helpers are checked follows from what the adopted specs declare.
+// git, gh and lsof are always checked — the repo scans, the scheduled
+// cleanup sweep and `wt ports scan` need them whatever a spec says.
+// docker is checked when some spec declares a namespace or cidr resource,
+// and the machine runner when some spec declares a machine resource.
+func (h *Handler) doctorHelpers(appSpecs map[string]*spec.Spec, findings *[]api.DoctorFinding, notes *[]string) {
+	helpers := []coordinatorHelper{
+		{"git", "reading repositories: the doctor repo scan, the generated-artefact drift check, and every worktree safety check rm and cleanup make"},
+		{"gh", "the scheduled cleanup sweep, which needs a merged pull request before it removes anything"},
+		{"lsof", "'wt ports scan', which reports the machine's listening sockets"},
+	}
+	var wantsDocker, wantsMachine bool
+	for _, sp := range appSpecs {
+		for i := range sp.Resources {
+			switch sp.Resources[i].Type {
+			case "namespace", "cidr":
+				wantsDocker = true
+			case "machine":
+				wantsMachine = true
+			}
+		}
+	}
+	if wantsDocker {
+		helpers = append(helpers, coordinatorHelper{"docker",
+			"the namespace and cidr drivers, which allocate and tear down this repository's compose projects and networks"})
+	}
+	if wantsMachine {
+		if bin := h.machine().Binary(); bin != "" {
+			helpers = append(helpers, coordinatorHelper{bin,
+				"the machine driver, which starts and destroys this repository's per-worktree VMs"})
+		} else {
+			*notes = append(*notes, "the machine helper check was skipped: this platform has no VM runner")
+		}
+	}
+
+	var missing []string
+	for _, hp := range helpers {
+		if _, err := h.lookHelper(hp.binary); err != nil {
+			missing = append(missing, fmt.Sprintf("%s (needed for %s)", hp.binary, hp.needed))
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+	sort.Strings(missing)
+	where := "nothing beyond it"
+	if dirs := platform.HelperDirs(); len(dirs) > 0 {
+		where = strings.Join(dirs, ", ")
+	}
+	*findings = append(*findings, api.DoctorFinding{
+		Level: "warning",
+		Message: fmt.Sprintf("the coordinator cannot reach %d of the helper binaries it shells out to: %s. It searched its own PATH and then %s",
+			len(missing), strings.Join(missing, ", "), where),
+		Remedy: fmt.Sprintf("if you can run the helper in your own shell, it is installed somewhere the coordinator does not search: set %s to the directory holding it and restart the coordinator. If you cannot run it either, install it first",
+			platform.HelperDirsEnv),
+	})
 }

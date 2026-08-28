@@ -972,6 +972,16 @@ The six rules of `docs/ARCHITECTURE.md` §8.6, stated as invariants:
   free port, pins it, and says which, so a second user on one machine
   needs no manual step. A registration carrying the token is written 0600
   on unix, and the token is never echoed.
+- `doctor` reports the helper binaries the coordinator cannot reach,
+  resolved through `platform.LookHelper` in the coordinator's own
+  process. `git`, `gh` and `lsof` are checked always; `docker` when some
+  spec declares a `namespace` or `cidr` resource, and the machine
+  runner's binary when some spec declares a `machine` resource. This is
+  the residue `LookHelper` cannot cover — a helper installed somewhere
+  outside both PATH and the known install directories — and it is the
+  only symptom that case has: the scheduled sweep logs its `gh` skip and
+  reports nothing, and a driver's refusal arrives only when somebody runs
+  the verb that needs the helper. The remedy names `WT_HELPER_DIRS`.
 - The five environment variables read anywhere are `WT_ENDPOINT` (the
   coordinator's base URL), `WT_HOME`, `WT_STANDALONE`,
   `WT_CLIENT_EPHEMERAL` (`=1`) and `WT_CLIENT_TOKEN` (the container

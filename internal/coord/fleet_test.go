@@ -12,12 +12,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +27,7 @@ import (
 	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/descriptor"
 	"github.com/mrgeoffrich/worktree-manager/internal/driver"
+	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 	_ "modernc.org/sqlite"
@@ -1199,4 +1202,113 @@ func TestDoctorPinnedNameFinding(t *testing.T) {
 		}
 	}
 	t.Errorf("no pinned-name finding: %s", findingsDump(res))
+}
+
+// TestDoctorHelperVisibility: doctor reports the helper binaries the
+// coordinator cannot reach.
+//
+// platform.LookHelper covers the common case — a supervisor's thin PATH
+// plus the known install directories — and cannot cover a custom install
+// location. What is left has no other symptom: the scheduled sweep logs
+// its gh skip and reports nothing, and a driver's refusal only arrives
+// when somebody runs the verb that needs the helper.
+func TestDoctorHelperVisibility(t *testing.T) {
+	newHarness := func(t *testing.T, missing map[string]bool, seen *[]string) (*Harness, *Session) {
+		t.Helper()
+		h := NewHarness(t, filepath.Join(tempRoot(t), "wt"))
+		h.H.LookHelper = func(bin string) (string, error) {
+			*seen = append(*seen, bin)
+			if missing[bin] {
+				return "", errors.New("not found on PATH or in any known install directory")
+			}
+			return "/usr/bin/" + bin, nil
+		}
+		h.H.InstallDrivers(driver.NewRegistry(&driver.Port{}, &driver.Namespace{}, &driver.StatePath{},
+			&driver.CIDR{}, &driver.Machine{}))
+		sess, err := h.Connect(api.KindHost, "")
+		if err != nil {
+			t.Fatalf("hello refused: %+v", err)
+		}
+		return h, sess
+	}
+	helperFinding := func(t *testing.T, h *Harness, sess *Session) *api.DoctorFinding {
+		t.Helper()
+		resp := h.Request(context.Background(), sess, verbDoctor, nil)
+		if resp.Error != nil {
+			t.Fatalf("doctor: %v", resp.Error)
+		}
+		var res api.DoctorResult
+		mustUnmarshal(t, resp.Result, &res)
+		for i := range res.Findings {
+			if strings.Contains(res.Findings[i].Message, "helper binaries") {
+				return &res.Findings[i]
+			}
+		}
+		return nil
+	}
+
+	t.Run("a helper the coordinator cannot reach is a finding", func(t *testing.T) {
+		var seen []string
+		h, sess := newHarness(t, map[string]bool{"gh": true}, &seen)
+		f := helperFinding(t, h, sess)
+		if f == nil {
+			t.Fatal("an unreachable gh produced no finding")
+		}
+		if f.Level != "warning" {
+			t.Errorf("level = %q, want warning", f.Level)
+		}
+		for _, want := range []string{"gh", "cleanup sweep"} {
+			if !strings.Contains(f.Message, want) {
+				t.Errorf("the finding must name %q: %s", want, f.Message)
+			}
+		}
+		// The remedy must name the variable that widens the search; a
+		// custom install location is the case LookHelper cannot cover.
+		if !strings.Contains(f.Remedy, platform.HelperDirsEnv) {
+			t.Errorf("the remedy must name %s: %s", platform.HelperDirsEnv, f.Remedy)
+		}
+	})
+
+	t.Run("every helper reachable is no finding", func(t *testing.T) {
+		var seen []string
+		h, sess := newHarness(t, nil, &seen)
+		if f := helperFinding(t, h, sess); f != nil {
+			t.Errorf("all helpers reachable must produce no finding: %+v", f)
+		}
+	})
+
+	t.Run("docker and the machine runner are checked only where a spec wants them", func(t *testing.T) {
+		var bare []string
+		h, sess := newHarness(t, nil, &bare)
+		helperFinding(t, h, sess)
+		for _, unwanted := range []string{"docker", "colima", "wsl"} {
+			if slices.Contains(bare, unwanted) {
+				t.Errorf("no spec declares a resource needing %s, so it must not be checked: %v", unwanted, bare)
+			}
+		}
+		for _, want := range []string{"git", "gh", "lsof"} {
+			if !slices.Contains(bare, want) {
+				t.Errorf("%s is needed whatever a spec says, so it must always be checked: %v", want, bare)
+			}
+		}
+	})
+
+	t.Run("a machine resource brings the machine runner into the check", func(t *testing.T) {
+		var seen []string
+		h, sess := newHarness(t, map[string]bool{"colima": true}, &seen)
+		h.H.Machine = &coordFakeMachine{}
+		sp := machineSpec(t, "")
+		allocateWithPath(t, h, sess, sp, "wt-1", filepath.Join(t.TempDir(), "wt-1"))
+
+		f := helperFinding(t, h, sess)
+		if !slices.Contains(seen, "colima") {
+			t.Fatalf("a machine resource must bring the runner's binary into the check: %v", seen)
+		}
+		if f == nil || !strings.Contains(f.Message, "colima") {
+			t.Fatalf("an unreachable colima produced no finding naming it: %+v", f)
+		}
+		if !strings.Contains(f.Message, "machine driver") {
+			t.Errorf("the finding must say what colima is needed for: %s", f.Message)
+		}
+	})
 }
