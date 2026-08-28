@@ -852,6 +852,25 @@ The six rules of `docs/ARCHITECTURE.md` §8.6, stated as invariants:
   that does not parse refuses the write, and an event registered to
   somebody else's script is exit 3 naming `--force`. Neither touches the
   store, the registry or any allocated worktree.
+- Both answer one question about every file they find: is this wt's own to
+  replace, or the user's to leave alone? Neither answers it by comparing
+  content. A file that differs from what this build would write is *either*
+  an older release's copy *or* an edit, and the two want opposite
+  treatment — so reading "differs" as "edited" makes `--refresh-only`
+  unable to update anything that legitimately changed between releases,
+  which is the one thing it exists to do. A hook script answers with its
+  managed markers, the same signal every other wt-written file carries. The
+  skill files cannot: they are documents copied verbatim, and
+  `references/primitives.md` documents the managed-block convention and so
+  quotes the markers in a fenced example — a real block there would be the
+  nested shape `managed.MarkersError` refuses, and a marker test would
+  claim any copy explaining the convention. Their digests go in a sidecar
+  instead, `.wt-installed.json`, written beside them and removed with them,
+  which also keeps the installed documents byte-identical to this
+  repository's. An installation predating that record is carried across by
+  the one thing still provable without it — a file identical to what this
+  build would write is wt's own whoever wrote it — and anything else is
+  reported as the ambiguity it is rather than as an edit.
 - The create hook answers for every repository on the machine, not the
   adopted ones alone, because Claude Code delegates worktree creation to
   it entirely and never falls back to git on its own. A repository with a

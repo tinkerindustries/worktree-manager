@@ -247,7 +247,14 @@ configuration; neither binary branches on repo identity.
   every other setting; an unparseable settings file and an event
   registered to somebody else's script both refuse. The embedded skill
   under `skill/` is a copy of `.claude/skills/worktree-onboarding`, and
-  a test fails on drift between them.
+  a test fails on drift between them. Whether an installed file is wt's
+  own to replace is decided by what wt recorded writing, never by whether
+  it differs from what this build would write — a file that differs is
+  either an older release's or an edit, and the two want opposite
+  treatment. A hook script is recognised by its managed markers; the
+  skill files are documents copied verbatim (and one of them quotes those
+  markers in an example), so their digests go in a sidecar,
+  `.wt-installed.json`, written with them and removed with them.
 - `internal/generate` — the generated Go descriptor reader, stdlib-only
   and gofmt-clean by construction.
 - `internal/api` — the HTTP surface both binaries share: the `*Args` and

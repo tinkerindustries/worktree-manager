@@ -192,9 +192,23 @@ onboarding skill are embedded in the binary, so a new `wt` carries new
 copies while the ones on disk stay at whatever version wrote them; without
 this an upgrade never reaches them. It creates no installation — the hooks
 are the user's opt-in, made by `wt claude install`, and an upgrade does not
-make it for them — and it leaves a file the user has edited alone, naming
-what it skipped. A `--prefix` install is self-contained and loads nothing,
-so it does not touch `~/.claude`, and `--client-only` never gets this far.
+make it for them — and it leaves a file the user made their own alone,
+naming what it skipped. A `--prefix` install is self-contained and loads
+nothing, so it does not touch `~/.claude`, and `--client-only` never gets
+this far.
+
+Whether a file is the user's is decided by what wt recorded writing, never
+by whether the file differs from what this build would write. A hook script
+carries a managed block and is recognised by its markers. The skill files
+are documents copied verbatim — one of them quotes those markers in an
+example of the convention — so their digests are recorded in
+`~/.claude/skills/worktree-onboarding/.wt-installed.json`, written with the
+files and removed with them. Content equality cannot stand in for either:
+a file differing from this build's copy is *either* an older release's or
+an edit, and the two want opposite treatment. An installation predating
+that record still upgrades cleanly where its files match this build's; one
+holding older text is genuinely ambiguous and is reported as such, with
+`--force` named.
 
 `--uninstall` never removes the store, and it refuses — exit 3, nothing
 changed — while the registry still holds entries, naming `wt list` and
