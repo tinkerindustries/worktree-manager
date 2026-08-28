@@ -240,7 +240,7 @@ func TestValidSlug(t *testing.T) {
 			t.Errorf("ValidSlug(%q) = false, want true", s)
 		}
 	}
-	invalid := []string{"", "-x", "X", "x y", "a_b", strings.Repeat("a", 33), "a.", ".a"}
+	invalid := []string{"", "-x", "X", "x y", "a_b", strings.Repeat("a", SlugMaxLen+1), "a.", ".a"}
 	for _, s := range invalid {
 		if ValidSlug(s) {
 			t.Errorf("ValidSlug(%q) = true, want false", s)
