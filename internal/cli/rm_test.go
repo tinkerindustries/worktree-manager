@@ -57,10 +57,16 @@ func rmFixtureRemoval(t *testing.T, rem spec.Removal) (main, worktree, remote st
 }
 
 // rmCoord is the canned coordinator for rm: entry found at the given
-// path, clean teardown.
+// path, clean teardown, and a doctor that finds nothing — which is what rm
+// asks it after the teardown, and the ordinary answer.
 func rmCoord(t *testing.T, worktree string, handlers map[string]func(*api.Request) *api.Response) string {
 	t.Helper()
-	all := map[string]func(*api.Request) *api.Response{}
+	all := map[string]func(*api.Request) *api.Response{
+		"doctor": canned(&api.Response{Result: mustJSONT(api.DoctorResult{})}),
+	}
+	if h, ok := handlers["doctor"]; ok {
+		all["doctor"] = h
+	}
 	for _, verb := range []string{"rm"} {
 		verb := verb
 		all[verb] = func(req *api.Request) *api.Response {
@@ -554,5 +560,102 @@ func TestRmCoordinatorUnreachableExitsFive(t *testing.T) {
 	// named at all.
 	if !strings.Contains(stderr, "wtd") && !strings.Contains(stderr, "daemon install") {
 		t.Errorf("stderr = %q, want a command that starts the coordinator", stderr)
+	}
+}
+
+// TestRmVerifiesItsOwnTeardown: rm asks doctor whether anything of the
+// entry outlived the teardown, and reports what it finds. A half-finished
+// teardown frees the slot while its resources are still running, which is
+// the collision the slot model exists to prevent and the one failure that
+// is invisible at the moment it happens.
+func TestRmVerifiesItsOwnTeardown(t *testing.T) {
+	main, worktree, _ := rmFixture(t)
+	fakeGh(t, `echo '{"number":7,"state":"MERGED"}'`)
+	ep := rmCoord(t, worktree, map[string]func(*api.Request) *api.Response{
+		"doctor": canned(&api.Response{Result: mustJSONT(api.DoctorResult{
+			Findings: []api.DoctorFinding{
+				{App: "lifecycle-app", Slug: "wt-1", Level: "error",
+					Message: "a container still carries the compose project label",
+					Remedy:  "run: wt reconcile"},
+				// Another entry's finding, and an info line about this one:
+				// neither is drift from this teardown.
+				{App: "lifecycle-app", Slug: "wt-2", Level: "error", Message: "somebody else's problem"},
+				{App: "lifecycle-app", Slug: "wt-1", Level: "info", Message: "just so you know"},
+			},
+		})}),
+	})
+	t.Setenv("WT_ENDPOINT", ep)
+
+	code, stdout, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1", "--json")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want 0; stderr: %s", code, stderr)
+	}
+	// rm cannot undo what it destroyed, so drift never changes the exit
+	// code. It is reported loudly instead, with the verb that repairs it.
+	if !strings.Contains(stderr, "compose project label") {
+		t.Errorf("the drift was not reported: %q", stderr)
+	}
+	if !strings.Contains(stderr, "wt reconcile") {
+		t.Errorf("the drift report does not name the repair: %q", stderr)
+	}
+	if strings.Contains(stderr, "somebody else's problem") {
+		t.Errorf("another entry's finding was reported as this teardown's drift: %q", stderr)
+	}
+	if strings.Contains(stderr, "just so you know") {
+		t.Errorf("an info finding was reported as drift: %q", stderr)
+	}
+
+	var res rmResult
+	if err := json.Unmarshal([]byte(stdout), &res); err != nil {
+		t.Fatalf("stdout: %v\n%s", err, stdout)
+	}
+	if len(res.Drift) != 1 {
+		t.Fatalf("drift = %v, want the one finding for this entry", res.Drift)
+	}
+}
+
+// A clean teardown reports no drift and says nothing about it: a line that
+// appears every time is a line a reader stops seeing.
+func TestRmCleanTeardownReportsNoDrift(t *testing.T) {
+	main, worktree, _ := rmFixture(t)
+	fakeGh(t, `echo '{"number":7,"state":"MERGED"}'`)
+	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
+
+	code, stdout, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1", "--json")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want 0; stderr: %s", code, stderr)
+	}
+	if strings.Contains(stderr, "drift:") {
+		t.Errorf("a clean teardown reported drift: %q", stderr)
+	}
+	var res rmResult
+	if err := json.Unmarshal([]byte(stdout), &res); err != nil {
+		t.Fatalf("stdout: %v\n%s", err, stdout)
+	}
+	if len(res.Drift) != 0 {
+		t.Errorf("drift = %v, want none", res.Drift)
+	}
+}
+
+// A doctor that does not answer is not evidence of drift. Saying "drift" on
+// no evidence is the silent-degrade failure in the other direction, so the
+// unchecked case is reported as unchecked.
+func TestRmReportsAnUnverifiableTeardownAsUnverified(t *testing.T) {
+	main, worktree, _ := rmFixture(t)
+	fakeGh(t, `echo '{"number":7,"state":"MERGED"}'`)
+	ep := rmCoord(t, worktree, map[string]func(*api.Request) *api.Response{
+		"doctor": canned(&api.Response{Error: &api.Error{Code: 1, Msg: "doctor is having a day"}}),
+	})
+	t.Setenv("WT_ENDPOINT", ep)
+
+	code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want 0; stderr: %s", code, stderr)
+	}
+	if !strings.Contains(stderr, "could not be verified") {
+		t.Errorf("stderr = %q, want the check reported as unrun", stderr)
+	}
+	if !strings.Contains(stderr, "wt doctor") {
+		t.Errorf("stderr = %q, want the manual check named", stderr)
 	}
 }

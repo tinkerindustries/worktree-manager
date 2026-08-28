@@ -1,0 +1,19 @@
+# Invalid: worktrees.base starts with a hyphen, which every git command
+# reading the value would take for a flag rather than a revision. The
+# refusal is here rather than at the point of use because the create hook
+# is the point of use, and a spec that cannot produce a worktree should say
+# so when it is validated.
+version: 1
+app: flag-base
+
+resources:
+  - type: port
+    name: api
+
+worktrees:
+  base: "--force"
+
+emit:
+  descriptor:
+    filename: wt-env.json
+    format: json

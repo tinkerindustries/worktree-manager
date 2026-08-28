@@ -259,6 +259,47 @@ func TestRunShowTable(t *testing.T) {
 	}
 }
 
+// TestRunShowBrief: the arrival form. It carries the identity, the isolated
+// values and — the reason it exists — the shared block with what a write to
+// each one affects, in a few lines rather than under six other sections.
+func TestRunShowBrief(t *testing.T) {
+	ar := buildAdoptedTestRepo(t)
+	code, stdout, stderr := runCLI(t, "show", "--brief", "--cwd", ar.wt1)
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want 0; stderr: %s", code, stderr)
+	}
+	for _, want := range []string{"wt1", "slot 1", "guard-app", "4101", ar.sharedStore, "writes are visible"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("brief lacks %q:\n%s", want, stdout)
+		}
+	}
+	if !strings.Contains(stdout, "SHARED") {
+		t.Errorf("brief does not name the shared block:\n%s", stdout)
+	}
+	// Brief means brief: the full table's other sections are not here.
+	for _, unwanted := range []string{"STATE", "EXTRAS", "standalone:"} {
+		if strings.Contains(stdout, unwanted) {
+			t.Errorf("brief carries the full table's %q section:\n%s", unwanted, stdout)
+		}
+	}
+}
+
+// --json and --brief are two different answers to "print the descriptor",
+// so asking for both is a usage error rather than a silent precedence rule.
+func TestRunShowBriefAndJSONConflict(t *testing.T) {
+	ar := buildAdoptedTestRepo(t)
+	code, stdout, stderr := runCLI(t, "show", "--brief", "--json", "--cwd", ar.wt1)
+	if code != ExitUsage {
+		t.Fatalf("exit = %d, want %d; stderr: %s", code, ExitUsage, stderr)
+	}
+	if stdout != "" {
+		t.Errorf("wrote to stdout on a usage error: %q", stdout)
+	}
+	if !strings.Contains(stderr, "not both") {
+		t.Errorf("stderr = %q", stderr)
+	}
+}
+
 // TestRunShowJSON: one JSON object, found true, carrying the descriptor.
 func TestRunShowJSON(t *testing.T) {
 	ar := buildAdoptedTestRepo(t)

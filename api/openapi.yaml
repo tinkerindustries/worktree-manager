@@ -1188,15 +1188,21 @@ components:
       - OpenPR
     Worktrees:
       type: object
-      description: "Worktrees is the spec's `worktrees:` block: one field, the path template of a single worktree."
+      description: "Worktrees is the spec's `worktrees:` block: where a worktree of this repository goes, and what it branches from."
       properties:
         Path:
           description: Path is the path template, evaluated with {slug}, {app} and {home}. Absent, DefaultWorktreePath applies; present and empty, validation refuses it, because an empty path is a typo and not a way to ask for the default.
           type:
           - string
           - "null"
+        Base:
+          description: Base is the git revision a new worktree branches from. Absent, DefaultWorktreeBase applies; present and empty, validation refuses it, for the same reason Path does.
+          type:
+          - string
+          - "null"
       required:
       - Path
+      - Base
     Emit:
       type: object
       description: "Emit declares the three delivery channels (05-delivery.md §1): the descriptor, the optional .env block and the optional generated reader."

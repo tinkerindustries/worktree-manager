@@ -51,9 +51,29 @@ if [ -f "$root/wt.yaml" ] && [ -n "$wt" ] && [ -x "$wt" ]; then
   # worktree is addressed by slug from the main checkout. The slug is the
   # worktree directory's name, which is what `wt spec path` produced when
   # the create hook made it.
+  code=0
   # shellcheck disable=SC2086
-  "$wt" rm --cwd "$root" --slug "$(basename "$path")" ${WT_HOOK_RM_FLAGS:-} >&2 \
-    || die "wt rm refused to remove $path"
+  "$wt" rm --cwd "$root" --slug "$(basename "$path")" ${WT_HOOK_RM_FLAGS:-} >&2 || code=$?
+  # wt rm's exit codes distinguish two failures with opposite remedies, and
+  # collapsing them leaves a reader unable to tell which they have. Exit 3
+  # is a safety check that ran and refused: something in the tree is worth
+  # keeping, and a person has to decide. Exit 4 is a check that could not
+  # run at all — usually gh missing or unauthenticated, failing closed on
+  # purpose — where the remedy is to install or log into the tool and try
+  # again, and nothing about the worktree has been judged. wt rm's own
+  # stderr has already gone through; this names which kind it was.
+  case "$code" in
+  0) ;;
+  3)
+    die "wt rm refused to remove $path: a safety check found something worth keeping (exit 3). Read the reason above and decide; WT_HOOK_RM_FLAGS=--force downgrades the checks to warnings for hook-driven removals."
+    ;;
+  4)
+    die "wt rm could not check whether $path is safe to remove (exit 4), so it removed nothing. A check could not run — usually gh missing or not authenticated. Install or authenticate it and retry; WT_HOOK_RM_FLAGS=--force removes without the check."
+    ;;
+  *)
+    die "wt rm failed to remove $path (exit $code); see the error above and $log_file"
+    ;;
+  esac
 else
   git -C "$root" worktree remove "$path" >&2 \
     || die "git worktree remove refused to remove $path"

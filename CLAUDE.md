@@ -66,13 +66,16 @@ configuration; neither binary branches on repo identity.
   `ResourceByName`, `NamespaceKind`, `HookByName`, `HookNames`,
   `WorktreePath` and the IPv4 block arithmetic, the `removal:` block —
   rm's per-check safety policy and its defaults, through `RemovalPolicy` —
-  and the `worktrees:` block: where this repository's worktrees go,
-  defaulting to `.claude/worktrees/{slug}` (where Claude Code's own
-  isolation puts a tree) and overridable with a `{slug}`/`{app}`/`{home}`
-  template that `WorktreeLocation` resolves against the main checkout.
-  Neither binary creates a worktree, so the field is guidance the
-  generated create skill follows and `wt spec path --slug <slug>`
-  computes — never a location either binary enforces.
+  and the `worktrees:` block: where this repository's worktrees go and
+  what they branch from. `path:` defaults to `.claude/worktrees/{slug}`
+  (where Claude Code's own isolation puts a tree) and is overridable with
+  a `{slug}`/`{app}`/`{home}` template that `WorktreeLocation` resolves
+  against the main checkout; `base:` defaults to `origin/main`, a
+  remote-tracking ref because a local branch is only as fresh as the last
+  pull and the point of naming a base is that it does not depend on the
+  state of the checkout that asked. Neither binary creates a worktree, so
+  both fields are guidance the `WorktreeCreate` hook follows and
+  `wt spec path` computes — never something either binary enforces.
 - `internal/treecheck` — the checks that run before a worktree is
   destroyed: uncommitted changes, unpushed commits (an absent upstream is
   its own answer), what gh reports about the branch's pull request, and
@@ -96,6 +99,10 @@ configuration; neither binary branches on repo identity.
   error naming what the repository can purge, a declared flag colliding
   with one of rm's own is refused rather than left to panic the flag
   package, and both the dry run and the report name the stores deleted.
+  After a teardown reports success, rm asks doctor whether anything of the
+  entry outlived it and reports what it finds as drift — never as an exit
+  code, because rm cannot undo what it has already destroyed, and never as
+  drift when doctor did not answer, which is reported as unverified.
 - `internal/driver` — the six-operation contract, the port, namespace,
   state-path, cidr and machine drivers, the docker CLI seam, and the
   sequencing: apply in dependency order with machine forced first among
@@ -109,7 +116,11 @@ configuration; neither binary branches on repo identity.
   path is reported not_run on this machine.
 - `internal/cli` — verb dispatch, flag parsing, output, the exit-code error
   type, the one dial-and-request helper (exit 5 lives there), and the
-  verbs: `spec validate`, `spec explain`, `spec path`, `guard`, `show`,
+  verbs: `spec validate`, `spec explain`, `spec path` (`--slug` refuses an
+  illegal slug, `--name` normalises a caller-supplied one, `--json` adds
+  the slug and the base revision), `guard`, `show` (`--brief` is the
+  arrival form: identity, isolated values, and the shared block with each
+  one's blast radius),
   `daemon status`, `daemon install`, `daemon uninstall`, `bands list`,
   `bands suggest`,
   `bands reserve`, `ports scan`, `init`, `start`, `rm`, `list`, `doctor`,
@@ -135,7 +146,11 @@ configuration; neither binary branches on repo identity.
   registration carrying the token is 0600 on unix and the token is never
   echoed.
 - `internal/identity` — M1: classification, root resolution, containment,
-  slug validation, descriptor location, the guard engine, and the
+  slug validation and the deterministic `NormaliseSlug` that turns a
+  caller-supplied name into a legal slug (Claude Code names a worktree
+  after the task that prompted it, so the `WorktreeCreate` hook is handed
+  a name rather than asked for one), descriptor location, the guard
+  engine, and the
   per-session classification cache (`WT_GUARD_CACHE`) the generated guard
   hook sets — keyed on cwd, validated by the stat identity of the root's
   `.git` entry (the root dir's own mtime is unusable: the case-sensitivity
@@ -215,9 +230,17 @@ configuration; neither binary branches on repo identity.
   creation to a registered `WorktreeCreate` hook entirely and never falls
   back to `git worktree add` on its own, so the create script answers for
   every repository on the machine: one with a `wt.yaml` gets its worktree
-  where the spec says and an environment from `wt init`, and every other
-  one gets the plain worktree Claude Code would have made itself, plus a
-  sentence naming the worktree-onboarding skill. Nothing here is rendered from a
+  where the spec says, branched from what `worktrees.base` names, and an
+  environment from `wt init`; every other one gets the plain worktree
+  Claude Code would have made itself, branched from the session's HEAD,
+  plus a sentence naming the worktree-onboarding skill. The name Claude
+  Code generates is normalised rather than refused — refusing costs a
+  person their worktree over a name nobody typed — and a branch of that
+  name already existing locally, as a remote-tracking ref or on origin
+  stops the creation rather than being checked out. `WT_HOOK_NO_ENV=1`
+  makes the worktree and skips `wt init`, for a change that does not need
+  the repository's stack up; the remove script reports `wt rm`'s exit 3
+  and exit 4 as the different things they are. Nothing here is rendered from a
   spec — which is why this is linked by `cmd/wt` and `internal/artefact`
   is not — and nothing here touches the store, the registry or an
   allocated worktree. The merge preserves the user's other hooks and
@@ -366,6 +389,11 @@ supervisor's PATH is not a shell's: launchd gives a LaunchAgent
 covers the usual install locations; this variable covers the ones it
 cannot know about. An empty value is a real answer — search nothing beyond
 PATH — which is how a test says a binary is absent.
+
+Three more are read by the machine-wide hook scripts alone, never by a
+binary: `WT_HOOK_DESCRIPTION` (the description recorded against the
+allocation), `WT_HOOK_NO_ENV=1` (make the worktree, skip `wt init`) and
+`WT_HOOK_RM_FLAGS` (flags passed through to `wt rm`).
 
 `WT_HOME` is read by **both** binaries, which is the one change the HTTP
 rearchitecture made to this contract. The client reads only

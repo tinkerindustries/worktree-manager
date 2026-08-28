@@ -62,13 +62,21 @@ The resolved resource table for one slot, allocating nothing:
 Reading slot 1 and slot 2 side by side is the collision check before
 anything is built.
 
-### `wt spec path --slug S [--home <path>] [--root <dir>]`
+### `wt spec path (--slug S | --name N) [--json] [--home <path>] [--root <dir>]`
 
-Where a worktree of this repository goes: the spec's `worktrees.path`
-resolved for one slug, printed bare on stdout. Allocates nothing and
-dials nothing. Run it in the main checkout — a relative template resolves
-against `--root`, which defaults to the directory the spec was found in.
-The default template is `.claude/worktrees/{slug}`.
+Where a worktree of this repository goes and what it branches from: the
+spec's `worktrees.path` resolved for one slug, printed bare on stdout.
+Allocates nothing and dials nothing. Run it in the main checkout — a
+relative template resolves against `--root`, which defaults to the
+directory the spec was found in. The default template is
+`.claude/worktrees/{slug}`.
+
+`--slug` refuses anything that is not already a legal slug. `--name` takes
+a caller-supplied name and normalises it — lower-cased, kebab-cased, cut
+to the cap — and is for the callers handed a name rather than asked for
+one, which is what the `WorktreeCreate` hook is. `--json` adds the slug
+(which `--name` may have changed) and the base revision:
+`{"slug":"..","path":"..","base":"origin/main"}`.
 
 ### `wt init --description <text> [--slug <s>] [--cwd <dir>]`
 
@@ -97,12 +105,15 @@ and `--force` override the spec for one run, in the two directions.
 `wt cleanup` and the coordinator's sweep ignore the block entirely: they
 still require a merged pull request.
 
-### `wt show [--json] [--cwd <dir>]`
+### `wt show [--json | --brief] [--cwd <dir>]`
 
 The descriptor read back, local and coordinator-free: the source of every
 value the artefacts and briefings state. `{"found":true,
 "descriptor":{...}}`, or `{"found":false,"reason":"..."}` with exit 4 in
 an un-initialised worktree — the briefing refuses to render on that.
+`--brief` is the arrival form: the identity, the isolated values, and the
+shared block with what a write to each one affects. The `SessionStart`
+tripwire names the shared resources and points here for the impacts.
 
 ### `wt guard [--json]`
 

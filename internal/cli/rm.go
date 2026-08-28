@@ -74,6 +74,11 @@ type rmResult struct {
 	// happen, before anything is destroyed, and carried here so --json
 	// sees them too.
 	Warnings []string `json:"warnings,omitempty"`
+	// Drift is what the post-teardown check found still standing: a
+	// doctor finding naming this entry after rm reported it gone. Empty
+	// is the ordinary outcome and the one that means the teardown
+	// finished.
+	Drift []string `json:"drift,omitempty"`
 }
 
 // runRm implements `wt rm [--json] [--dry-run] [--cwd <dir>] [--slug <s>]
@@ -195,7 +200,7 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 	if reason := identity.ValidateSlug(targetSlug); reason != "" {
 		e := New(ExitRefused,
 			fmt.Sprintf("slug %q is not valid (%s)", targetSlug, reason),
-			"give a slug matching ^[a-z0-9][a-z0-9-]*$ (at most 32 characters), then re-run")
+			fmt.Sprintf("give a slug matching ^[a-z0-9][a-z0-9-]*$ (at most %d characters), then re-run", spec.SlugMaxLen))
 		WriteError(stderr, e)
 		return e.Code
 	}
@@ -289,6 +294,18 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 	if res.Removed {
 		notes = append(notes, "purged the state stores: "+purgeSummary(purgeNames, purgeDeclared))
 	}
+
+	// The teardown said it finished; this asks whether it did. A half
+	// finished teardown frees the slot while its resources are still
+	// running, which is the collision the whole slot model exists to
+	// prevent, and it is the one failure that is invisible at the moment
+	// it happens — the next worktree to take the slot is where it
+	// surfaces. Reporting success without looking is what makes it
+	// invisible, so rm looks.
+	var drift []string
+	if res.Removed {
+		drift = verifyTeardown(sess, sp.App, targetSlug)
+	}
 	writeRmReport(stdout, stderr, *jsonOut, rmResult{
 		App: sp.App, Slug: targetSlug, Removed: res.Removed,
 		WorktreeRemoved: worktreeRemoved,
@@ -296,8 +313,46 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 		Purged:          purgeNames,
 		Notes:           notes,
 		Warnings:        warnings,
+		Drift:           drift,
 	})
 	return ExitOK
+}
+
+// verifyTeardown asks the coordinator whether anything of this entry is
+// still standing, and returns what it found.
+//
+// doctor is the check because doctor is what already knows: it reads the
+// registry, the band ledger and the drivers' own view, and a finding naming
+// this app and slug after rm dropped the entry means something outlived the
+// teardown. rm cannot undo what it has already destroyed, so this never
+// changes the exit code — the removal did happen, and re-running rm would
+// not help. It is reported loudly instead, with the verb that repairs it.
+//
+// The check failing is not drift. A coordinator that has gone away between
+// the teardown and this call tells us nothing about the teardown, and
+// saying "drift" on no evidence is worse than saying nothing: it is the
+// silent-degrade failure in the other direction. The unchecked case is
+// reported as unchecked.
+func verifyTeardown(sess *coordClient, app, slug string) []string {
+	rep, err := sess.client.Doctor()
+	if err != nil {
+		return []string{fmt.Sprintf("the teardown could not be verified: doctor did not answer (%s). Run 'wt doctor' to check nothing was left behind.", err.Msg)}
+	}
+	var found []string
+	for _, f := range rep.Findings {
+		if f.App != app || f.Slug != slug {
+			continue
+		}
+		if f.Level == "info" {
+			continue
+		}
+		msg := f.Message
+		if f.Remedy != "" {
+			msg += " — " + f.Remedy
+		}
+		found = append(found, msg)
+	}
+	return found
 }
 
 // rmRequest runs one rm call and decodes the result.
@@ -751,6 +806,12 @@ func reapSummary(r *api.ReapReport) string {
 func writeRmReport(stdout, stderr io.Writer, jsonOut bool, r rmResult) int {
 	for _, n := range r.Notes {
 		fmt.Fprintf(stderr, "note: %s\n", n)
+	}
+	for _, d := range r.Drift {
+		fmt.Fprintf(stderr, "drift: %s\n", d)
+	}
+	if len(r.Drift) > 0 {
+		fmt.Fprintf(stderr, "drift: the slot is free but the above outlived the teardown; repair it with 'wt reconcile' before another worktree takes the slot\n")
 	}
 	fmt.Fprintf(stderr, "reap: %s\n", reapSummary(&r.Reap))
 	if jsonOut {

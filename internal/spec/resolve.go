@@ -180,7 +180,8 @@ func validateContext(s *Spec, ctx Context) error {
 }
 
 // slugRe is the slug rule, needed here for template evaluation and the
-// length caps: ^[a-z0-9][a-z0-9-]*$, at most 32 characters (M1 §4.1).
+// length caps: ^[a-z0-9][a-z0-9-]*$, at most SlugMaxLen characters
+// (M1 §4.1, raised from the document's 32 — see SlugMaxLen).
 var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 // ValidSlug reports whether s is a legal slug. Phase 1's validateSlug is

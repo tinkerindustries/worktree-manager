@@ -137,7 +137,7 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	if reason := identity.ValidateSlug(name); reason != "" {
 		e := New(ExitRefused,
 			fmt.Sprintf("slug %q is not valid (%s)", name, reason),
-			"give an explicit --slug matching ^[a-z0-9][a-z0-9-]*$ (at most 32 characters), then re-run")
+			fmt.Sprintf("give an explicit --slug matching ^[a-z0-9][a-z0-9-]*$ (at most %d characters), then re-run", spec.SlugMaxLen))
 		WriteError(stderr, e)
 		return e.Code
 	}
