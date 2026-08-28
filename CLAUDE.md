@@ -184,12 +184,20 @@ configuration; neither binary branches on repo identity.
   spelling an external tool accepts — the identity on unix, and the strip
   of the extended-length prefix on Windows, which git rejects as an
   argument), `IsAddrInUse` (a bind's address-taken answer, whose errno
-  differs between unix and Winsock), `LookHelper` (the one resolution of an
-  external helper binary — docker, colima, gh — searching the process PATH
-  first and the platform's known install directories only when that fails,
-  because a supervisor-started `wtd` does not have the user's shell PATH;
-  the fallback never shadows what PATH already resolves, and
-  `WT_HELPER_DIRS` replaces the built-in list), `FileIdentity` (the dev/inode/mtime
+  differs between unix and Winsock), `LookHelper` and `HelperCommand` (the one
+  resolution of an external helper binary — git, lsof, docker, colima, gh,
+  wsl — searching the process PATH first and the platform's known install
+  directories only when that fails, because a supervisor-started `wtd` does
+  not have the user's shell PATH; the fallback never shadows what PATH
+  already resolves, and `WT_HELPER_DIRS` replaces the built-in list.
+  `HelperCommand` builds the command as well, prepending the resolved
+  binary's own directory to the child's PATH: colima runs limactl and
+  docker runs `docker-credential-<store>` from their own PATH at runtime,
+  and those siblings sit in the directory the helper was found in. Every
+  call site that runs a helper goes through it, so what `wt doctor` reports
+  reachable and what the drivers can actually run are the same binary.
+  `HelperError` carries the child's stderr into the failure, because a
+  helper that fails from the inside puts the whole diagnosis there), `FileIdentity` (the dev/inode/mtime
   the guard cache validates against, from stat on unix and
   GetFileInformationByHandle on Windows), the
   listen-address and container-token rails (`ValidateListenAddr`,
@@ -393,8 +401,9 @@ The seven variables are `WT_ENDPOINT` (the coordinator's base URL, e.g.
 generated guard hook sets, and `WT_HELPER_DIRS`.
 
 `WT_HELPER_DIRS` replaces the built-in list of directories
-`platform.LookHelper` searches after PATH when it resolves docker, colima
-and gh. It exists because `wtd` is started by a supervisor, and a
+`platform.LookHelper` searches after PATH when it resolves git, lsof,
+docker, colima and gh. Whichever directory a helper resolves from is also
+the one `HelperCommand` prepends to that helper's own PATH. It exists because `wtd` is started by a supervisor, and a
 supervisor's PATH is not a shell's: launchd gives a LaunchAgent
 `/usr/bin:/bin:/usr/sbin:/sbin`, which holds git and lsof but not the
 `/usr/local/bin` Docker Desktop symlinks its CLI into nor the

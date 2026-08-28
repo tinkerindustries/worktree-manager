@@ -31,8 +31,17 @@ type Runner func(dir string, args ...string) ([]byte, error)
 
 // Git runs one git command in dir. It returns stdout, and the error names
 // the command and carries git's stderr.
+//
+// Resolved through platform.HelperCommand for the same reason gh is: the
+// coordinator's sweep runs these checks from wtd, and doctor reports git
+// reachable when LookHelper finds it. A call site that searched PATH alone
+// would fail on a machine whose git is only in a fallback directory, while
+// doctor reported it fine.
 func Git(dir string, args ...string) ([]byte, error) {
-	cmd := exec.Command("git", args...)
+	cmd, err := platform.HelperCommand("git", args...)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrGitMissing, err)
+	}
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
@@ -49,15 +58,15 @@ func Git(dir string, args ...string) ([]byte, error) {
 // where gh puts both its JSON and its "no pull requests found". A missing
 // binary is an error, never an empty answer.
 func Gh(dir string, args ...string) ([]byte, error) {
-	// Resolved through platform.LookHelper, not exec.LookPath: the
+	// Resolved through platform.HelperCommand, not exec.LookPath: the
 	// coordinator's scheduled cleanup sweep calls this from wtd, whose
 	// supervisor-supplied PATH does not include the /opt/homebrew/bin
-	// Homebrew installs gh into.
-	bin, err := platform.LookHelper("gh")
+	// Homebrew installs gh into — and gh shells out to git, which it finds
+	// on the PATH it is given.
+	cmd, err := platform.HelperCommand("gh", args...)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrGhMissing, err)
 	}
-	cmd := exec.Command(bin, args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -68,6 +77,11 @@ func Gh(dir string, args ...string) ([]byte, error) {
 // PATH nor a known install directory. Callers match on it with errors.Is;
 // the wrapped detail names the locations searched.
 var ErrGhMissing = errors.New("gh is not installed or not on PATH")
+
+// ErrGitMissing is the answer when the git binary is in neither the
+// process PATH nor a known install directory. The wrapped detail names the
+// locations searched.
+var ErrGitMissing = errors.New("git is not installed or not on PATH")
 
 // ErrNoUpstream is Unpushed's answer when the branch has no upstream. An
 // absent upstream is a stop, not a pass: nothing proves the commits are

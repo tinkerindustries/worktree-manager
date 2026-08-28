@@ -48,11 +48,11 @@ func allListeners() ([]Holder, error) {
 // sockets yields one holder per (pid, port) with the pid and command
 // repeated per file, as lsof -F prints them.
 func allListenersLsof() ([]Holder, error) {
-	lsof, err := exec.LookPath("lsof")
+	cmd, err := HelperCommand("lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-F", "pcn")
 	if err != nil {
-		return nil, unavailableError("lsof", "it is not installed or not on PATH; install lsof (macOS ships it, Linux: apt-get install lsof), then re-run")
+		return nil, unavailableError("lsof", lsofMissing(err))
 	}
-	out, err := exec.Command(lsof, "-nP", "-iTCP", "-sTCP:LISTEN", "-F", "pcn").Output()
+	out, err := cmd.Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 1 {
 			return nil, nil // nothing matches: no TCP listener at all
@@ -232,14 +232,21 @@ func listeningInodesAll(path string) (map[string]int, error) {
 // lsof exits 1 when nothing matches — that is the empty-holder case, not
 // an error. Any other failure (the binary is absent, the invocation
 // failed) is unavailable, never a silent find of nothing.
+// lsofMissing is the one sentence for an unresolvable lsof. Resolution is
+// HelperCommand's, so what doctor reports reachable and what the port scan
+// can run are the same binary; the detail names the locations searched.
+func lsofMissing(err error) string {
+	return "it is not installed or not on PATH; install lsof (macOS ships it, Linux: apt-get install lsof), then re-run: " + err.Error()
+}
+
 func listenersLsof(ports []int) ([]Holder, error) {
 	var holders []Holder
 	for _, port := range ports {
-		lsof, err := exec.LookPath("lsof")
+		cmd, err := HelperCommand("lsof", "-nP", "-iTCP:"+strconv.Itoa(port), "-sTCP:LISTEN", "-F", "pc")
 		if err != nil {
-			return nil, unavailableError("lsof", "it is not installed or not on PATH; install lsof (macOS ships it, Linux: apt-get install lsof), then re-run")
+			return nil, unavailableError("lsof", lsofMissing(err))
 		}
-		out, err := exec.Command(lsof, "-nP", "-iTCP:"+strconv.Itoa(port), "-sTCP:LISTEN", "-F", "pc").Output()
+		out, err := cmd.Output()
 		if err != nil {
 			if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 1 {
 				continue // nothing matches: no holder on this port

@@ -18,7 +18,6 @@ package coord
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -67,7 +66,7 @@ func (h *Handler) doctorDrift(main string, bands store.BandsFile, findings *[]ap
 		band = b.Bases
 	}
 
-	out, err := exec.Command("git", "-C", main, "ls-files", "-z").Output()
+	out, err := gitOut("-C", main, "ls-files", "-z")
 	if err != nil {
 		*notes = append(*notes, fmt.Sprintf("the generated-artefact drift check could not list %s's files: %v", main, err))
 		return

@@ -5,9 +5,10 @@ package driver
 // honoured. That environment is the coordinator's, not the user's shell's:
 // wtd is started by a supervisor, and launchd's default PATH does not
 // include the /usr/local/bin Docker Desktop symlinks its CLI into. The
-// binary is therefore resolved through platform.LookHelper, which falls
-// back to the known install directories, rather than left to the child's
-// own PATH lookup. There is no docker client library — the CLI is the interface
+// binary is therefore resolved through platform.HelperCommand, which falls
+// back to the known install directories and hands the child a PATH that
+// leads with the directory docker was found in, rather than left to the
+// child's own PATH lookup. There is no docker client library — the CLI is the interface
 // (PLAN-SCOPE.md, "No docker client library"; shell out to the docker
 // binary, and report it as unavailable when it is absent or the daemon is
 // unreachable).
@@ -31,11 +32,11 @@ func NewDocker() Docker { return execDocker{} }
 // both ErrUnavailable — the caller reports unavailable and says what fixes
 // it.
 func (execDocker) Version() error {
-	bin, err := dockerBin()
+	cmd, err := dockerCmd("version", "--format", "{{.Server.Version}}")
 	if err != nil {
 		return err
 	}
-	out, err := exec.Command(bin, "version", "--format", "{{.Server.Version}}").CombinedOutput()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return &ErrUnavailable{Reason: fmt.Sprintf("the docker daemon is unreachable: %s",
 			strings.TrimSpace(string(out)))}
@@ -67,12 +68,12 @@ func (d execDocker) ListNetworksAll() ([]string, error) {
 // (macvlan, ipvlan, or a bare user-defined network) cannot overlap
 // anything.
 func (d execDocker) NetworkSubnet(name string) (string, error) {
-	bin, err := dockerBin()
+	cmd, err := dockerCmd("network", "inspect",
+		"--format", "{{range .IPAM.Config}}{{.Subnet}} {{end}}", name)
 	if err != nil {
 		return "", err
 	}
-	out, err := exec.Command(bin, "network", "inspect",
-		"--format", "{{range .IPAM.Config}}{{.Subnet}} {{end}}", name).Output()
+	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("inspecting network %q: %w", name, err)
 	}
@@ -91,13 +92,13 @@ func (d execDocker) ListVolumes(project string) ([]string, error) {
 
 // dockerList runs a docker list command and splits its lines.
 func dockerList(project string, args ...string) ([]string, error) {
-	bin, err := dockerBin()
+	cmd, err := dockerCmd(args...)
 	if err != nil {
 		return nil, err
 	}
-	out, err := exec.Command(bin, args...).Output()
+	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("listing docker objects for project %q: %w", project, err)
+		return nil, platform.HelperError(fmt.Sprintf("listing docker objects for project %q", project), err)
 	}
 	var ids []string
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -138,32 +139,39 @@ func (d execDocker) RemoveVolumes(names []string) error {
 // runDocker runs one docker command and turns a failure into an error
 // carrying the CLI's stderr.
 func runDocker(args ...string) error {
-	bin, err := dockerBin()
+	cmd, err := dockerCmd(args...)
 	if err != nil {
 		return err
 	}
-	out, err := exec.Command(bin, args...).CombinedOutput()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("docker %s: %s", strings.Join(args, " "), strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
-// dockerBin resolves the docker CLI to an absolute path. The lookup is not
-// cached: a user who installs Docker while the coordinator is resident
-// gets it on the next teardown rather than after a wtd restart, and a
-// teardown is nowhere near hot enough for a few stat calls to matter.
+// dockerCmd resolves the docker CLI and builds the command to run it. The
+// lookup is not cached: a user who installs Docker while the coordinator is
+// resident gets it on the next teardown rather than after a wtd restart,
+// and a teardown is nowhere near hot enough for a few stat calls to matter.
+//
+// platform.HelperCommand supplies the child's environment as well as the
+// path. The CLI resolves docker-credential-<store> through its own PATH at
+// runtime, and Docker Desktop installs both into the same /usr/local/bin
+// that launchd's PATH omits. No command below reaches a registry, so that
+// helper is not consulted today; running the CLI with a PATH it can work
+// in is still the coordinator's job rather than the next command author's.
 //
 // The refusal names the locations searched, which is the thing that makes
 // this diagnosable, and offers both remedies — Docker absent and Docker
 // installed somewhere the coordinator cannot see are different problems
 // with the same symptom.
-func dockerBin() (string, error) {
-	bin, err := platform.LookHelper("docker")
+func dockerCmd(args ...string) (*exec.Cmd, error) {
+	cmd, err := platform.HelperCommand("docker", args...)
 	if err != nil {
-		return "", &ErrUnavailable{Reason: err.Error() +
+		return nil, &ErrUnavailable{Reason: err.Error() +
 			"; install Docker Desktop (or the docker CLI) if it is absent, " +
 			"or set " + platform.HelperDirsEnv + " to the directory holding it"}
 	}
-	return bin, nil
+	return cmd, nil
 }

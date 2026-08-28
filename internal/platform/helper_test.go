@@ -3,6 +3,7 @@ package platform
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -168,5 +169,135 @@ func TestHelperDirsEnvUnsetUsesBuiltinList(t *testing.T) {
 	os.Unsetenv(HelperDirsEnv)
 	if got, want := len(HelperDirs()), len(helperDirs()); got != want {
 		t.Errorf("HelperDirs() has %d entries, want the built-in list's %d", got, want)
+	}
+}
+
+// writeScript creates an executable script in dir, with the body written
+// in the shell the platform actually runs.
+func writeScript(t *testing.T, dir, name, sh, bat string) string {
+	t.Helper()
+	body := sh
+	if runtime.GOOS == "windows" {
+		name += ".bat"
+		body = bat
+	}
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
+		t.Fatalf("writing %s: %v", p, err)
+	}
+	return p
+}
+
+// TestHelperCommandFindsSiblingOfHelper is the reported bug: colima
+// resolves limactl through its own PATH at runtime, and both live in the
+// directory LookHelper already searched. Resolving the binary is not
+// enough — the child must be given a PATH that leads with the directory it
+// came from. The plain exec.Command control proves the test discriminates.
+func TestHelperCommandFindsSiblingOfHelper(t *testing.T) {
+	install := t.TempDir()
+	writeScript(t, install, "wt-helper-sibling",
+		"#!/bin/sh\necho reached\n",
+		"@echo off\r\necho reached\r\n")
+	bin := writeScript(t, install, "wt-helper-main",
+		"#!/bin/sh\nexec wt-helper-sibling\n",
+		"@echo off\r\ncall wt-helper-sibling.bat\r\n")
+
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv(HelperDirsEnv, install)
+
+	if _, err := exec.Command(bin).Output(); err == nil {
+		t.Fatal("the sibling resolved under the stripped PATH; the fixture no longer reproduces the bug")
+	}
+
+	cmd, err := HelperCommand("wt-helper-main")
+	if err != nil {
+		t.Fatalf("HelperCommand: %v", err)
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("running the helper: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "reached" {
+		t.Errorf("helper printed %q, want %q", got, "reached")
+	}
+}
+
+// TestHelperCommandKeepsTheRestOfTheEnvironment proves the child gets the
+// coordinator's environment with PATH amended and nothing else touched:
+// the docker seam runs on DOCKER_HOST reaching the child.
+func TestHelperCommandKeepsTheRestOfTheEnvironment(t *testing.T) {
+	install := t.TempDir()
+	writeExe(t, install, "wt-helper-probe")
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv(HelperDirsEnv, install)
+	t.Setenv("WT_HELPER_TEST_VAR", "carried")
+
+	cmd, err := HelperCommand("wt-helper-probe")
+	if err != nil {
+		t.Fatalf("HelperCommand: %v", err)
+	}
+	if !slices.Contains(cmd.Env, "WT_HELPER_TEST_VAR=carried") {
+		t.Errorf("the child's environment dropped WT_HELPER_TEST_VAR: %v", cmd.Env)
+	}
+}
+
+// TestHelperEnvPrepends covers the PATH arithmetic on its own: the
+// helper's directory leads, the caller's PATH follows in order, and a
+// directory already leading is not repeated — this runs in a resident
+// process, and a repeated entry would grow PATH on every call.
+func TestHelperEnvPrepends(t *testing.T) {
+	sep := string(os.PathListSeparator)
+	for _, tc := range []struct {
+		name, path, dir, want string
+	}{
+		{"prepends", "/usr/bin" + sep + "/bin", "/opt/homebrew/bin", "PATH=/opt/homebrew/bin" + sep + "/usr/bin" + sep + "/bin"},
+		{"empty path", "", "/opt/homebrew/bin", "PATH=/opt/homebrew/bin"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := helperEnv([]string{"HOME=/home/x"}, tc.path, tc.dir)
+			if len(got) != 2 || got[1] != tc.want {
+				t.Fatalf("helperEnv = %v, want [HOME=/home/x %s]", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("already leading", func(t *testing.T) {
+		path := "/opt/homebrew/bin" + sep + "/usr/bin"
+		env := []string{"PATH=" + path}
+		if got := helperEnv(env, path, "/opt/homebrew/bin"); len(got) != 1 {
+			t.Errorf("helperEnv repeated a leading directory: %v", got)
+		}
+	})
+}
+
+// TestHelperErrorCarriesStderr is the second half of the report: Output()
+// populates ExitError.Stderr, and a helper that fails from the inside puts
+// the diagnosis there. "colima list: exit status 1" alone left a reader
+// with nowhere to go.
+func TestHelperErrorCarriesStderr(t *testing.T) {
+	install := t.TempDir()
+	bin := writeScript(t, install, "wt-helper-fails",
+		"#!/bin/sh\necho 'error retrieving instances' >&2\nexit 1\n",
+		"@echo off\r\necho error retrieving instances 1>&2\r\nexit /b 1\r\n")
+
+	_, err := exec.Command(bin).Output()
+	if err == nil {
+		t.Fatal("the fixture exited 0")
+	}
+	got := HelperError("wt-helper-fails", err).Error()
+	if !strings.Contains(got, "error retrieving instances") {
+		t.Errorf("HelperError = %q, want it to carry the child's stderr", got)
+	}
+	if !strings.Contains(got, "wt-helper-fails") {
+		t.Errorf("HelperError = %q, want it to name the command", got)
+	}
+}
+
+// TestHelperErrorWithoutStderr leaves a silent failure as it was, rather
+// than appending an empty colon.
+func TestHelperErrorWithoutStderr(t *testing.T) {
+	err := HelperError("wt-probe", errors.New("boom"))
+	if got := err.Error(); got != "wt-probe: boom" {
+		t.Errorf("HelperError = %q, want %q", got, "wt-probe: boom")
 	}
 }

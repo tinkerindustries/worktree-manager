@@ -12,7 +12,6 @@ package platform
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 )
 
@@ -21,7 +20,9 @@ func Machine() MachineRunner { return wslRunner{} }
 
 // wslRunner is the wsl.exe shell-out. The binary is looked up per
 // operation, so an absent WSL reports unavailable rather than panicking at
-// startup.
+// startup. The lookup goes through HelperCommand like every other helper:
+// wsl.exe lives in System32 and resolves on any PATH, but a helper that is
+// resolved one way and run another is the shape the colima PATH bug had.
 type wslRunner struct{}
 
 // Binary names the helper.
@@ -33,17 +34,21 @@ func (wslRunner) Binary() string { return "wsl" }
 // depend on console width and codepage — which is why the two quiet
 // listings are used instead.
 func (wslRunner) List() ([]MachineInstance, error) {
-	bin, err := exec.LookPath("wsl")
+	list, err := HelperCommand("wsl", "--list", "--quiet")
 	if err != nil {
-		return nil, machineUnavailable("wsl is not installed or not on PATH; install Windows Subsystem for Linux (wsl --install), then re-run")
+		return nil, wslUnavailable()
 	}
-	all, err := exec.Command(bin, "--list", "--quiet").Output()
+	all, err := list.Output()
 	if err != nil {
-		return nil, fmt.Errorf("wsl --list --quiet: %w", err)
+		return nil, HelperError("wsl --list --quiet", err)
 	}
-	runningOut, err := exec.Command(bin, "--list", "--running").Output()
+	listRunning, err := HelperCommand("wsl", "--list", "--running")
 	if err != nil {
-		return nil, fmt.Errorf("wsl --list --running: %w", err)
+		return nil, wslUnavailable()
+	}
+	runningOut, err := listRunning.Output()
+	if err != nil {
+		return nil, HelperError("wsl --list --running", err)
 	}
 	running := map[string]bool{}
 	for _, line := range parseWSLNames(string(runningOut)) {
@@ -62,11 +67,10 @@ func (wslRunner) List() ([]MachineInstance, error) {
 // reference doc rather than attempted here; the driver starts distros the
 // onboarding skill or a developer already created.
 func (wslRunner) Start(name string) error {
-	bin, err := exec.LookPath("wsl")
+	cmd, err := HelperCommand("wsl", "--distribution", name, "--exec", "/bin/true")
 	if err != nil {
-		return machineUnavailable("wsl is not installed or not on PATH; install Windows Subsystem for Linux (wsl --install), then re-run")
+		return wslUnavailable()
 	}
-	cmd := exec.Command(bin, "--distribution", name, "--exec", "/bin/true")
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	return cmd.Start()
@@ -74,15 +78,21 @@ func (wslRunner) Start(name string) error {
 
 // Delete runs the documented destroy command.
 func (wslRunner) Delete(name string) error {
-	bin, err := exec.LookPath("wsl")
+	cmd, err := HelperCommand("wsl", "--unregister", name)
 	if err != nil {
-		return machineUnavailable("wsl is not installed or not on PATH; install Windows Subsystem for Linux (wsl --install), then re-run")
+		return wslUnavailable()
 	}
-	out, err := exec.Command(bin, "--unregister", name).CombinedOutput()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("wsl --unregister %s: %s", name, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// wslUnavailable is the one answer for an absent wsl.exe, naming the
+// install command.
+func wslUnavailable() error {
+	return machineUnavailable("wsl is not installed or not on PATH; install Windows Subsystem for Linux (wsl --install), then re-run")
 }
 
 // DeleteCommand is the documented bypass (B4.5).
