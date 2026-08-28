@@ -29,6 +29,7 @@ func TestInvalidSpecsRejected(t *testing.T) {
 		{"cycle-with-referenced-leaf.yaml", "resources[1].template", "template cycle: aa → bb → aa"},
 		{"unknown-removal-policy.yaml", "removal.open_pr", `"ignore" is not a removal policy`},
 		{"worktree-path-without-slug.yaml", "worktrees.path", "must reference {slug}"},
+		{"worktree-base-flag.yaml", "worktrees.base", "must not start with a hyphen"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.file, func(t *testing.T) {

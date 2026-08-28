@@ -3,9 +3,11 @@
 # (docs/design/07-agent-surface.md §7, docs/ARCHITECTURE.md §9.5). On
 # session start it classifies cwd and prints one sentence: a linked
 # worktree of an adopted repo with no descriptor gets "run wt init"; one
-# with a descriptor gets a one-line summary (slug, slot, ports). Detection
-# and a sentence, no allocation — a repo that wants allocation configures
-# this hook to perform it, which makes the choice explicit.
+# with a descriptor gets a summary (slug, slot, ports) and, when the repo
+# has one, the shared block — what this worktree does not get its own copy
+# of. Detection and a sentence, no allocation — a repo that wants
+# allocation configures this hook to perform it, which makes the choice
+# explicit.
 #
 # Everything this script needs to know about the repo comes from its own
 # managed block at the end of this file (the descriptor filename and the
@@ -56,6 +58,18 @@ for name in $(sed -n 's/^# wt-field: band \([a-z0-9-]*\)=.*/\1/p' "$0"); do
   fi
 done
 echo "wt: worktree $slug (slot $slot):$ports"
+
+# What is *not* isolated, from this file's own managed block. The shared
+# block is hand-authored and its whole purpose is telling whoever works in
+# a worktree what still escapes it — a host socket, a state volume, an
+# account with one rate limit. It has to arrive before the writes it warns
+# about get made, which means on arrival, here, rather than waiting to be
+# asked for.
+shared="$(sed -n 's/^# wt-field: shared=//p' "$0" | head -n1)"
+if [ -n "$shared" ]; then
+  echo "wt: shared with every other worktree, not isolated: $shared"
+  echo "wt: run 'wt show --brief' for what a write to each one affects"
+fi
 
 # --- managed by wt; edits below are overwritten ---
 # wt-field: app=worktree-manager

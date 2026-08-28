@@ -1,6 +1,7 @@
 package spec
 
-// worktrees.go is where a repository says its worktrees go.
+// worktrees.go is where a repository says its worktrees go, and what they
+// branch from.
 //
 // `wt` never creates one — Claude Code's `isolation: "worktree"`, the
 // dispatch harness, a container's clone or a hand-typed `git worktree add`
@@ -20,19 +21,48 @@ import (
 	"strings"
 )
 
-// Worktrees is the spec's `worktrees:` block: one field, the path template
-// of a single worktree.
+// Worktrees is the spec's `worktrees:` block: where a worktree of this
+// repository goes, and what it branches from.
 type Worktrees struct {
 	// Path is the path template, evaluated with {slug}, {app} and {home}.
 	// Absent, DefaultWorktreePath applies; present and empty, validation
 	// refuses it, because an empty path is a typo and not a way to ask for
 	// the default.
 	Path *string `yaml:"path,omitempty"`
+
+	// Base is the git revision a new worktree branches from. Absent,
+	// DefaultWorktreeBase applies; present and empty, validation refuses
+	// it, for the same reason Path does.
+	//
+	// It is here because the alternative is branching from whatever the
+	// asking session happens to have checked out. Ask for a worktree from
+	// inside another worktree and that is the other worktree's branch; ask
+	// from a main checkout nobody has pulled in a fortnight and it is a
+	// fortnight-old main. Neither is visible at the time and both surface
+	// later as work on the wrong parent. The repository saying once what a
+	// tree branches from is the same move as it saying once where trees go.
+	Base *string `yaml:"base,omitempty"`
 }
 
 // DefaultWorktreePath is the template a spec that says nothing gets: the
 // directory Claude Code's own `isolation: "worktree"` creates trees in.
 const DefaultWorktreePath = ".claude/worktrees/{slug}"
+
+// DefaultWorktreeBase is the revision a spec that says nothing branches
+// from. It is a remote-tracking ref rather than `main`: the local branch is
+// only as fresh as the last pull, and the whole point of naming a base is
+// that it does not depend on the state of the checkout that asked.
+const DefaultWorktreeBase = "origin/main"
+
+// WorktreeBase returns the effective base revision, applying the default.
+// It is the value the generated artefacts record, so what doctor compares
+// is the effective base and not the presence of a key.
+func WorktreeBase(s *Spec) string {
+	if s.Worktrees.Base == nil {
+		return DefaultWorktreeBase
+	}
+	return *s.Worktrees.Base
+}
 
 // WorktreePathVars are the variables the path template may reference. The
 // set is deliberately smaller than a resource template's: {slot} is not

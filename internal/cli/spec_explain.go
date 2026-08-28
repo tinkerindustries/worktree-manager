@@ -23,7 +23,7 @@ func runSpecExplain(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	jsonOut := fs.Bool("json", false, "print exactly one JSON object on stdout")
 	slot := fs.Int("slot", 0, "the slot to resolve (1..slots.max)")
-	slug := fs.String("slug", "", "the worktree slug (^[a-z0-9][a-z0-9-]*$, at most 32)")
+	slug := fs.String("slug", "", fmt.Sprintf("the worktree slug (^[a-z0-9][a-z0-9-]*$, at most %d)", spec.SlugMaxLen))
 	var bases []string
 	fs.Var(stringList(&bases), "base", "band base for one port resource, <name>=<port>; repeatable")
 	home := fs.String("home", "", "override {home} (default: the user's home directory)")

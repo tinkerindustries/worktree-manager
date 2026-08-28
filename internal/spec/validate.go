@@ -646,6 +646,9 @@ func effectiveSlotMax(s *Spec) int {
 // for every worktree, and an unknown variable would resolve to nothing at
 // all.
 func validateWorktrees(w *Worktrees) error {
+	if err := validateWorktreeBase(w); err != nil {
+		return err
+	}
 	if w.Path == nil {
 		return nil
 	}
@@ -673,6 +676,29 @@ func validateWorktrees(w *Worktrees) error {
 	}
 	if !seen["slug"] {
 		return &FieldError{Field: field, Reason: "must reference {slug}: without it every worktree of this repository resolves to the same directory"}
+	}
+	return nil
+}
+
+// validateWorktreeBase checks the revision a new worktree branches from.
+// The revision itself is git's to resolve and this package never runs git,
+// so the refusals are the ones that are wrong on their face: an empty value
+// (a typo, not a request for the default), whitespace, and a leading hyphen,
+// which every git command reading this value would take for a flag.
+func validateWorktreeBase(w *Worktrees) error {
+	if w.Base == nil {
+		return nil
+	}
+	b := *w.Base
+	const field = "worktrees.base"
+	if b == "" {
+		return &FieldError{Field: field, Reason: fmt.Sprintf("must not be empty; remove the key for the default (%q)", DefaultWorktreeBase)}
+	}
+	if strings.TrimSpace(b) != b || strings.ContainsAny(b, " \t") {
+		return &FieldError{Field: field, Reason: "must not contain whitespace: it is one git revision, passed to git as a single argument"}
+	}
+	if strings.HasPrefix(b, "-") {
+		return &FieldError{Field: field, Reason: "must not start with a hyphen: git would read the value as a flag rather than a revision"}
 	}
 	return nil
 }

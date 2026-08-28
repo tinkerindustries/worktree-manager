@@ -6,6 +6,7 @@ package spec
 // collision long after the spec was written.
 
 import (
+	"errors"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -149,5 +150,91 @@ func TestWorktreePathRefusals(t *testing.T) {
 func TestWorktreesAbsentIsNotAnOverride(t *testing.T) {
 	if err := validateWorktrees(&Worktrees{}); err != nil {
 		t.Fatalf("an absent worktrees block was refused: %v", err)
+	}
+}
+
+// TestWorktreeBaseDefault: a spec that says nothing branches from
+// origin/main, not from whatever the asking session had checked out. The
+// default is the remote-tracking ref deliberately — a local branch is only
+// as fresh as the last pull, and the point of naming a base is that it does
+// not depend on the state of the checkout that asked.
+func TestWorktreeBaseDefault(t *testing.T) {
+	s := &Spec{App: "bacio"}
+	if got := WorktreeBase(s); got != "origin/main" {
+		t.Errorf("base = %q, want origin/main", got)
+	}
+	if DefaultWorktreeBase != "origin/main" {
+		t.Errorf("DefaultWorktreeBase = %q", DefaultWorktreeBase)
+	}
+}
+
+// A repository that names a base gets it back verbatim: the value is one
+// git revision and this package never interprets it.
+func TestWorktreeBaseOverride(t *testing.T) {
+	for _, want := range []string{"main", "develop", "upstream/trunk", "v1.4.0", "HEAD"} {
+		s := &Spec{App: "bacio", Worktrees: Worktrees{Base: str(want)}}
+		if got := WorktreeBase(s); got != want {
+			t.Errorf("base = %q, want %q", got, want)
+		}
+		if err := Validate(&Spec{
+			Version: 1, App: "bacio",
+			Resources: []Resource{{Type: "port", Name: "api"}},
+			Worktrees: Worktrees{Base: str(want)},
+			Emit:      Emit{Descriptor: Descriptor{Filename: "wt-env.json", Format: "json"}},
+		}); err != nil {
+			t.Errorf("Validate refused the base %q: %v", want, err)
+		}
+	}
+}
+
+// The refusals are the values that are wrong on their face. The revision
+// itself is git's to resolve — this package never runs git — so an
+// unresolvable-but-well-formed base validates here and fails at the point
+// of use, with a message naming the field.
+func TestWorktreeBaseRefusals(t *testing.T) {
+	cases := []struct {
+		name   string
+		base   string
+		reason string
+	}{
+		{"empty", "", "must not be empty"},
+		{"leading hyphen", "--force", "must not start with a hyphen"},
+		{"inner space", "origin/my branch", "must not contain whitespace"},
+		{"trailing space", "origin/main ", "must not contain whitespace"},
+		{"tab", "origin/main\tx", "must not contain whitespace"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := Validate(&Spec{
+				Version: 1, App: "bacio",
+				Resources: []Resource{{Type: "port", Name: "api"}},
+				Worktrees: Worktrees{Base: str(c.base)},
+				Emit:      Emit{Descriptor: Descriptor{Filename: "wt-env.json", Format: "json"}},
+			})
+			if err == nil {
+				t.Fatalf("base %q validated, want refusal", c.base)
+			}
+			var fe *FieldError
+			if !errors.As(err, &fe) || fe.Field != "worktrees.base" {
+				t.Fatalf("error = %v, want a FieldError on worktrees.base", err)
+			}
+			if !strings.Contains(fe.Reason, c.reason) {
+				t.Errorf("reason = %q, want it to contain %q", fe.Reason, c.reason)
+			}
+		})
+	}
+}
+
+// The base is checked even when the block names no path: a spec setting
+// only worktrees.base must not slip past validation.
+func TestWorktreeBaseCheckedWithoutAPath(t *testing.T) {
+	err := Validate(&Spec{
+		Version: 1, App: "bacio",
+		Resources: []Resource{{Type: "port", Name: "api"}},
+		Worktrees: Worktrees{Base: str("")},
+		Emit:      Emit{Descriptor: Descriptor{Filename: "wt-env.json", Format: "json"}},
+	})
+	if err == nil {
+		t.Fatal("an empty base with no path validated, want refusal")
 	}
 }

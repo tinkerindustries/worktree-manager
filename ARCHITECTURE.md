@@ -288,8 +288,9 @@ Import rules, fixed for the whole plan:
 - `Substitute(t, ctx, resolved)` resolves a non-resource template — a
   hand-authored shared name, a seed source, an emit.env key — against the
   builtin variables plus the already-resolved resource table.
-- `worktrees.path` is where the repository's worktrees go, and the one
-  spec field neither binary acts on: nothing here creates a worktree.
+- The `worktrees:` block is where the repository's worktrees go and what
+  they branch from — the two spec fields neither binary acts on: nothing
+  here creates a worktree.
   `WorktreePathTemplate` applies the default — `.claude/worktrees/{slug}`,
   the directory Claude Code's own `isolation: "worktree"` creates trees in
   — and `WorktreeLocation` resolves it for one slug against the **main
@@ -300,6 +301,17 @@ Import rules, fixed for the whole plan:
   is the other half: trees inside the repository are untracked content in
   the main checkout, so init ignores the directory the same way it ignores
   the descriptor.
+  `worktrees.base` is the git revision a new tree branches from, and
+  `WorktreeBase` applies the default `origin/main`. It is a
+  remote-tracking ref rather than a local branch because a local branch is
+  only as fresh as the last pull, and the point of naming a base is that
+  it does not depend on the state of the checkout that asked: without one
+  the `WorktreeCreate` hook branches from the asking session's HEAD, which
+  is the other worktree's branch when the ask came from inside one. The
+  value is one git revision and this package never runs git, so validation
+  refuses only what is wrong on its face — empty, whitespace, a leading
+  hyphen git would read as a flag — and the hook is where an unresolvable
+  revision is reported, naming the field.
 
 ## Identity and containment (`internal/identity`, `internal/platform`)
 
@@ -810,7 +822,12 @@ The six rules of `docs/ARCHITECTURE.md` §8.6, stated as invariants:
   reaches the coordinator goes through it. `show` and `guard` never dial,
   and `spec validate`, `spec explain` and `spec path` are pure functions
   of the spec and their arguments, so all five work with the coordinator
-  stopped.
+  stopped. `rm` is the one verb that dials twice: once to tear down, and
+  once afterwards to ask doctor whether anything of the entry outlived the
+  teardown. The second call failing is reported as an unverified teardown,
+  never as drift — rm has already destroyed what it destroyed, so this
+  changes no exit code, and claiming drift on no evidence would be the
+  silent degrade in the other direction.
   `daemon status` dials as its reachability probe but treats failure as a
   state, never as an error.
 - Results go to stdout; diagnostics to stderr. `--json` prints exactly one
@@ -844,6 +861,27 @@ The six rules of `docs/ARCHITECTURE.md` §8.6, stated as invariants:
   sentence naming the worktree-onboarding skill. `claude install` puts
   that skill in `~/.claude/skills/worktree-onboarding` so the sentence
   names something the reader can run.
+- Three decisions in the create hook exist because the caller is not a
+  person. Claude Code generates the name, so a name that breaks the slug
+  rule is normalised (`wt spec path --name`) rather than refused: refusing
+  costs somebody a worktree over a name they never typed, and the remedy —
+  pick a shorter one — is addressed to nobody in the room. The base comes
+  from `worktrees.base` rather than the asking session's HEAD, because a
+  worktree asked for from inside another worktree would otherwise branch
+  off that worktree's work silently. And a branch of the target name that
+  already exists — locally, as a remote-tracking ref, or on origin per
+  `ls-remote` — stops the creation instead of being checked out, because
+  adopting somebody else's branch surfaces much later as a rejected
+  non-fast-forward push, after work has been committed onto it. An
+  unreachable origin is reported as not knowing rather than as an answer.
+  `WT_HOOK_NO_ENV=1` makes the worktree and skips `wt init`, for a change
+  that does not need the repository's stack up.
+- The remove hook reports `wt rm`'s exit 3 and exit 4 as the different
+  things they are. Exit 3 is a safety check that ran and refused, and the
+  remedy is a person deciding; exit 4 is a check that could not run at
+  all — usually gh missing or unauthenticated, failing closed on purpose —
+  and the remedy is installing the tool. One message for both leaves a
+  reader unable to tell which they have.
 - `ports scan` reports every LISTEN TCP socket in the coordinator's
   network namespace — port, pid, command, sorted — as facts; it never
   classifies what it finds and never reserves anything. Discovery is

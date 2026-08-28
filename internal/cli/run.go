@@ -17,10 +17,18 @@ usage:
   wt spec explain --slot N --slug S  resolve the resource table for one slot
       [--base <name>=<port>]...      one base per port resource
       [--home <path>] [--worktree <path>] [--json]
-  wt spec path --slug S              where a worktree of this repository goes:
-      [--home <path>] [--root <dir>]    the spec's worktrees.path, resolved
-  wt show [--json] [--cwd <dir>]     read the descriptor back from the
-                                     working tree
+  wt spec path --slug S | --name N   where a worktree of this repository goes
+      [--home <path>] [--root <dir>]    and what it branches from. --slug
+      [--json]                       takes a slug and refuses anything else;
+                                     --name takes a caller-supplied name and
+                                     normalises it, for the callers handed a
+                                     name rather than asked for one. --json
+                                     adds the slug and the base revision
+  wt show [--json | --brief]         read the descriptor back from the
+      [--cwd <dir>]                  working tree. --brief is the arrival
+                                     form: identity, the isolated values,
+                                     and the shared block — what this
+                                     worktree has no copy of its own of
   wt guard [--json] [--cwd <dir>]    the enforcement hook: deny a tool call
       [--tool <name>] [--input <json>]  whose file_path escapes the worktree.
       [--path <file>]                accepts a PreToolUse payload on stdin

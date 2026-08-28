@@ -327,6 +327,45 @@ func TestTripwireScriptRuntime(t *testing.T) {
 	if strings.Contains(out, "db=") {
 		t.Errorf("the summary listed a non-port resource: %q", out)
 	}
+
+	// The shared block arrives on the same breath. It is the part that has
+	// to be read before the writes it warns about get made, so it belongs
+	// on arrival rather than waiting to be asked for; the impacts are one
+	// named command away.
+	for _, want := range []string{"not isolated", "shared_db", "wt show --brief"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the summary lacks the shared block's %q: %q", want, out)
+		}
+	}
+}
+
+// A repository whose spec declares nothing shared says nothing about it:
+// the line is a warning, and a warning with nothing in it trains a reader
+// to skip the whole summary.
+func TestTripwireSaysNothingAboutAnEmptySharedBlock(t *testing.T) {
+	sp := fixtureSpec(t)
+	sp.Shared = nil
+	for i := range sp.Resources {
+		if sp.Resources[i].Type == "state-path" {
+			sp.Resources[i].Default = nil
+		}
+	}
+	files, err := Render(sp, map[string]int{"api": 8200}, Options{})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	for _, f := range files {
+		if f.Path != HookTripwire {
+			continue
+		}
+		block := strings.Join(managed.Render(f.Fields, f.BlockContent), "\n")
+		if strings.Contains(block, "# wt-field: shared=\n") {
+			continue
+		}
+		if got := f.Fields["shared"]; got != "" {
+			t.Errorf("shared field = %q, want empty", got)
+		}
+	}
 }
 
 // TestGuardHookScriptRuntime runs the rendered PreToolUse hook against a
@@ -389,10 +428,37 @@ exit "$code"
 	}
 	payload := `{"tool_name":"Write","tool_input":{"file_path":"/repo/wt/x"}}`
 
+	// The hook's stdout is the PreToolUse hookSpecificOutput object, and
+	// Claude Code reads it by field: hookEventName is the event's name,
+	// permissionDecision is its sibling, and a denial's reason field is
+	// permissionDecisionReason. A shape that merely contains the decision
+	// somewhere is not the contract, so each case is decoded and checked.
+	decision := func(t *testing.T, out string) (string, string) {
+		t.Helper()
+		var got struct {
+			HookSpecificOutput struct {
+				HookEventName            string `json:"hookEventName"`
+				PermissionDecision       string `json:"permissionDecision"`
+				PermissionDecisionReason string `json:"permissionDecisionReason"`
+			} `json:"hookSpecificOutput"`
+		}
+		line := strings.TrimSpace(out)
+		if i := strings.LastIndex(line, "\n"); i >= 0 {
+			line = line[i+1:]
+		}
+		if err := json.Unmarshal([]byte(line), &got); err != nil {
+			t.Fatalf("hook stdout is not the hook output object: %v (%q)", err, out)
+		}
+		if got.HookSpecificOutput.HookEventName != "PreToolUse" {
+			t.Errorf("hookEventName = %q, want PreToolUse", got.HookSpecificOutput.HookEventName)
+		}
+		return got.HookSpecificOutput.PermissionDecision, got.HookSpecificOutput.PermissionDecisionReason
+	}
+
 	// Allowed.
 	code, out, _ := run(nil, payload)
-	if code != 0 || !strings.Contains(out, `"permissionDecision":"allow"`) {
-		t.Errorf("allow: exit %d, stdout %q", code, out)
+	if d, _ := decision(t, out); code != 0 || d != "allow" {
+		t.Errorf("allow: exit %d, decision %q", code, d)
 	}
 
 	// Denied: exit 2, the deny JSON with the reason, and WT_GUARD_CACHE set.
@@ -400,11 +466,12 @@ exit "$code"
 	if code != 2 {
 		t.Errorf("deny: exit %d, want 2", code)
 	}
-	if !strings.Contains(out, `"permissionDecision":"deny"`) {
-		t.Errorf("deny: stdout lacks the deny decision: %q", out)
+	d, reason := decision(t, out)
+	if d != "deny" {
+		t.Errorf("deny: decision %q, want deny", d)
 	}
-	if !strings.Contains(out, "worktree root is /repo/wt") {
-		t.Errorf("deny: the reason did not reach the model: %q", out)
+	if !strings.Contains(reason, "worktree root is /repo/wt") {
+		t.Errorf("deny: the reason did not reach the model: %q", reason)
 	}
 	// The fake wt reported whether the hook exported WT_GUARD_CACHE.
 	rep, _ := os.ReadFile(report)
@@ -414,8 +481,8 @@ exit "$code"
 
 	// Guard fails: fail open and say so.
 	code, out, errb := run([]string{"FAKE_GUARD_EXIT=7"}, payload)
-	if code != 0 || !strings.Contains(out, `"permissionDecision":"allow"`) {
-		t.Errorf("guard failure: exit %d, stdout %q", code, out)
+	if d, _ := decision(t, out); code != 0 || d != "allow" {
+		t.Errorf("guard failure: exit %d, decision %q", code, d)
 	}
 	if !strings.Contains(errb, "failed open") && !strings.Contains(errb, "allowed") {
 		t.Errorf("the fail-open note is missing: %q", errb)
@@ -426,8 +493,8 @@ exit "$code"
 	cmd.Env = append(os.Environ(), "PATH="+t.TempDir())
 	cmd.Stdin = strings.NewReader(payload)
 	outb, _ := cmd.CombinedOutput()
-	if !strings.Contains(string(outb), `"permissionDecision":"allow"`) {
-		t.Errorf("missing wt: stdout %q, want allow", outb)
+	if d, _ := decision(t, string(outb)); d != "allow" {
+		t.Errorf("missing wt: decision %q, want allow", d)
 	}
 }
 

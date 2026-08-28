@@ -21,7 +21,7 @@ export WT_GUARD_CACHE="${WT_GUARD_CACHE:-${TMPDIR:-/tmp}/wt-guard-cache}"
 
 if ! command -v wt >/dev/null 2>&1; then
   echo "note: wt is not on PATH; this call was allowed (the guard failed open)" >&2
-  echo '{"hookSpecificOutput":{"hookEventName":{"permissionDecision":"allow"}}}'
+  echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}'
   exit 0
 fi
 
@@ -29,7 +29,7 @@ out="$(wt guard --json 2>&1)"
 code=$?
 case "$code" in
 0)
-  echo '{"hookSpecificOutput":{"hookEventName":{"permissionDecision":"allow"}}}'
+  echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}'
   exit 0
   ;;
 3)
@@ -38,14 +38,14 @@ case "$code" in
   # the model, so it corrects itself and retries.
   reason="$(printf '%s\n' "$out" | sed -n 's/.*"reason": "\([^"]*\)".*/\1/p' | head -n1)"
   [ -n "$reason" ] || reason="denied by wt guard"
-  printf '{"hookSpecificOutput":{"hookEventName":{"permissionDecision":"deny","denyReason":"%s"}}}\n' "$reason"
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' "$reason"
   exit 2
   ;;
 *)
   # Fail open and say so once: a guard that denies on its own errors makes
   # the session unusable.
   echo "note: wt guard could not classify (exit $code); this call was allowed — the guard fails open on its own errors" >&2
-  echo '{"hookSpecificOutput":{"hookEventName":{"permissionDecision":"allow"}}}'
+  echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}'
   exit 0
   ;;
 esac

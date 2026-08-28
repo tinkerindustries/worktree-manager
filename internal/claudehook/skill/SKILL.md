@@ -157,11 +157,30 @@ worktrees:
 The template takes `{slug}` (required — without it every worktree
 resolves to the same directory), `{app}` and `{home}`; a relative path
 resolves against the main checkout, never cwd. Check it with `wt spec
-path --slug <slug>`, which is what the generated create skill runs. A
+path --slug <slug>`, which is what the `WorktreeCreate` hook runs. A
 repository keeping its trees inside itself needs the directory
 gitignored, or the main checkout is untracked-dirty from the first
 worktree on — `wt init` writes the line to `info/exclude` itself, and
 adoption's phase 6 is where it is committed to `.gitignore` instead.
+
+The same block's `base:` is what a new worktree branches from, and it
+defaults to `origin/main`. Ask what this repository's trunk is called and
+set it when the answer is not `main`:
+
+```yaml
+worktrees:
+  base: "origin/develop"
+```
+
+The default is a remote-tracking ref on purpose. Without a base named
+here the hook would branch from whatever the asking session had checked
+out, which is the other worktree's branch when the ask came from inside
+one, and a stale trunk when the checkout has not been pulled — neither
+visible at the time. A repository with no remote can name a local ref
+(`main`). Where the base is `origin/main` — named or defaulted — and it
+does not resolve, the hook falls back to the main checkout's HEAD and says
+so; any other base that does not resolve is a refusal naming the field,
+because the repository asked for something specific and did not get it.
 
 ## Phase 5 — Generate
 

@@ -74,8 +74,8 @@ func (h *Handler) allocate(s *Session, req *api.Request) *api.Response {
 			"fix the spec, then re-run the allocation")
 	}
 	if !spec.ValidSlug(args.Slug) {
-		return respErr(3, fmt.Sprintf("slug %q is not valid (must match ^[a-z0-9][a-z0-9-]*$, at most 32 characters)", args.Slug),
-			"give a kebab-case slug of at most 32 characters")
+		return respErr(3, fmt.Sprintf("slug %q is not valid (must match ^[a-z0-9][a-z0-9-]*$, at most %d characters)", args.Slug, spec.SlugMaxLen),
+			fmt.Sprintf("give a kebab-case slug of at most %d characters", spec.SlugMaxLen))
 	}
 	if args.Path == "" {
 		return respErr(3, "the worktree path is required", "run from inside the worktree, or pass the worktree path")

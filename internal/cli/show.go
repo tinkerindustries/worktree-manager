@@ -16,12 +16,14 @@ import (
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 )
 
-// runShow implements `wt show [--json] [--cwd <dir>]`: it reads the
-// descriptor back from the working tree and prints it. Table by default,
-// `--json` for consumers — every generated doc, skill and briefing points at
-// this verb, so every value an agent might otherwise hardcode is in its
-// output (05-delivery.md §7). It works with no coordinator installed and
-// opens no socket.
+// runShow implements `wt show [--json | --brief] [--cwd <dir>]`: it reads
+// the descriptor back from the working tree and prints it. Table by
+// default, `--json` for consumers — every generated doc, skill and briefing
+// points at this verb, so every value an agent might otherwise hardcode is
+// in its output (05-delivery.md §7). `--brief` is the arrival form: the
+// identity, the isolated values and the shared block, which is the part
+// that has to be read before the writes it warns about get made. It works
+// with no coordinator installed and opens no socket.
 //
 // It says something useful in each of the cases it can distinguish: not a
 // repository (exit 4); a repository with no spec, which means not adopted
@@ -32,6 +34,7 @@ func runShow(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("show", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOut := fs.Bool("json", false, "print exactly one JSON object on stdout")
+	brief := fs.Bool("brief", false, "the few lines worth reading on arrival: identity, ports, and what is shared")
 	cwd := fs.String("cwd", "", "classify this directory (default: the process cwd)")
 	if err := fs.Parse(args); err != nil {
 		return ExitUsage
@@ -40,6 +43,12 @@ func runShow(args []string, stdout, stderr io.Writer) int {
 		WriteError(stderr, UsageError(
 			"run 'wt show' with no arguments",
 			"unexpected arguments: %v", fs.Args()))
+		return ExitUsage
+	}
+	if *jsonOut && *brief {
+		WriteError(stderr, UsageError(
+			"--json is the whole descriptor and --brief is the summary; pick one",
+			"give --json or --brief, not both"))
 		return ExitUsage
 	}
 
@@ -181,6 +190,10 @@ func runShow(args []string, stdout, stderr io.Writer) int {
 		}
 		return ExitOK
 	}
+	if *brief {
+		writeShowBrief(stdout, d)
+		return ExitOK
+	}
 	writeShowTable(stdout, d)
 	return ExitOK
 }
@@ -214,6 +227,43 @@ func showVerdict(stdout, stderr io.Writer, jsonOut bool, res showResult, err *Er
 	}
 	WriteError(stderr, err)
 	return err.Code
+}
+
+// writeShowBrief prints the short form: the identity, the values an agent
+// would otherwise hardcode, and the shared block.
+//
+// It exists for the shared block. That block is hand-authored and its whole
+// purpose is telling whoever works in a worktree what still escapes it — a
+// host docker socket, one state volume, one account with one rate limit.
+// The full table carries it, but under six other sections, and a warning
+// read after the write it warns about is not a warning. The SessionStart
+// tripwire names this verb, so the impacts are one command away from the
+// line that says a repository has shared resources at all.
+//
+// A repository with an empty shared block gets a line saying so rather than
+// nothing: "no shared resources declared" and "the block was never filled
+// in" look identical when the section is simply absent.
+func writeShowBrief(stdout io.Writer, d *descriptor.Descriptor) {
+	fmt.Fprintf(stdout, "worktree %s (slot %d) of %s\n", d.Slug, d.Slot, d.App)
+	if d.Description != "" {
+		fmt.Fprintf(stdout, "  %s\n", d.Description)
+	}
+
+	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "\nISOLATED\tVALUE")
+	for _, name := range slices.Sorted(maps.Keys(d.Resources)) {
+		r := d.Resources[name]
+		fmt.Fprintf(w, "%s\t%v\n", name, r.Value)
+	}
+
+	fmt.Fprintln(w, "\nSHARED — every worktree writes the same one")
+	if len(d.Shared) == 0 {
+		fmt.Fprintln(w, "(none declared)")
+	}
+	for _, sh := range d.Shared {
+		fmt.Fprintf(w, "%s\t%s\n", sh.Name, sh.Impact)
+	}
+	finish(w)
 }
 
 // writeShowTable prints the descriptor as a table, in a fixed order, so a

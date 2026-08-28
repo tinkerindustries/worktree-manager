@@ -32,9 +32,9 @@ It is idempotent, and re-running it repairs a worktree that drifted.
 ## What stays shared and why
 
 The resources marked shared are reached unisolated by every worktree and
-the main checkout. Writes to them escape the worktree — see the managed
-block's shared list, and the descriptor's shared block for the blast
-radius of each.
+the main checkout. Writes to them escape the worktree. The SessionStart
+tripwire names them on arrival; `wt show --brief` adds what a write to
+each one affects.
 
 ## The registry and the resolution chain
 
