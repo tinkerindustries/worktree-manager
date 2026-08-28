@@ -107,6 +107,14 @@ type Handler struct {
 	// test shortens it to exercise the sweep without waiting an hour.
 	SweepInterval time.Duration
 
+	// LookHelper is how doctor asks whether the coordinator can reach a
+	// helper binary. It is the same resolution every driver uses —
+	// platform.LookHelper: this process's PATH, then the known install
+	// directories — asked in the coordinator's own process, because the
+	// coordinator's environment is the one that decides. Nil means
+	// platform.LookHelper; a test installs a fake.
+	LookHelper func(string) (string, error)
+
 	// Gh is the scheduled sweep's gh seam: the coordinator shells out to
 	// gh with the given working directory ("" for none), the way the
 	// interactive verb does. Nil means the real gh runner; tests install

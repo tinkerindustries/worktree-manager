@@ -8,6 +8,7 @@ package coord
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -287,7 +288,15 @@ func TestDoctorMachineCapacityFinding(t *testing.T) {
 	})
 
 	t.Run("an unanswerable runner states the bound", func(t *testing.T) {
-		h, sess := setupMachineHarness(t, nil)
+		// The runner is a fake that cannot answer, not the platform's
+		// real one. Passing nil left the check on whatever the host had:
+		// on a machine with colima installed the note appeared only
+		// because parseColimaList could not read what colima writes, so
+		// fixing that parser turned this into a pass on one machine and a
+		// failure on the next.
+		h, sess := setupMachineHarness(t, &coordFakeMachine{
+			listErr: errors.New("the colima daemon cannot answer"),
+		})
 		// The entry's path must sit inside a repo with the committed
 		// spec, or doctor cannot reach the spec-driven checks.
 		_, wt := sweepRepo(t, machineSpec(t, ""))

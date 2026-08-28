@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 )
 
@@ -62,21 +63,45 @@ type MachineRunner interface {
 // appended by machineUnavailable, so the message is never doubled.
 var ErrMachineUnavailable = errors.New("no VM runner available on this platform")
 
-// parseColimaList parses `colima list --json` — one object per profile
-// with its status. The empty document "[]" is valid and means no
-// profiles; anything else that does not parse is unavailable. A profile
-// in any state other than Running does not count against the capacity
-// guard.
+// colimaProfile is one profile as `colima list --json` reports it.
+type colimaProfile struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
+// parseColimaList parses `colima list --json`. Colima writes one JSON
+// object per line — a JSON stream, not a JSON array — so the array form
+// the first implementation assumed never parsed and the machine driver
+// could not list profiles at all on any machine with a profile on it.
+// Both shapes are accepted here: the stream Colima emits today, and the
+// array a document starting with "[" would be, because the two cost one
+// branch and only one of them has ever been verified against a real
+// Colima.
+//
+// Empty output means no profiles. A profile in any state other than
+// Running does not count against the capacity guard.
 func parseColimaList(out []byte) ([]MachineInstance, error) {
-	if strings.TrimSpace(string(out)) == "[]" {
+	trimmed := strings.TrimSpace(string(out))
+	if trimmed == "" || trimmed == "[]" {
 		return nil, nil
 	}
-	var profiles []struct {
-		Name   string `json:"name"`
-		Status string `json:"status"`
-	}
-	if err := json.Unmarshal(out, &profiles); err != nil {
-		return nil, err
+	var profiles []colimaProfile
+	if strings.HasPrefix(trimmed, "[") {
+		if err := json.Unmarshal([]byte(trimmed), &profiles); err != nil {
+			return nil, err
+		}
+	} else {
+		dec := json.NewDecoder(strings.NewReader(trimmed))
+		for {
+			var p colimaProfile
+			if err := dec.Decode(&p); err != nil {
+				if errors.Is(err, io.EOF) {
+					break
+				}
+				return nil, err
+			}
+			profiles = append(profiles, p)
+		}
 	}
 	instances := make([]MachineInstance, 0, len(profiles))
 	for _, p := range profiles {

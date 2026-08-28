@@ -210,7 +210,8 @@ configuration; neither binary branches on repo identity.
   Linux, the logon scheduled task on Windows), and the machine runner seam
   (Colima on macOS, WSL2 on Windows, nothing elsewhere — the
   `MachineRunner` interface the machine driver shells out through and its
-  fake-runner tests fake). The only package permitted to branch on `GOOS`.
+  fake-runner tests fake; `colima list --json` is a JSON stream, one
+  object per line, not an array). The only package permitted to branch on `GOOS`.
 - `internal/descriptor` — the per-worktree allocation record: type,
   reader, atomic writer, the shared-block and isolation-state builders,
   and the `info/exclude` ignore rule — used twice by init, for the
@@ -305,7 +306,12 @@ configuration; neither binary branches on repo identity.
   ledger) and the generated-artefact drift check: `doctor` scans each
   repo's tracked files for the managed marker, compares the recorded
   `# wt-field:` records against the current spec and band ledger, and
-  reports the generated file and the field that moved. Phase 8 adds the
+  reports the generated file and the field that moved. `doctor` also reports the helper binaries the coordinator cannot
+  reach, asked through `platform.LookHelper` in the coordinator's own
+  process — git, gh and lsof always, docker and the machine runner where
+  a spec declares the resources that need them. It covers what
+  `LookHelper`'s known install directories cannot: a custom location, for
+  which the remedy names `WT_HELPER_DIRS`. Phase 8 adds the
   machine-capacity doctor finding (an app approaching `max_concurrent`,
   naming what is running and how to tear one down) and the scheduled
   cleanup sweep: the coordinator's own timer (hourly, on the one-minute
