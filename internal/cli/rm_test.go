@@ -554,8 +554,26 @@ func TestRmAbandonDryRunPreviewSaysAbandonNotTeardown(t *testing.T) {
 // which only happens as part of a state-path's own teardown — would
 // silently do nothing under it. The combination is refused before rm ever
 // dials the coordinator, the same way an unresolvable --purge value is.
+//
+// The repository is built inline here rather than through purge_test.go's
+// purgeSpecRepo/withPurgeDB: those live behind a `//go:build !acceptance`
+// tag, and this file carries no tag of its own, so a call to them would
+// leave `go vet -tags acceptance ./...` (CLAUDE.md's own gate) unable to
+// compile this package at all.
 func TestRmAbandonWithPurgeIsUsage(t *testing.T) {
-	dir := purgeSpecRepo(t, withPurgeDB)
+	sp := lifecycleSpec(t)
+	for i := range sp.Resources {
+		if sp.Resources[i].Name == "db" {
+			sp.Resources[i].Purge = &spec.Purge{Flag: "--purge-db"}
+		}
+	}
+	dir := t.TempDir()
+	data, err := spec.EmitYAML(sp)
+	if err != nil {
+		t.Fatalf("emitting the spec: %v", err)
+	}
+	writeT(t, filepath.Join(dir, "wt.yaml"), string(data))
+
 	code, _, stderr := runCLI(t, "rm", "--cwd", dir, "--slug", "gone", "--abandon", "--purge", "db")
 	if code != ExitUsage {
 		t.Fatalf("exit = %d, want %d (usage); stderr:\n%s", code, ExitUsage, stderr)
