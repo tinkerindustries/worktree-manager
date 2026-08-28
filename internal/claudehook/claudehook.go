@@ -139,6 +139,15 @@ type Options struct {
 	// the hooks, so the notice the create hook prints in an unadopted
 	// repository names something the reader can run from anywhere.
 	Skill bool
+	// RefreshOnly brings an existing installation up to date and creates
+	// none. It is what a binary upgrade runs: the scripts and the skill
+	// are embedded in the binary, so a new wt carries new copies of both,
+	// and without this they would sit unread while the old ones stayed on
+	// disk. An installation that is not there is left absent — registering
+	// Claude Code hooks is the user's opt-in and an upgrade never makes it
+	// for them — and a file the user has edited is skipped rather than
+	// overwritten, because a binary upgrade should not fail over one.
+	RefreshOnly bool
 }
 
 // ConflictError is the refusal to write over something the user put there:
@@ -166,15 +175,53 @@ func (e *ConflictError) Error() string {
 		e.What, e.Path, e.Found, e.Flag)
 }
 
+// Installed reports whether this machine has the Claude Code integration.
+// The signal is a hook script on disk: Install always writes both and
+// Uninstall removes both, so either one being there means somebody opted
+// in. Ownership is a separate question — a script the user has since
+// edited still counts as installed, and RefreshOnly skips it rather than
+// treating the installation as absent.
+func Installed(l Layout) (bool, error) {
+	for _, s := range scripts {
+		switch _, err := os.Stat(l.ScriptPath(s.File)); {
+		case err == nil:
+			return true, nil
+		case errors.Is(err, os.ErrNotExist):
+		default:
+			return false, fmt.Errorf("reading %s: %w", l.ScriptPath(s.File), err)
+		}
+	}
+	return false, nil
+}
+
 // Install writes both scripts and registers both events. It is idempotent:
 // a second run over an unchanged installation reports every file
 // unchanged and rewrites nothing.
 func Install(l Layout, opts Options) ([]Change, error) {
+	if opts.RefreshOnly {
+		present, err := Installed(l)
+		if err != nil {
+			return nil, err
+		}
+		if !present {
+			return []Change{{Action: "skipped", Path: l.HooksDir(),
+				Detail: "no Claude Code hooks here; run 'wt claude install' to add them"}}, nil
+		}
+	}
+
 	// Settings are edited last but validated first: a refusal there
 	// should not leave scripts behind on the way to it.
 	probe := opts
 	probe.DryRun = true
 	if _, err := updateSettings(l, probe, true); err != nil {
+		// A refresh never argues with a registration the user has
+		// repointed: it reports the whole refresh skipped and lets the
+		// upgrade finish.
+		var ce *ConflictError
+		if opts.RefreshOnly && errors.As(err, &ce) {
+			return []Change{{Action: "skipped", Path: ce.Path,
+				Detail: skipDetail(ce)}}, nil
+		}
 		return nil, err
 	}
 
@@ -193,7 +240,12 @@ func Install(l Layout, opts Options) ([]Change, error) {
 			changes = append(changes, Change{Action: "unchanged", Path: path, Detail: "already current"})
 			continue
 		case !ours(existing) && !opts.Force:
-			return nil, &ConflictError{Path: path, Found: "a file wt did not write", Flag: "--force"}
+			ce := &ConflictError{Path: path, Found: "a file wt did not write", Flag: "--force"}
+			if opts.RefreshOnly {
+				changes = append(changes, Change{Action: "skipped", Path: path, Detail: skipDetail(ce)})
+				continue
+			}
+			return nil, ce
 		default:
 			changes = append(changes, Change{Action: "replace", Path: path})
 		}
@@ -248,7 +300,12 @@ func Uninstall(l Layout, opts Options) ([]Change, error) {
 		case err != nil:
 			return nil, fmt.Errorf("reading %s: %w", path, err)
 		case !ours(existing) && !opts.Force:
-			return nil, &ConflictError{Path: path, Found: "a file wt did not write", Flag: "--force"}
+			ce := &ConflictError{Path: path, Found: "a file wt did not write", Flag: "--force"}
+			if opts.RefreshOnly {
+				changes = append(changes, Change{Action: "skipped", Path: path, Detail: skipDetail(ce)})
+				continue
+			}
+			return nil, ce
 		}
 		changes = append(changes, Change{Action: "remove", Path: path})
 		if opts.DryRun {
@@ -455,6 +512,12 @@ func renderScript(body []byte, wtBinary string) []byte {
 	b.WriteString(managed.EndMarker)
 	b.WriteString("\n")
 	return b.Bytes()
+}
+
+// skipDetail is what a refresh says instead of raising a conflict: what
+// stopped it, and the flag that would go through anyway.
+func skipDetail(ce *ConflictError) string {
+	return fmt.Sprintf("%s; left as it is (%s overwrites it)", ce.Found, ce.Flag)
 }
 
 // ours reports whether a file carries the managed marker, which is what
