@@ -66,11 +66,22 @@ base="$(git -C "$cwd" rev-parse HEAD 2>/dev/null)" \
 
 wt="$(sed -n 's/^# wt-field: wt=//p' "$self" | head -n1)"
 [ -x "$wt" ] || wt="$(command -v wt 2>/dev/null || true)"
+# Absolute, because the spec-path call below runs from $root: a relative
+# wt would resolve against the wrong directory there.
+case "$wt" in
+  "" | /*) ;;
+  *) wt="$(CDPATH= cd -- "$(dirname -- "$wt")" && pwd)/$(basename -- "$wt")" ;;
+esac
 
 if [ -f "$root/wt.yaml" ] && [ -n "$wt" ] && [ -x "$wt" ]; then
   adopted=1
-  path="$("$wt" spec path --slug "$slug" --root "$root" 2>>"$log_file")" \
-    || die "wt spec path refused the slug $slug"
+  # Run from the main checkout, not the session's cwd. `wt spec path`
+  # finds wt.yaml by walking up from where it runs, and --root only says
+  # what a relative template resolves against — so a hook invoked from
+  # outside the repository would look for the spec in the wrong tree and
+  # fail, having already found the right one at $root/wt.yaml above.
+  path="$(cd "$root" && "$wt" spec path --slug "$slug" --root "$root" 2>>"$log_file")" \
+    || die "wt spec path could not resolve the slug $slug; see $log_file"
 else
   adopted=0
   path="$root/.claude/worktrees/$slug"
