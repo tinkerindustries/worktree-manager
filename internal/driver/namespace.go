@@ -10,6 +10,37 @@ package driver
 // objects again by asking the daemon for everything carrying
 // com.docker.compose.project=<name> (the discover-rather-than-create rule,
 // ARCHITECTURE.md §7.1).
+//
+// Two rails were added together (items 3 and 4) because the second only
+// exists to fix a bug the first would otherwise still have left reachable.
+// A namespace resource may declare machine:, naming the machine resource
+// it lives inside; namespaceDocker resolves that into the bound machine's
+// own docker endpoint (platform.MachineRunner.DockerEndpoint) and every
+// docker call this driver makes on the resource's behalf runs against it,
+// never the coordinator's ambient DOCKER_HOST or docker context — colima
+// start changes that context as a side effect, so with two worktrees'
+// machines running, the ambient daemon was only ever right for one of
+// them, and a teardown addressing the other one's daemon could SUCCEED
+// against the wrong worktree's containers with no error to notice. A
+// namespace with no machine: binding is unaffected: namespaceDocker
+// returns env.Docker unchanged, exactly the ambient seam every namespace
+// used before either rail existed.
+//
+// The second rail is namespaceMachineGone: TeardownOrder destroys a
+// machine last, after its dependents, so when a namespace's own teardown
+// has already failed (because its bound machine died first, or was
+// deleted out from under it), the machine is deleted next and the entry
+// is stuck — its namespace can never reach a daemon that no longer exists,
+// and holding the slot protects nothing a deleted VM could still contain.
+// A namespace whose bound machine instance is absent from the runner's own
+// List() is vacuously torn down: a compose project inside a deleted VM is
+// gone, full stop. This is deliberately narrower than "the daemon is
+// unreachable" — Docker Desktop merely being stopped must never vacuously
+// free a slot with live containers behind it; only a definite "no instance
+// by this name exists on the runner" counts, and every other outcome
+// (the runner itself unavailable, the list call failing, the machine's own
+// resolved value missing) falls through to the ordinary path, which
+// reports the truth rather than guessing.
 
 import (
 	"errors"
@@ -20,6 +51,7 @@ import (
 
 	yaml "github.com/goccy/go-yaml"
 
+	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
 )
 
@@ -69,13 +101,14 @@ func (*Namespace) Probe(r *spec.Resource, value any, env Env) ProbeResult {
 	if !ok || project == "" {
 		return ProbeUnavailable
 	}
-	if env.Docker == nil {
+	d, err := namespaceDocker(r, env)
+	if err != nil || d == nil {
 		return ProbeUnavailable
 	}
-	if err := env.Docker.Version(); err != nil {
+	if err := d.Version(); err != nil {
 		return ProbeUnavailable
 	}
-	objs, err := projectObjects(env.Docker, project)
+	objs, err := projectObjects(d, project)
 	if err != nil {
 		return ProbeUnavailable
 	}
@@ -106,6 +139,10 @@ func (*Namespace) Teardown(r *spec.Resource, value any, env Env) error {
 	if !ok || project == "" {
 		return fmt.Errorf("namespace driver: teardown of resource %q: value %#v is not a project name", r.Name, value)
 	}
+	// The host-global reservation refusal runs first, exactly as it always
+	// has: label-based teardown must never reach a co-resident stack the
+	// tool knows nothing else about, and that is true whether or not this
+	// resource's own bound machine is still around.
 	if res := matchReservation(project, env.Reservations); res != nil {
 		held := "ports " + strings.Join(res.PortsStrings(), ", ")
 		if len(res.Ports) == 0 {
@@ -115,27 +152,133 @@ func (*Namespace) Teardown(r *spec.Resource, value any, env Env) error {
 			"refusing to tear down compose project %q: it matches the host-global reservation %q (%s) — label-based teardown must never reach a co-resident stack the tool knows nothing else about",
 			project, res.Note, held)}
 	}
-	if env.Docker == nil {
+	if namespaceMachineGone(r, env) {
+		// Item 3: this namespace's bound machine instance does not exist
+		// on the runner any more. A compose project inside a deleted VM is
+		// gone with it, and holding the slot here protects nothing — the
+		// alternative is the wedge TeardownOrder's machine-last ordering
+		// otherwise produces: the machine is destroyed right after this
+		// namespace's own teardown has already failed against a daemon
+		// that no longer exists, and no later `wt rm` can ever reach it.
+		return nil
+	}
+	d, derr := namespaceDocker(r, env)
+	if derr != nil {
+		if isErrUnavailable(derr) {
+			return derr // nothing was attempted, so nothing survived to report
+		}
+		return &TeardownError{Resource: r.Name, Survivors: []Survivor{{
+			Kind: "resource", Name: r.Name, Resource: r.Name, Reason: derr.Error(),
+		}}}
+	}
+	if d == nil {
 		return &ErrUnavailable{Reason: "the docker seam is not installed; the compose project cannot be torn down"}
 	}
-	if err := env.Docker.Version(); err != nil {
+	if err := d.Version(); err != nil {
 		return err // ErrUnavailable: nothing was attempted, so nothing survived to report
 	}
 
 	var survivors []Survivor
+	var notes []string
+	// Every dependent project (nsProjectOrder) is torn down through this
+	// same resolved seam. That is correct when a dependent shares its
+	// parent's machine, which is the shape this schema was built for — a
+	// dependent naming a *different* machine: binding of its own is not
+	// resolved separately here, and would need nsProjectOrder to carry
+	// each project's owning resource rather than a bare name to do so.
 	for _, p := range nsProjectOrder(r, value, env) {
-		survivors = append(survivors, teardownProject(env.Docker, p, r.Name)...)
+		sv, nt := teardownProject(d, p, r.Name)
+		survivors = append(survivors, sv...)
+		notes = append(notes, nt...)
 	}
-	if len(survivors) > 0 {
-		return &TeardownError{Resource: r.Name, Survivors: survivors}
+	if len(survivors) > 0 || len(notes) > 0 {
+		return &TeardownError{Resource: r.Name, Survivors: survivors, Notes: notes}
 	}
 	return nil
 }
 
+// namespaceMachineGone reports whether r's bound machine instance is
+// definitely absent from the runner's own List() — item 3's vacuous-
+// teardown rail. It answers false (never vacuous) for a namespace with no
+// machine: binding, and false whenever the question cannot be answered at
+// all (no runner installed, the list call itself fails, the machine
+// resource's resolved value is not in this call's table): "cannot tell"
+// must never be read as "gone", because that would vacuously drop a
+// namespace whose objects might still be very much there. This is
+// deliberately narrower than asking whether the daemon is reachable —
+// Docker Desktop merely being stopped is not the same fact as the bound
+// VM not existing, and only the latter makes the slot safe to free.
+func namespaceMachineGone(r *spec.Resource, env Env) bool {
+	if r.Machine == nil {
+		return false
+	}
+	instance := resolvedValue(env, *r.Machine)
+	if instance == "" || env.Machine == nil {
+		return false
+	}
+	instances, err := env.Machine.List()
+	if err != nil {
+		return false
+	}
+	for _, in := range instances {
+		if in.Name == instance {
+			return false
+		}
+	}
+	return true
+}
+
+// namespaceDocker resolves the docker seam r's calls should run against:
+// the ambient seam in env.Docker — today's baseline, and still what a
+// namespace with no machine: binding always uses — or a seam bound to the
+// named machine's own docker endpoint when the resource declares one
+// (item 4). Binding is resolved fresh on every call rather than cached on
+// Env, because the whole reason it exists is that the ambient seam is
+// wrong for exactly the entries that hold their own machine; caching it
+// once per Env would just move the bug up one level.
+//
+// ErrDockerEndpointUnsupported (WSL2, or no runner on this platform at
+// all) falls back to the ambient seam rather than failing: those
+// platforms have never had a separate per-machine daemon to bind to, so
+// this is the same behaviour a namespace with no binding always had, not
+// a degraded one. Every other error means the endpoint could not be
+// determined for a runner that does have one, and is reported rather than
+// silently falling back — an unresolvable endpoint is not evidence that
+// the ambient daemon is the right one, and guessing wrong here is exactly
+// the cross-worktree bug this rail exists to close.
+func namespaceDocker(r *spec.Resource, env Env) (Docker, error) {
+	if r.Machine == nil {
+		return env.Docker, nil
+	}
+	instance := resolvedValue(env, *r.Machine)
+	if instance == "" {
+		return nil, fmt.Errorf("namespace driver: resource %q is bound to machine %q, but its resolved instance name is not in this call's resource table", r.Name, *r.Machine)
+	}
+	if env.Machine == nil {
+		return nil, &ErrUnavailable{Reason: fmt.Sprintf("namespace %q is bound to machine %q, but no VM runner is installed on this coordinator", r.Name, *r.Machine)}
+	}
+	endpoint, err := env.Machine.DockerEndpoint(instance)
+	if err != nil {
+		if errors.Is(err, platform.ErrDockerEndpointUnsupported) {
+			return env.Docker, nil
+		}
+		return nil, fmt.Errorf("namespace driver: resolving the docker endpoint for machine %q (instance %q): %w", *r.Machine, instance, err)
+	}
+	if env.Docker == nil {
+		return nil, nil
+	}
+	return env.Docker.WithHost(endpoint), nil
+}
+
 // teardownProject removes one project's objects in container, network,
-// volume order, continuing past a failure and collecting what survived.
-func teardownProject(d Docker, project, resource string) []Survivor {
+// volume order, continuing past a failure and collecting what survived —
+// and, since item 2, what it had to reach outside the project label to
+// finish the network step. It returns the survivors and, separately, the
+// notes: informational statements about something that succeeded but is
+// still worth naming, never a failure.
+func teardownProject(d Docker, project, resource string) ([]Survivor, []string) {
 	var survivors []Survivor
+	var notes []string
 
 	ids, err := d.ListContainers(project)
 	if err != nil {
@@ -153,6 +296,9 @@ func teardownProject(d Docker, project, resource string) []Survivor {
 		survivors = append(survivors, Survivor{Kind: "networks", Name: project, Resource: resource,
 			Reason: fmt.Sprintf("listing them failed: %v", err)})
 	} else if len(ids) > 0 {
+		sv, nt := clearForeignEndpoints(d, ids, resource)
+		survivors = append(survivors, sv...)
+		notes = append(notes, nt...)
 		if err := d.RemoveNetworks(ids); err != nil {
 			survivors = append(survivors, Survivor{Kind: "network", Name: strings.Join(ids, " "), Resource: resource,
 				Reason: fmt.Sprintf("removing them failed: %v", err)})
@@ -169,7 +315,51 @@ func teardownProject(d Docker, project, resource string) []Survivor {
 				Reason: fmt.Sprintf("removing them failed: %v", err)})
 		}
 	}
-	return survivors
+	return survivors, notes
+}
+
+// clearForeignEndpoints is item 2: before a project's networks are removed,
+// every container still attached to any of them is force-removed, whatever
+// label it carries or lacks. The compose-project listing above only ever
+// finds objects labelled com.docker.compose.project=<project>, but an
+// application that attaches containers to its own compose network through
+// the Docker API at runtime leaves them unlabelled, and their presence
+// alone makes the network removal fail outright ("has active endpoints").
+// Anything still attached joined *this project's own* network, which is
+// inside the worktree's blast radius even though it is outside the label
+// rail — removing it is the honest reading of what this teardown owns.
+//
+// This is a deliberate, approved widening of the label rail (never
+// silent): every container reached this way is named in the returned
+// notes, whether it was force-removed or, on that failing, merely
+// disconnected so the network removal could still proceed. A network whose
+// endpoints cannot even be listed is left to the removal call below to
+// report on its own terms.
+func clearForeignEndpoints(d Docker, networkIDs []string, resource string) ([]Survivor, []string) {
+	var survivors []Survivor
+	var notes []string
+	for _, netID := range networkIDs {
+		endpoints, err := d.NetworkEndpoints(netID)
+		if err != nil {
+			continue
+		}
+		for _, container := range endpoints {
+			if rerr := d.RemoveContainers([]string{container}); rerr != nil {
+				if derr := d.DisconnectContainer(netID, container); derr != nil {
+					survivors = append(survivors, Survivor{Kind: "container", Name: container, Resource: resource,
+						Reason: fmt.Sprintf("attached to network %s outside the compose project; force-removing it failed (%v) and disconnecting it also failed (%v)", netID, rerr, derr)})
+					continue
+				}
+				notes = append(notes, fmt.Sprintf(
+					"disconnected container %s from network %s: it was attached outside the compose project and force-removing it failed (%v)",
+					container, netID, rerr))
+				continue
+			}
+			notes = append(notes, fmt.Sprintf(
+				"removed container %s: it was attached to network %s outside the compose project", container, netID))
+		}
+	}
+	return survivors, notes
 }
 
 // nsProjectOrder returns the project and every dependent project the spec

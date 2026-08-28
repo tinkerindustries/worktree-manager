@@ -118,3 +118,14 @@ func wslUnavailable() error {
 func (wslRunner) DeleteCommand(name string) string {
 	return fmt.Sprintf("wsl --unregister %s", name)
 }
+
+// DockerEndpoint has no answer on WSL2: dockerd runs inside the distro
+// rather than behind a socket the host can name directly (Docker Desktop's
+// WSL2 backend proxies it onto a named pipe of its own choosing, which is
+// Docker Desktop's detail to own, not this driver's to guess at). The
+// namespace driver falls back to the ambient docker seam when it sees this
+// sentinel, stating the limitation as a note rather than either pretending
+// to bind or failing outright.
+func (wslRunner) DockerEndpoint(name string) (string, error) {
+	return "", ErrDockerEndpointUnsupported
+}

@@ -220,6 +220,11 @@ func (r Registry) TeardownAll(s *spec.Spec, values map[string]spec.Resolved, env
 					rep.Survivors = append(rep.Survivors, sv)
 				}
 			}
+			// Notes ride along even when nothing survived (item 2): a
+			// namespace's forced removal of a foreign container is not a
+			// failure, but a widened teardown that reached outside the
+			// project label must never be silent about it.
+			rep.Notes = append(rep.Notes, te.Notes...)
 		default:
 			out.OK = false
 			sv := Survivor{Kind: "resource", Name: name, Resource: name, Reason: err.Error()}

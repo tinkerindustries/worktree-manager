@@ -751,7 +751,7 @@ rather than as new test files (plan.md §4).
 | Driver | Apply | Teardown | What it does |
 |---|---|---|---|
 | `port` | — | — | derives from the band base via `spec.Resolve` (stride and group, the two forms of `docs/ARCHITECTURE.md` §8.4); probes by binding on loopback with `platform.ProbeBind`, which sets `SO_REUSEADDR` on unix and leaves it unset on Windows; verifies bound/free (naming the holder is phase-5 reaper work); never remediates a held port — the allocator skips the slot and says which one |
-| `namespace` | — | yes | derives a project name; probes by label (a hit means a previous teardown was incomplete, never that the slot is taken — so it does not gate allocation); tears down by label, containers then networks then volumes, for the project and every dependent project the spec declares, dependents first, continuing past failures; verifies a pinned `name:` in the governed compose files — the finding that catches the silent attach |
+| `namespace` | — | yes | derives a project name; probes by label (a hit means a previous teardown was incomplete, never that the slot is taken — so it does not gate allocation); tears down by label, containers then networks then volumes, for the project and every dependent project the spec declares, dependents first, continuing past failures — before a network's removal, any container still attached to it outside the label (attached through the Docker API at runtime rather than by compose) is force-removed or, failing that, disconnected, and named in the report's notes either way; verifies a pinned `name:` in the governed compose files — the finding that catches the silent attach. An optional `machine:` field names the machine resource the namespace lives inside; every docker call on that resource's behalf then runs against the bound machine's own endpoint (`platform.MachineRunner.DockerEndpoint`, via `Docker.WithHost`) rather than the coordinator's ambient `DOCKER_HOST` or docker context, and a namespace whose bound machine instance is absent from the runner's `List()` is torn down vacuously — a compose project inside a deleted VM is gone with it, which is what keeps the machine-last teardown order from stranding an entry whose namespace step already failed against a daemon the next step deletes anyway |
 | `state-path` | yes | yes (purge only) | applies by creating the directory and seeding per mode (seeded/empty/shared) with a marker recording when seeding occurred; tears down only when the purge flag is given, with the structural refusal — a purge whose resolved path is the shared source or an ancestor of it is refused, naming the path, checked with `identity.Contains` on the symlink-realised path; verifies exists/writable/seeded-at |
 
 Two rules bind every operation, both structural:
@@ -774,6 +774,13 @@ result, distinct from success and failure, and the call sites treat it
 differently: an unavailable probe does not block allocation (the allocate
 result carries `probe_note` stating that the registry was the only check),
 whereas an unavailable teardown does block freeing the slot (exit 4).
+`Docker.WithHost(endpoint)` returns a copy bound to a specific
+`DOCKER_HOST` value, overriding whatever the coordinator's ambient
+environment or active docker context would otherwise supply — colima
+start changes that context as a side effect, so with two worktrees'
+machines running, the ambient daemon was only ever right for one of them.
+A namespace with no `machine:` binding never calls it, and gets exactly
+the ambient seam every namespace used before this existed.
 
 Sequencing (03-drivers.md §5): apply runs in dependency order derived from
 the template references (`Registry.ApplyOrder`; the phase-8 "machine first

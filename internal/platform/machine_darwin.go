@@ -12,6 +12,8 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -93,6 +95,29 @@ func (colimaRunner) Delete(name string) error {
 // DeleteCommand is the documented bypass (B4.5).
 func (colimaRunner) DeleteCommand(name string) string {
 	return fmt.Sprintf("colima delete %s --data --force", name)
+}
+
+// DockerEndpoint returns the profile's docker socket, from Colima's fixed
+// layout: unix://$HOME/.colima/<profile>/docker.sock. Verified on this
+// machine: `colima list --json` does not carry the socket at all, and
+// `colima status <profile> --json` fails outright once the profile is
+// stopped — the one time a namespace teardown needs the endpoint most,
+// because the machine driver tears the VM down after the namespace inside
+// it. The layout path works whether the instance is running or not, which
+// is the reason it is the one used here over the alternative this package
+// could have read instead: Colima also registers a docker context named
+// colima-<profile> whose endpoint matches this same socket, but reading it
+// means shelling out to `docker context inspect` — another process, on the
+// critical path of every teardown, for a value this format string already
+// gives for free. The two answers can be treated as a cross-check if this
+// ever needs corroborating, but only one is worth paying for on every
+// call.
+func (colimaRunner) DockerEndpoint(name string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "", fmt.Errorf("resolving the docker endpoint for colima profile %s: cannot determine the home directory: %w", name, err)
+	}
+	return "unix://" + filepath.Join(home, ".colima", name, "docker.sock"), nil
 }
 
 // colimaUnavailable turns a failed lookup into ErrMachineUnavailable,

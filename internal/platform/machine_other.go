@@ -36,3 +36,12 @@ func (unsupportedMachine) Delete(name string) error {
 
 // DeleteCommand names no bypass: there is nothing to tear down by hand.
 func (unsupportedMachine) DeleteCommand(name string) string { return "" }
+
+// DockerEndpoint has no answer here either: this platform runs no
+// per-worktree VM at all, so there is no separate daemon to name — the
+// same "unsupported" sentinel WSL2 returns, and for the same reason the
+// namespace driver treats them alike, falling back to the ambient docker
+// seam it always used on this platform.
+func (unsupportedMachine) DockerEndpoint(name string) (string, error) {
+	return "", ErrDockerEndpointUnsupported
+}

@@ -72,7 +72,30 @@ type MachineRunner interface {
 	// names, so the doc cannot drift from the implementation (B4.5,
 	// 03-drivers.md §4.5).
 	DeleteCommand(name string) string
+	// DockerEndpoint returns the docker daemon endpoint (a DOCKER_HOST
+	// value) for the named instance's own dockerd — item 4's fix for a
+	// namespace teardown addressing whichever daemon the coordinator's
+	// ambient DOCKER_HOST or docker context happens to point at, which on
+	// a machine running two worktrees' VMs is only ever right for one of
+	// them. ErrDockerEndpointUnsupported means this platform's runner has
+	// no separate endpoint to give (WSL2's dockerd runs inside the distro
+	// rather than behind a host-visible socket); every other error means
+	// the endpoint could not be determined for a runner that does have
+	// one. Both are distinct from an empty result — there is no third,
+	// "no endpoint but not an error" case.
+	DockerEndpoint(name string) (string, error)
 }
+
+// ErrDockerEndpointUnsupported is DockerEndpoint's answer on a platform
+// whose machine runner has no separate, host-visible docker endpoint to
+// give — WSL2 runs dockerd inside the distro rather than behind a socket
+// the host can name. It is a distinct sentinel from ErrMachineUnavailable
+// because the two calls for different responses: an unavailable runner
+// blocks a machine-touching operation outright, but a namespace bound to a
+// machine whose platform simply has no separate endpoint should fall back
+// to the ambient docker seam it always used, with the limitation stated as
+// a note rather than either silently kept or treated as a failure.
+var ErrDockerEndpointUnsupported = errors.New("this platform's machine runner has no separate docker endpoint")
 
 // ErrMachineUnavailable is what every runner operation returns when the
 // helper cannot run at all: the binary is absent, or the platform has no

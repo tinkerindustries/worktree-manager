@@ -111,9 +111,34 @@ configuration; neither binary branches on repo identity.
   rails — the capacity guard (refuse a new instance past
   `max_concurrent`, naming what is running and how to tear one down; the
   count is the daemon's own instances; re-running a running profile stays
-  allowed), background warm-up, `--keep-vm`, and the documented bypass —
-  are proved against a fake `platform.MachineRunner`; the live Colima
-  path is reported not_run on this machine.
+  allowed), background warm-up (waited out for a short grace period so an
+  instant failure — a missing sibling binary, a corrupt profile — is
+  never mistaken for a boot in progress, with the child's output kept in
+  `<store root>/logs/machine-<instance>.log`), `--keep-vm`, and the
+  documented bypass — are proved against a fake `platform.MachineRunner`;
+  the live Colima path is reported not_run on this machine. A namespace
+  resource may declare `machine:`, naming the machine resource its
+  compose project lives inside; every docker call the namespace driver
+  makes on that resource's behalf runs against the bound machine's own
+  endpoint (`platform.MachineRunner.DockerEndpoint`), through
+  `Docker.WithHost`, never the coordinator's ambient `DOCKER_HOST` or
+  docker context — colima start changes that context as a side effect, so
+  with two worktrees' machines running the ambient daemon was only ever
+  right for one of them, and a teardown addressing the other one's daemon
+  could succeed against the wrong worktree's containers with no error to
+  notice. A namespace bound to a machine whose instance is absent from
+  the runner's own `List()` is torn down vacuously — a compose project
+  inside a deleted VM is gone with it — which is what keeps
+  `TeardownOrder`'s machine-last ordering from stranding an entry whose
+  namespace teardown already failed against a daemon the machine step is
+  about to delete anyway; an unreachable daemon alone is never read as
+  "gone" the same way. Before removing a project's network the driver
+  also force-removes (or, failing that, disconnects) any container still
+  attached to it outside the compose-project label — a container the
+  application attached through the Docker API at runtime, which the
+  label-only listing never sees and which otherwise makes the network
+  removal fail outright — naming every one of them in the teardown
+  report's notes.
 - `internal/cli` — verb dispatch, flag parsing, output, the exit-code error
   type, the one dial-and-request helper (exit 5 lives there), and the
   verbs: `spec validate`, `spec explain`, `spec path` (`--slug` refuses an

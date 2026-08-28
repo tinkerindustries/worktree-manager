@@ -42,6 +42,27 @@ func validateStatic(s *Spec) error {
 		}
 	}
 
+	// A namespace's machine: reference is cross-resource, so it can only be
+	// checked once every resource's name and type are known — the same
+	// reason template references wait for resourceSet below. The
+	// no-inference rule (CLAUDE.md) is why this is a required, checked
+	// reference rather than "the one machine resource, if there is
+	// exactly one": guessing is exactly what let a namespace's teardown
+	// address a different worktree's VM (item 4).
+	for i := range s.Resources {
+		r := &s.Resources[i]
+		if r.Type != "namespace" || r.Machine == nil {
+			continue
+		}
+		bound := ResourceByName(s, *r.Machine)
+		if bound == nil {
+			return &FieldError{Field: resField(i, "machine"), Reason: fmt.Sprintf("no resource named %q", *r.Machine)}
+		}
+		if bound.Type != "machine" {
+			return &FieldError{Field: resField(i, "machine"), Reason: fmt.Sprintf("resource %q is type %q, not machine", *r.Machine, bound.Type)}
+		}
+	}
+
 	// Stride ceiling: a port resource in stride form caps slots at 99
 	// (M2 §6.1), enforced at validation because it is a property of the
 	// allocation form rather than a free choice.
@@ -152,7 +173,7 @@ func validateResourceFields(i int, r *Resource, slotMax int) error {
 	field := func(f string) string { return resField(i, f) }
 	switch r.Type {
 	case "port":
-		for _, f := range []string{"kind", "files", "pool", "on_exhaustion", "template", "default", "flag", "seed", "purge", "driver", "max_concurrent", "keep_flag"} {
+		for _, f := range []string{"kind", "files", "pool", "on_exhaustion", "template", "default", "flag", "seed", "purge", "driver", "max_concurrent", "keep_flag", "machine"} {
 			if err := absent(r, f, field(f)); err != nil {
 				return err
 			}
@@ -184,11 +205,14 @@ func validateResourceFields(i int, r *Resource, slotMax int) error {
 		if r.Kind != nil && *r.Kind == "plain" && len(r.Files) > 0 {
 			return &FieldError{Field: field("files"), Reason: "only valid for kind: compose — plain namespaces govern no compose files"}
 		}
+		if r.Kind != nil && *r.Kind == "plain" && r.Machine != nil {
+			return &FieldError{Field: field("machine"), Reason: "only valid for kind: compose — a plain namespace touches no docker daemon to bind to"}
+		}
 		if err := requireTemplate(i, r); err != nil {
 			return err
 		}
 	case "cidr":
-		for _, f := range []string{"form", "offset", "kind", "files", "template", "default", "flag", "seed", "purge", "driver", "max_concurrent", "keep_flag"} {
+		for _, f := range []string{"form", "offset", "kind", "files", "template", "default", "flag", "seed", "purge", "driver", "max_concurrent", "keep_flag", "machine"} {
 			if err := absent(r, f, field(f)); err != nil {
 				return err
 			}
@@ -216,7 +240,7 @@ func validateResourceFields(i int, r *Resource, slotMax int) error {
 			return &FieldError{Field: field("on_exhaustion"), Reason: fmt.Sprintf("unknown on_exhaustion %q; supported values: [shared-pool fail]", *r.OnExhaustion)}
 		}
 	case "state-path":
-		for _, f := range []string{"form", "size", "offset", "kind", "files", "pool", "on_exhaustion", "driver", "max_concurrent", "keep_flag"} {
+		for _, f := range []string{"form", "size", "offset", "kind", "files", "pool", "on_exhaustion", "driver", "max_concurrent", "keep_flag", "machine"} {
 			if err := absent(r, f, field(f)); err != nil {
 				return err
 			}
@@ -253,7 +277,7 @@ func validateResourceFields(i int, r *Resource, slotMax int) error {
 			}
 		}
 	case "machine":
-		for _, f := range []string{"form", "size", "offset", "kind", "files", "pool", "on_exhaustion", "default", "flag", "seed", "purge"} {
+		for _, f := range []string{"form", "size", "offset", "kind", "files", "pool", "on_exhaustion", "default", "flag", "seed", "purge", "machine"} {
 			if err := absent(r, f, field(f)); err != nil {
 				return err
 			}
@@ -293,6 +317,7 @@ var fieldSet = map[string]func(*Resource) bool{
 	"driver":         func(r *Resource) bool { return r.Driver != nil },
 	"max_concurrent": func(r *Resource) bool { return r.MaxConcurrent != nil },
 	"keep_flag":      func(r *Resource) bool { return r.KeepFlag != nil },
+	"machine":        func(r *Resource) bool { return r.Machine != nil },
 }
 
 // absent refuses a field that is not valid for the declared resource type.

@@ -26,13 +26,14 @@ import (
 // fakeMachine is the runner seam's test side: a fixed set of instances,
 // a log of what was started and deleted, and optional failures.
 type fakeMachine struct {
-	instances []platform.MachineInstance
-	listErr   error
-	startErr  error
-	deleteErr error
-	started   []string
-	deleted   []string
-	binary    string
+	instances   []platform.MachineInstance
+	listErr     error
+	startErr    error
+	deleteErr   error
+	endpointErr error
+	started     []string
+	deleted     []string
+	binary      string
 }
 
 func newFakeMachine() *fakeMachine {
@@ -62,6 +63,12 @@ func (f *fakeMachine) Delete(name string) error {
 }
 func (f *fakeMachine) DeleteCommand(name string) string {
 	return f.binary + " delete " + name + " --data --force"
+}
+func (f *fakeMachine) DockerEndpoint(name string) (string, error) {
+	if f.endpointErr != nil {
+		return "", f.endpointErr
+	}
+	return "unix:///fake/" + name + "/docker.sock", nil
 }
 
 // machineFixture builds the vm-app-shaped machine resource: one VM per

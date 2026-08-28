@@ -255,6 +255,17 @@ type Resource struct {
 	// namespace
 	Kind  *string  `yaml:"kind,omitempty"` // compose (default) | plain
 	Files []string `yaml:"files,omitempty"`
+	// Machine names the machine resource this namespace's compose project
+	// lives inside — required to bind the docker seam to that VM's own
+	// daemon rather than whatever DOCKER_HOST or docker context the
+	// coordinator's own process happens to have (item 4). Explicit
+	// declaration, never inference: the no-inference rule forbids guessing
+	// "there is exactly one machine resource, so it must be that one" —
+	// two worktrees each holding their own machine and namespace is
+	// exactly the shape where guessing wrong means tearing down the wrong
+	// worktree's VM's daemon. Absent means the ambient daemon, which is
+	// correct when there is no per-worktree VM to bind to at all.
+	Machine *string `yaml:"machine,omitempty"`
 
 	// cidr
 	Pool         *string `yaml:"pool,omitempty"`

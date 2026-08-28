@@ -30,6 +30,9 @@ func TestInvalidSpecsRejected(t *testing.T) {
 		{"unknown-removal-policy.yaml", "removal.open_pr", `"ignore" is not a removal policy`},
 		{"worktree-path-without-slug.yaml", "worktrees.path", "must reference {slug}"},
 		{"worktree-base-flag.yaml", "worktrees.base", "must not start with a hyphen"},
+		{"namespace-machine-unknown.yaml", "resources[0].machine", `no resource named "vm"`},
+		{"namespace-machine-wrong-type.yaml", "resources[1].machine", `is type "state-path", not machine`},
+		{"namespace-machine-on-plain.yaml", "resources[1].machine", "only valid for kind: compose"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.file, func(t *testing.T) {

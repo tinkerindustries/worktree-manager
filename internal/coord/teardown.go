@@ -97,8 +97,13 @@ func (h *Handler) teardownEntry(s *Session, e *store.Entry, sp *spec.Spec, purge
 		// Nothing survived: the entry drops and the slot frees. A machine
 		// kept by --keep-vm is a deliberate survivor — the note says so,
 		// naming the documented bypass, so the leftover is never silent
-		// (B4.3).
-		notes := h.keptMachineNotes(sp, e, keepFlags)
+		// (B4.3). rep.Notes rides along too: "clean" only means nothing is
+		// left holding the slot, not that nothing happened worth saying —
+		// a namespace's forced removal of a foreign container (item 2)
+		// succeeds and frees the slot, and would otherwise be dropped here
+		// exactly as it always was on the tearing-down path, where
+		// rep.Summary() already includes it.
+		notes := append(h.keptMachineNotes(sp, e, keepFlags), rep.Notes...)
 		if !ok {
 			return respErr(1, fmt.Sprintf("no registry entry for app %q slug %q", app, slug),
 				"the entry went away mid-teardown; re-run 'wt list' to see the current state")
