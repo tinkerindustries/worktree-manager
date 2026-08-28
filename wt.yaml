@@ -36,7 +36,7 @@ shared:
     impact: >-
       the installed coordinator's store and port, which manage every
       adopted repository on this machine. A development wtd must never be
-      pointed at them; that is what the `home` and `coord` resources are
+      pointed at them; that is what the `store` and `coord` resources are
       for.
   - name: "~/.local/bin/wt and ~/.local/bin/wtd"
     impact: >-
