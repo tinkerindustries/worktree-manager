@@ -58,7 +58,7 @@ func TestDoctorReportsMovedBandNamesFileAndField(t *testing.T) {
 		if f.Level != "warning" {
 			continue
 		}
-		if strings.Contains(f.Message, "worktree-create") && strings.Contains(f.Message, "band api") &&
+		if strings.Contains(f.Message, "docs/wt.md") && strings.Contains(f.Message, "band api") &&
 			strings.Contains(f.Message, "8200") && strings.Contains(f.Message, "8300") {
 			matched = true
 		}

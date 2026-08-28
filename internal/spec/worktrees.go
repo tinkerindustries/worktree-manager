@@ -7,9 +7,8 @@ package spec
 // does (04-lifecycle.md §1) — so this is not a location either binary
 // enforces. It is the repository's answer to "where does the next one go",
 // recorded once in the committed spec instead of re-derived by every agent
-// that reads the generated worktree-create skill, and resolvable with
-// `wt spec path --slug <slug>` so the answer is computed rather than
-// reasoned about.
+// that creates one, and resolvable with `wt spec path --slug <slug>` so
+// the answer is computed rather than reasoned about.
 //
 // The default is where Claude Code's own isolation puts a tree,
 // `.claude/worktrees/<slug>` (B11.13): the manual flow is then genuinely

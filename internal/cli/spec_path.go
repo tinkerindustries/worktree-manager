@@ -18,9 +18,10 @@ import (
 //
 // It is a pure spec derivation like `spec explain`, and it contacts
 // nothing: the location is the repository's convention, not an
-// allocation. The verb exists so the generated worktree-create skill
-// computes the path instead of reasoning about a template — the answer is
-// the same one every time, whoever asks.
+// allocation. The verb exists so whatever creates the worktree — Claude
+// Code's WorktreeCreate hook, or a person — computes the path instead of
+// reasoning about a template: the answer is the same one every time,
+// whoever asks.
 func runSpecPath(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("spec path", flag.ContinueOnError)
 	fs.SetOutput(stderr)

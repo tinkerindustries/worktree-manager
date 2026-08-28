@@ -149,12 +149,15 @@ configuration; neither binary branches on repo identity.
   regeneration, the unbalanced-marker refusal, append-to-a-markerless-file
   (the CLAUDE.md tripwire joining a repo's own text).
 - `internal/artefact` — the phase-7 generated artefacts, rendered per
-  repo: the `worktree-create`/`worktree-remove` skills, the SessionStart
-  tripwire, the opt-in PreToolUse guard hook, the settings entries, the
-  reference doc, the CLAUDE.md tripwire, and the briefing renderer (which
-  refuses with the descriptor missing). Bodies are stable; the managed
-  block records the spec fields each file came from. Not a verb — the
-  onboarding skill and the tests drive it; `cmd/wt` never imports it.
+  repo: the SessionStart tripwire, the opt-in PreToolUse guard hook, the
+  settings entries, the reference doc, the CLAUDE.md tripwire, and the
+  briefing renderer (which refuses with the descriptor missing). Creating
+  and removing a worktree are not among them — `internal/claudehook`'s
+  two hook scripts are registered once per machine and answer for every
+  repository, so a per-repo skill would be a second implementation of the
+  same thing. Bodies are stable; the managed block records the spec
+  fields each file came from. Not a verb — the onboarding skill and the
+  tests drive it; `cmd/wt` never imports it.
 - `internal/platform` — M8: symlink-resolved path realisation (on Windows
   via `GetFinalPathNameByHandleW`, which also canonicalises long paths and
   mapped drives), `SamePath` (the one do-these-name-the-same-directory

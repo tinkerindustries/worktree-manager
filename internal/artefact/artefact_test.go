@@ -62,19 +62,19 @@ func TestRenderProducesEveryArtefact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
-	if len(files) != 7 {
-		t.Fatalf("files = %d, want 7: %+v", len(files), paths(files))
+	if len(files) != 5 {
+		t.Fatalf("files = %d, want 5: %+v", len(files), paths(files))
 	}
 	byPath := map[string]File{}
 	for _, f := range files {
 		byPath[f.Path] = f
 	}
-	for _, p := range []string{SkillCreatePath, SkillRemovePath, HookTripwire, HookGuard, SettingsPath, ReferencePath, CLAUDEKPath} {
+	for _, p := range []string{HookTripwire, HookGuard, SettingsPath, ReferencePath, CLAUDEKPath} {
 		if _, ok := byPath[p]; !ok {
 			t.Errorf("no artefact for %s", p)
 		}
 	}
-	for _, p := range []string{SkillCreatePath, SkillRemovePath, HookTripwire, HookGuard, ReferencePath, CLAUDEKPath} {
+	for _, p := range []string{HookTripwire, HookGuard, ReferencePath, CLAUDEKPath} {
 		f := byPath[p]
 		block := strings.Join(managed.Render(f.Fields, f.BlockContent), "\n")
 		if !strings.Contains(block, "# wt-field: app=plain-app") {
@@ -153,19 +153,19 @@ func TestApplyRegeneratePreservesHandEdits(t *testing.T) {
 		t.Fatalf("Apply: %v", err)
 	}
 
-	// The generated create skill exists, then a developer edits it.
-	skillPath := filepath.Join(root, filepath.FromSlash(SkillCreatePath))
-	data, err := os.ReadFile(skillPath)
+	// The generated reference doc exists, then a developer edits it.
+	docPath := filepath.Join(root, filepath.FromSlash(ReferencePath))
+	data, err := os.ReadFile(docPath)
 	if err != nil {
-		t.Fatalf("the create skill was not written: %v", err)
+		t.Fatalf("the reference doc was not written: %v", err)
 	}
 	edited := strings.Replace(string(data),
-		"Never auto-stash, never auto-checkout, never\n  silently merge",
-		"Never auto-stash, never auto-checkout, never\n  silently merge — and always ask before force-pushing", 1)
+		"## Why",
+		"## Why\n\nA sentence the developer added by hand.", 1)
 	if edited == string(data) {
 		t.Fatal("the hand edit did not match the generated text")
 	}
-	if err := os.WriteFile(skillPath, []byte(edited), 0o644); err != nil {
+	if err := os.WriteFile(docPath, []byte(edited), 0o644); err != nil {
 		t.Fatalf("writing the edit: %v", err)
 	}
 
@@ -178,54 +178,22 @@ func TestApplyRegeneratePreservesHandEdits(t *testing.T) {
 	if err := Apply(root, files2); err != nil {
 		t.Fatalf("second Apply: %v", err)
 	}
-	after, err := os.ReadFile(skillPath)
+	after, err := os.ReadFile(docPath)
 	if err != nil {
-		t.Fatalf("re-reading the skill: %v", err)
+		t.Fatalf("re-reading the reference doc: %v", err)
 	}
-	if !strings.Contains(string(after), "always ask before force-pushing") {
+	if !strings.Contains(string(after), "A sentence the developer added by hand.") {
 		t.Errorf("the hand edit did not survive regeneration:\n%s", after)
 	}
 	block, ok, err := managed.Parse(after)
 	if err != nil {
-		t.Fatalf("parsing the regenerated skill: %v", err)
+		t.Fatalf("parsing the regenerated reference doc: %v", err)
 	}
 	if !ok {
-		t.Fatal("the regenerated skill lost its managed block")
+		t.Fatal("the regenerated reference doc lost its managed block")
 	}
 	if got, _ := block.Lookup("band api"); got != "8300" {
 		t.Errorf("band api = %q after regeneration, want 8300 (the block must refresh)", got)
-	}
-}
-
-// TestRemoveSkillStopsAndAsksOnExit3 is exit criterion 5: the remove
-// skill's rule is to stop and ask on exit 3 and never reach for --force.
-func TestRemoveSkillStopsAndAsksOnExit3(t *testing.T) {
-	sp := fixtureSpec(t)
-	files, err := Render(sp, map[string]int{"api": 8200}, Options{})
-	if err != nil {
-		t.Fatalf("Render: %v", err)
-	}
-	var body string
-	for _, f := range files {
-		if f.Path == SkillRemovePath {
-			body = string(f.Body)
-		}
-	}
-	if body == "" {
-		t.Fatal("no remove skill rendered")
-	}
-	for _, want := range []string{"exit 3", "stop and ask", "Never reach for", "--force"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("the remove skill lacks %q:\n%s", want, body)
-		}
-	}
-	// --force is named only in the prohibition, never as a remedy: every
-	// occurrence is on a "Never ..." line or a sentence explaining the
-	// refusal.
-	for _, line := range strings.Split(body, "\n") {
-		if strings.Contains(line, "--force") && !strings.Contains(line, "Never") && !strings.Contains(line, "defeated") {
-			t.Errorf("--force appears outside a prohibition: %q", line)
-		}
 	}
 }
 
