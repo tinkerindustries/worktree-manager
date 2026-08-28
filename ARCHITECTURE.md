@@ -82,7 +82,9 @@ internal/platform  M8: path realisation (on Windows via
               task on Windows — each registration carrying --addr and
               --container-token independently, written 0600 when it
               carries the token), listener discovery (lsof on macOS,
-              /proc/net on Linux, netstat+tasklist on Windows) and
+              /proc/net on Linux, netstat+tasklist on Windows — named per
+              platform by ListenerHelpers, which doctor asks rather than
+              assuming a tool) and
               signalling (TERM/KILL by pid, process groups; on Windows
               taskkill without /F then /F, the escalation reported); the
               only package permitted to branch on GOOS
@@ -993,9 +995,13 @@ The six rules of `docs/ARCHITECTURE.md` §8.6, stated as invariants:
   on unix, and the token is never echoed.
 - `doctor` reports the helper binaries the coordinator cannot reach,
   resolved through `platform.LookHelper` in the coordinator's own
-  process. `git`, `gh` and `lsof` are checked always; `docker` when some
-  spec declares a `namespace` or `cidr` resource, and the machine
-  runner's binary when some spec declares a `machine` resource. This is
+  process. `git` and `gh` are checked always. The listener-discovery
+  helpers come from `platform.ListenerHelpers`, the platform's own answer
+  to which binary a port scan runs — `lsof` on macOS, `netstat` and
+  `tasklist` on Windows, and none at all on a Linux whose scan reads
+  `/proc`. `docker` is checked when some spec declares a `namespace` or
+  `cidr` resource, and the machine runner's binary when some spec
+  declares a `machine` resource. This is
   the residue `LookHelper` cannot cover — a helper installed somewhere
   outside both PATH and the known install directories — and it is the
   only symptom that case has: the scheduled sweep logs its `gh` skip and

@@ -316,8 +316,10 @@ configuration; neither binary branches on repo identity.
   `# wt-field:` records against the current spec and band ledger, and
   reports the generated file and the field that moved. `doctor` also reports the helper binaries the coordinator cannot
   reach, asked through `platform.LookHelper` in the coordinator's own
-  process — git, gh and lsof always, docker and the machine runner where
-  a spec declares the resources that need them. It covers what
+  process — git and gh always, whatever `platform.ListenerHelpers` says a
+  port scan runs on this machine (lsof on macOS, netstat and tasklist on
+  Windows, nothing on a Linux whose scan reads /proc), and docker and the
+  machine runner where a spec declares the resources that need them. It covers what
   `LookHelper`'s known install directories cannot: a custom location, for
   which the remedy names `WT_HELPER_DIRS`. Phase 8 adds the
   machine-capacity doctor finding (an app approaching `max_concurrent`,

@@ -69,6 +69,20 @@ func AllListeners() ([]Holder, error) {
 	return allListeners()
 }
 
+// ListenerHelpers names the external binaries listener discovery shells
+// out to on this machine, in the order it uses them. It is the same
+// question the machine runner's Binary answers for the VM seam: which
+// helper does this platform actually need, asked of the platform rather
+// than assumed by the caller.
+//
+// The answer differs by platform and, on Linux, by machine: discovery
+// prefers /proc/net/tcp where it exists and needs no helper at all, falls
+// back to lsof where it does not, and runs netstat plus tasklist on
+// Windows. An empty result means discovery needs nothing external. The
+// coordinator's doctor asks this instead of naming a tool, so it cannot
+// report a helper the machine never runs.
+func ListenerHelpers() []string { return listenerHelpers() }
+
 // sortHolders orders a scan report: by port (unknown ports last), then
 // pid, then command — a stable report for `wt ports scan`.
 func sortHolders(holders []Holder) {

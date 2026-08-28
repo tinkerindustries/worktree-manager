@@ -3,8 +3,10 @@ package platform
 import (
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -238,28 +240,47 @@ func freePlatformPort(t *testing.T) int {
 	return port
 }
 
-// discoveryTool names the platform's own listener-discovery binary — lsof
-// on macOS and Linux, netstat on Windows (paired with tasklist). Guarding
-// on lsof everywhere skipped the whole discovery contract on Windows,
-// which is the one platform whose implementation is not lsof.
-func discoveryTool() string {
-	if runtime.GOOS == "windows" {
-		return "netstat"
-	}
-	return "lsof"
-}
-
-// requireDiscoveryTool skips when the platform's discovery binary is
-// absent, naming it.
+// requireDiscoveryTool skips when a binary the platform's discovery
+// actually runs is absent, naming it. Which binaries those are is
+// ListenerHelpers' answer: lsof on macOS, netstat and tasklist on
+// Windows, and none on a Linux whose scan reads /proc.
 func requireDiscoveryTool(t *testing.T) {
 	t.Helper()
-	tool := discoveryTool()
-	if _, err := exec.LookPath(tool); err != nil {
-		t.Skipf("%s is not installed; the discovery test needs the platform tool", tool)
-	}
-	if runtime.GOOS == "windows" {
-		if _, err := exec.LookPath("tasklist"); err != nil {
-			t.Skip("tasklist is not installed; the discovery test needs it to name the holder")
+	for _, tool := range ListenerHelpers() {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not installed; the discovery test needs the platform tool", tool)
 		}
+	}
+}
+
+// TestListenerHelpersMatchesThePlatform: the helper list is what
+// discovery on this machine actually runs. The coordinator's doctor asks
+// this question rather than naming a tool, so a wrong answer here is a
+// doctor finding nobody can clear.
+func TestListenerHelpersMatchesThePlatform(t *testing.T) {
+	got := ListenerHelpers()
+	switch runtime.GOOS {
+	case "windows":
+		want := []string{"netstat", "tasklist"}
+		if !slices.Equal(got, want) {
+			t.Errorf("ListenerHelpers() = %v, want %v", got, want)
+		}
+	case "darwin":
+		if !slices.Equal(got, []string{"lsof"}) {
+			t.Errorf("ListenerHelpers() = %v, want [lsof]", got)
+		}
+	case "linux":
+		// The scan reads /proc where it exists and needs nothing; a
+		// machine without it falls back to lsof.
+		if _, err := os.Stat("/proc/net/tcp"); err == nil {
+			if len(got) != 0 {
+				t.Errorf("ListenerHelpers() = %v on a machine with /proc/net/tcp, want none", got)
+			}
+		} else if !slices.Equal(got, []string{"lsof"}) {
+			t.Errorf("ListenerHelpers() = %v without /proc/net/tcp, want [lsof]", got)
+		}
+	}
+	if runtime.GOOS == "windows" && slices.Contains(got, "lsof") {
+		t.Error("lsof does not exist on Windows and discovery there never runs it")
 	}
 }

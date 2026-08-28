@@ -1086,15 +1086,24 @@ func (h *Handler) lookHelper(bin string) (string, error) {
 // uninstalled helper from an unreachable one, and the remedy says both.
 //
 // Which helpers are checked follows from what the adopted specs declare.
-// git, gh and lsof are always checked — the repo scans, the scheduled
-// cleanup sweep and `wt ports scan` need them whatever a spec says.
-// docker is checked when some spec declares a namespace or cidr resource,
-// and the machine runner when some spec declares a machine resource.
+// git and gh are always checked — the repo scans and the scheduled
+// cleanup sweep need them whatever a spec says. The listener-discovery
+// helpers come from platform.ListenerHelpers, because which tool a port
+// scan reaches for is the platform's answer and not this package's to
+// assume: lsof on macOS, netstat and tasklist on Windows, and nothing at
+// all on a Linux with /proc, where the scan reads files. Naming lsof here
+// reported a Windows machine missing a binary Windows does not have and
+// a scan there never runs. docker is checked when some spec declares a
+// namespace or cidr resource, and the machine runner when some spec
+// declares a machine resource.
 func (h *Handler) doctorHelpers(appSpecs map[string]*spec.Spec, findings *[]api.DoctorFinding, notes *[]string) {
 	helpers := []coordinatorHelper{
 		{"git", "reading repositories: the doctor repo scan, the generated-artefact drift check, and every worktree safety check rm and cleanup make"},
 		{"gh", "the scheduled cleanup sweep, which needs a merged pull request before it removes anything"},
-		{"lsof", "'wt ports scan', which reports the machine's listening sockets"},
+	}
+	for _, bin := range platform.ListenerHelpers() {
+		helpers = append(helpers, coordinatorHelper{bin,
+			"'wt ports scan', which reports the machine's listening sockets"})
 	}
 	var wantsDocker, wantsMachine bool
 	for _, sp := range appSpecs {
