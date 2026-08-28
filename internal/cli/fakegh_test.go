@@ -12,6 +12,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 )
 
 // ghNoPRScript is gh's no-pull-request contract: the message on stderr and
@@ -89,6 +91,13 @@ var neededTools = []string{"git", "sh", "env"}
 // what restoreTools puts back.
 func setPathWithoutGh(t *testing.T) {
 	t.Helper()
+
+	// Dropping gh's directory from PATH is no longer enough on its own.
+	// treecheck.Gh resolves through platform.LookHelper, which falls back
+	// to the known install directories when PATH does not answer — and
+	// Homebrew's /opt/homebrew/bin, where gh usually lives, is one of
+	// them. Emptying the fallback list is how a test says "absent".
+	t.Setenv(platform.HelperDirsEnv, "")
 
 	// Resolve the tools before any dropping: once the directory is off
 	// PATH, LookPath can no longer say where they were.

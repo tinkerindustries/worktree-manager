@@ -49,17 +49,24 @@ func Git(dir string, args ...string) ([]byte, error) {
 // where gh puts both its JSON and its "no pull requests found". A missing
 // binary is an error, never an empty answer.
 func Gh(dir string, args ...string) ([]byte, error) {
-	if _, err := exec.LookPath("gh"); err != nil {
-		return nil, ErrGhMissing
+	// Resolved through platform.LookHelper, not exec.LookPath: the
+	// coordinator's scheduled cleanup sweep calls this from wtd, whose
+	// supervisor-supplied PATH does not include the /opt/homebrew/bin
+	// Homebrew installs gh into.
+	bin, err := platform.LookHelper("gh")
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrGhMissing, err)
 	}
-	cmd := exec.Command("gh", args...)
+	cmd := exec.Command(bin, args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
 	return cmd.CombinedOutput()
 }
 
-// ErrGhMissing is the answer when the gh binary is not on PATH.
+// ErrGhMissing is the answer when the gh binary is in neither the process
+// PATH nor a known install directory. Callers match on it with errors.Is;
+// the wrapped detail names the locations searched.
 var ErrGhMissing = errors.New("gh is not installed or not on PATH")
 
 // ErrNoUpstream is Unpushed's answer when the branch has no upstream. An
@@ -180,7 +187,7 @@ func (e *UnavailableError) Error() string { return e.Detail }
 func PRState(dir string, gh Runner) (PR, error) {
 	out, err := gh(dir, "pr", "view", "--json", "number,state")
 	if errors.Is(err, ErrGhMissing) {
-		return PR{}, &UnavailableError{NotInstalled: true, Detail: ErrGhMissing.Error()}
+		return PR{}, &UnavailableError{NotInstalled: true, Detail: err.Error()}
 	}
 	if err == nil {
 		var pr struct {
@@ -207,7 +214,7 @@ func PRState(dir string, gh Runner) (PR, error) {
 func AuthStatus(gh Runner) error {
 	out, err := gh("", "auth", "status")
 	if errors.Is(err, ErrGhMissing) {
-		return &UnavailableError{NotInstalled: true, Detail: ErrGhMissing.Error()}
+		return &UnavailableError{NotInstalled: true, Detail: err.Error()}
 	}
 	if err != nil {
 		// gh auth status exits non-zero exactly when the CLI is not
