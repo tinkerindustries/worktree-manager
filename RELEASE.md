@@ -216,6 +216,29 @@ changed — while the registry still holds entries, naming `wt list` and
 database is never client-readable, so an unreachable coordinator is a
 refusal too. `wt daemon uninstall --force` is the only way past either.
 
+## The menu bar app
+
+`WorktreeMenu.app` is in no release. The release workflow's macapp job
+builds, signs and notarizes it only when the six signing secrets are
+configured on the repository; with none set it logs why and stops, so a
+release carries the archives alone.
+
+Build and install it locally instead. `Scripts/bundle.sh` ad-hoc signs
+the bundle, which is enough to launch it on the machine that built it:
+
+```sh
+macapp/Scripts/bundle.sh --configuration release
+osascript -e 'quit app "WorktreeMenu"'      # only when replacing a running copy
+rm -rf /Applications/WorktreeMenu.app
+cp -R macapp/.build/WorktreeMenu.app /Applications/
+open /Applications/WorktreeMenu.app
+```
+
+The app shells out to `wt` and renders what comes back, so it uses
+whichever binary the host install put on the path. Install `wt` first.
+An ad-hoc signature is valid on the machine that made it and nowhere
+else: a copy handed to someone else is refused by Gatekeeper.
+
 ## Installing into a container
 
 A container runs the **client alone**. It never runs `wtd`: a coordinator
