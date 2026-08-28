@@ -792,6 +792,25 @@ so a namespace resolving to a reserved name is refused rather than torn
 down, naming the reservation (exit 3). Phase 5's `rm` sequences this core
 into the release verb.
 
+A resource removed from `wt.yaml` while an entry still holds it strands
+that entry: `TeardownAll` cannot interpret a handle without its spec row
+(kind, files, `seed.from`), so it reports the resource as a survivor
+rather than guessing at how to tear it down, and the slot stays held with
+no committed way to free it. The survivor's own reason names the two ways
+out — restore the row, run `wt rm`, remove the row again; or `wt rm
+--abandon` — because failing closed here is only useful if the message
+also says what to do about it. The safe order for removing a resource is
+therefore: tear down every worktree first, then edit the spec, never the
+reverse.
+
+`wt rm --abandon` drops the registry entry and frees the slot without
+running any driver's teardown, naming every resource it left behind. It is
+strictly distinct from `--force`, which downgrades the removal policy's
+tree-reading safety checks and touches nothing about how teardown
+interprets a resource: `--force` still tears down through the drivers,
+`--abandon` tears down through none of them. The two answer unrelated
+questions and neither substitutes for the other.
+
 ## Authority rules, as invariants this code holds
 
 The six rules of `docs/ARCHITECTURE.md` §8.6, stated as invariants:

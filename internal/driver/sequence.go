@@ -168,9 +168,14 @@ func (r Registry) TeardownAll(s *spec.Spec, values map[string]spec.Resolved, env
 				// (kind, files, seed.from all live in the spec), so it
 				// survives and the slot stays held until the spec catches
 				// up — failing closed rather than freeing the slot with
-				// objects still out there.
+				// objects still out there. The reason names both ways out,
+				// because failing closed is only useful if the message also
+				// says what to do about it: restore the row to wt.yaml, run
+				// `wt rm`, then remove the row again — or `wt rm --abandon`,
+				// which drops the entry and frees the slot without tearing
+				// this down, naming everything it leaves behind.
 				rep.Survivors = append(rep.Survivors, Survivor{Kind: "resource", Name: name, Resource: name,
-					Reason: "the spec no longer declares this resource; it cannot be torn down without its spec row"})
+					Reason: "the spec no longer declares this resource; it cannot be torn down without its spec row — restore the resource to wt.yaml, run 'wt rm', then remove it again, or run 'wt rm --abandon' to drop the entry and free the slot without tearing this down"})
 				rep.Outcomes = append(rep.Outcomes, TeardownOutcome{Resource: name, OK: false})
 			}
 			continue

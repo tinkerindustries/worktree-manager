@@ -109,6 +109,7 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 	keepProcesses := fs.Bool("keep-processes", false, "do not signal processes bound to the worktree's ports")
 	strict := fs.Bool("strict", false, "run every safety check as a refusal for this run, whatever the spec says")
 	force := fs.Bool("force", false, "downgrade every safety check to a warning for this run; git worktree remove is still never forced")
+	abandon := fs.Bool("abandon", false, "drop the registry entry and free the slot without tearing anything down, naming what is left behind; unrelated to --force, which still tears down through the drivers")
 	var purgeValues []string
 	fs.Var(stringList(&purgeValues), "purge", "purge this state-path resource's store on teardown, by resource name (repeatable)")
 
@@ -191,6 +192,12 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 	}
 	purgeFlags := mergeFlags(passedSpecFlags(fs, purgeDeclared), resolvedPurge)
 	purgeNames := purgeTargets(purgeDeclared, purgeFlags)
+	if *abandon && len(purgeNames) > 0 {
+		WriteError(stderr, UsageError(
+			"give --abandon or a --purge, not both",
+			"--abandon does not run any driver's teardown, so a purge — which only happens as part of a state-path's teardown — would silently do nothing: %s", strings.Join(purgeNames, ", ")))
+		return ExitUsage
+	}
 	// The parsed --slug is authoritative once Parse has run; the pre-scan
 	// only existed to place the target check before the spec load.
 	if *slug != "" {
@@ -215,7 +222,7 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 	// Phase one: prepare — ask the coordinator for the entry (its path and
 	// its resources) and the reap preview, changing nothing (the reap runs
 	// in dry-run, so nothing is signalled).
-	prep, perr := rmRequest(sess, sp, targetSlug, *keepProcesses, true, purgeFlags, keepPassed)
+	prep, perr := rmRequest(sess, sp, targetSlug, *keepProcesses, true, *abandon, purgeFlags, keepPassed)
 	if perr != nil {
 		WriteError(stderr, perr)
 		return perr.Code
@@ -261,13 +268,19 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 	// Phase two: the real thing — reap and teardown in the coordinator.
 	if *dryRun {
 		// The prepare call was the preview; print it and stop.
-		return rmPrintPreview(stdout, stderr, *jsonOut, sp, targetSlug, prep, targetExists, notes, purgeNames, purgeDeclared)
+		return rmPrintPreview(stdout, stderr, *jsonOut, sp, targetSlug, prep, targetExists, notes, purgeNames, purgeDeclared, *abandon)
 	}
-	res, rerr := rmRequest(sess, sp, targetSlug, *keepProcesses, false, purgeFlags, keepPassed)
+	res, rerr := rmRequest(sess, sp, targetSlug, *keepProcesses, false, *abandon, purgeFlags, keepPassed)
 	if rerr != nil {
 		WriteError(stderr, rerr)
 		return rerr.Code
 	}
+	// The coordinator's own bounded-coverage notes — a machine kept up by
+	// --keep-vm naming the documented bypass, or --abandon naming exactly
+	// what it left behind — are carried straight into the report. --abandon
+	// is destructive-adjacent, so this is not optional: the whole point of
+	// the flag is that the operator finds out what it did.
+	notes = append(notes, res.Notes...)
 	// Teardown done: the git half — `git worktree remove`, never --force.
 	// A standalone clone is not a git worktree and has no registration to
 	// remove; its directory is left in place and the note says so.
@@ -356,10 +369,11 @@ func verifyTeardown(sess *coordClient, app, slug string) []string {
 }
 
 // rmRequest runs one rm call and decodes the result.
-func rmRequest(sess *coordClient, sp *spec.Spec, slug string, keepProcesses, dryRun bool, purgeFlags, keepFlags []string) (*api.RmResult, *Error) {
+func rmRequest(sess *coordClient, sp *spec.Spec, slug string, keepProcesses, dryRun, abandon bool, purgeFlags, keepFlags []string) (*api.RmResult, *Error) {
 	res, rerr := sess.client.Rm(&api.RmArgs{
 		App: sp.App, Slug: slug, Spec: *sp,
 		KeepProcesses: keepProcesses, DryRun: dryRun, PurgeFlags: purgeFlags, KeepFlags: keepFlags,
+		Abandon: abandon,
 	})
 	if rerr != nil {
 		return nil, requestErr(sess.endpoint, api.VerbRm, rerr)
@@ -751,18 +765,25 @@ func isStandalone(root string) bool {
 }
 
 // rmPrintPreview prints what the real rm would do, changing nothing.
-func rmPrintPreview(stdout, stderr io.Writer, jsonOut bool, sp *spec.Spec, slug string, prep *api.RmResult, targetExists bool, notes []string, purgeNames []string, purgeDeclared []specFlag) int {
+func rmPrintPreview(stdout, stderr io.Writer, jsonOut bool, sp *spec.Spec, slug string, prep *api.RmResult, targetExists bool, notes []string, purgeNames []string, purgeDeclared []specFlag, abandon bool) int {
 	note := "dry run: nothing was changed."
 	for _, n := range notes {
 		fmt.Fprintf(stderr, "note: %s\n", n)
 	}
-	fmt.Fprintf(stderr, "would reap: %s\n", reapSummary(&prep.Reap))
-	fmt.Fprintf(stderr, "would tear down the resources: %s\n", strings.Join(prep.Resources, ", "))
-	// Tearing a state path down and deleting its store are different
-	// things, and the preview says which one this run would do: without a
-	// purge flag every state store survives, which is what the teardown
-	// line alone used to read as.
-	fmt.Fprintf(stderr, "would purge the state stores: %s\n", purgeSummary(purgeNames, purgeDeclared))
+	if abandon {
+		// --abandon never reaches a driver: the preview says so plainly
+		// rather than reusing "would tear down", which is exactly the
+		// thing this flag does not do.
+		fmt.Fprintf(stderr, "would abandon the resources without tearing them down, left for hand cleanup: %s\n", strings.Join(prep.Resources, ", "))
+	} else {
+		fmt.Fprintf(stderr, "would reap: %s\n", reapSummary(&prep.Reap))
+		fmt.Fprintf(stderr, "would tear down the resources: %s\n", strings.Join(prep.Resources, ", "))
+		// Tearing a state path down and deleting its store are different
+		// things, and the preview says which one this run would do:
+		// without a purge flag every state store survives, which is what
+		// the teardown line alone used to read as.
+		fmt.Fprintf(stderr, "would purge the state stores: %s\n", purgeSummary(purgeNames, purgeDeclared))
+	}
 	if targetExists && !isStandalone(prep.Path) {
 		fmt.Fprintf(stderr, "would run: git worktree remove %s\n", prep.Path)
 	}
@@ -771,6 +792,7 @@ func rmPrintPreview(stdout, stderr io.Writer, jsonOut bool, sp *spec.Spec, slug 
 			"dry_run": true, "app": sp.App, "slug": slug,
 			"reap": prep.Reap, "resources": prep.Resources,
 			"worktree": prep.Path, "purged": purgeNames,
+			"abandon": abandon,
 		}); err != nil {
 			WriteError(stderr, New(ExitFailure, err.Error(), ""))
 			return ExitFailure
