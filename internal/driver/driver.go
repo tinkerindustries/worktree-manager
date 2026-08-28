@@ -168,6 +168,13 @@ type Env struct {
 	// installed, which every machine-touching operation reports as
 	// unavailable.
 	Machine platform.MachineRunner
+	// MachineLogDir is the directory the machine driver writes a starting
+	// instance's output into, one file per instance
+	// (machine-<instance>.log). The coordinator sets it to
+	// <store root>/logs; an empty value means no destination is
+	// configured, and the machine driver still runs the grace-period wait
+	// (1a) but the child's output past that point is not kept anywhere.
+	MachineLogDir string
 }
 
 // Reservation is one host-global reservation as the ledger declares it:
@@ -273,18 +280,31 @@ type Survivor struct {
 	Reason   string `json:"reason"`
 }
 
-// TeardownError is what a teardown returns when it did not get everything.
-// The driver continues past a failure rather than stopping at the first one
-// — stopping early would leave more behind than continuing does
-// (03-drivers.md §5) — and reports what survived. ErrUnavailable is not a
-// TeardownError: an unreachable daemon means nothing was attempted, which
-// the coordinator reports differently (exit 4).
+// TeardownError is what a teardown returns when it did not get everything,
+// or when it got everything but has something worth saying about how
+// (item 2). The driver continues past a failure rather than stopping at
+// the first one — stopping early would leave more behind than continuing
+// does (03-drivers.md §5) — and reports what survived. ErrUnavailable is
+// not a TeardownError: an unreachable daemon means nothing was attempted,
+// which the coordinator reports differently (exit 4).
 type TeardownError struct {
 	Resource  string
 	Survivors []Survivor
+	// Notes are bounded-coverage statements that are not failures — a
+	// namespace's forced removal (or, failing that, disconnection) of a
+	// foreign container attached to its network before the network itself
+	// could be removed (item 2). They are carried even when Survivors is
+	// empty, because "nothing survived" and "nothing happened worth
+	// mentioning" are different claims: a widened teardown that reached
+	// outside the project label must never be silent about it.
+	Notes []string
 }
 
 func (e *TeardownError) Error() string {
+	if len(e.Survivors) == 0 {
+		return fmt.Sprintf("teardown of %s reported %d note(s), nothing left behind: %s",
+			e.Resource, len(e.Notes), strings.Join(e.Notes, "; "))
+	}
 	parts := make([]string, len(e.Survivors))
 	for i, s := range e.Survivors {
 		parts[i] = fmt.Sprintf("%s %s", s.Kind, s.Name)

@@ -1,0 +1,20 @@
+# Invalid: machine: on a kind: plain namespace. A plain namespace is a
+# string the application uses however it likes — the driver touches no
+# docker daemon for it — so binding it to a machine has nothing to mean.
+version: 1
+app: namespace-machine-on-plain-app
+slots:
+  max: 4
+resources:
+  - type: machine
+    name: vm
+    template: "{app}-{slug}-{slot}"
+  - type: namespace
+    name: compose
+    kind: plain
+    template: "{app}-{slug}-{slot}"
+    machine: vm
+emit:
+  descriptor:
+    filename: wt-env.yaml
+    format: yaml

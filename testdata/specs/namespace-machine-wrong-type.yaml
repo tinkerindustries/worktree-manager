@@ -1,0 +1,20 @@
+# Invalid: the namespace's machine: names a resource that exists but is
+# not a machine — here a state-path. Rejected at validation naming the
+# resource's actual type.
+version: 1
+app: namespace-machine-wrong-type-app
+slots:
+  max: 4
+resources:
+  - type: state-path
+    name: vm
+    template: "{home}/{app}/{slug}"
+  - type: namespace
+    name: compose
+    kind: compose
+    template: "{app}-{slug}-{slot}"
+    machine: vm
+emit:
+  descriptor:
+    filename: wt-env.yaml
+    format: yaml

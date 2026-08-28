@@ -14,11 +14,14 @@ package platform
 // created by hand or by the tool — and the driver counts the running ones.
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"os/exec"
 	"strings"
+	"time"
 )
 
 // MachineInstance is one existing VM or daemon as the platform's runner
@@ -41,11 +44,27 @@ type MachineRunner interface {
 	Binary() string
 	// List reports every instance on the machine, running or not.
 	List() ([]MachineInstance, error)
-	// Start creates and starts the named instance without waiting for it
-	// to be ready. Warm-up is measured in minutes and runs in the
-	// background (B4.4): the caller's apply returns immediately and the
-	// entry stays reserving until materialisation finishes.
-	Start(name string) error
+	// Start creates and starts the named instance. Warm-up is measured in
+	// minutes and must not be waited on end to end (B4.4), so Start
+	// detaches: once the child has run for machineStartGrace without
+	// exiting, Start returns nil and leaves it running in the background —
+	// the caller's apply returns immediately and the entry stays reserving
+	// until materialisation finishes. A child that exits inside that
+	// window is never a real boot finishing early; it is an instant
+	// failure — a missing sibling binary, a corrupt profile, an invalid
+	// name — and Start reports it as an error carrying the child's
+	// captured output, rather than the false success a bare cmd.Start()
+	// would have reported. Before this grace period existed, `colima
+	// start` dying on a missing limactl looked identical to one that was
+	// booting, and the driver recorded the resource as applied either way.
+	//
+	// output receives everything the child writes to stdout and stderr,
+	// for as long as it runs — the coordinator wires its own per-instance
+	// log file here, because a background process's output going to wtd's
+	// own stderr is nowhere a person looks under a supervisor. output may
+	// be nil, in which case the captured text is used only to build the
+	// early-exit error and is then discarded.
+	Start(name string, output io.Writer) error
 	// Delete destroys the named instance and its data.
 	Delete(name string) error
 	// DeleteCommand is the documented manual bypass for the platform —
@@ -53,7 +72,30 @@ type MachineRunner interface {
 	// names, so the doc cannot drift from the implementation (B4.5,
 	// 03-drivers.md §4.5).
 	DeleteCommand(name string) string
+	// DockerEndpoint returns the docker daemon endpoint (a DOCKER_HOST
+	// value) for the named instance's own dockerd — item 4's fix for a
+	// namespace teardown addressing whichever daemon the coordinator's
+	// ambient DOCKER_HOST or docker context happens to point at, which on
+	// a machine running two worktrees' VMs is only ever right for one of
+	// them. ErrDockerEndpointUnsupported means this platform's runner has
+	// no separate endpoint to give (WSL2's dockerd runs inside the distro
+	// rather than behind a host-visible socket); every other error means
+	// the endpoint could not be determined for a runner that does have
+	// one. Both are distinct from an empty result — there is no third,
+	// "no endpoint but not an error" case.
+	DockerEndpoint(name string) (string, error)
 }
+
+// ErrDockerEndpointUnsupported is DockerEndpoint's answer on a platform
+// whose machine runner has no separate, host-visible docker endpoint to
+// give — WSL2 runs dockerd inside the distro rather than behind a socket
+// the host can name. It is a distinct sentinel from ErrMachineUnavailable
+// because the two calls for different responses: an unavailable runner
+// blocks a machine-touching operation outright, but a namespace bound to a
+// machine whose platform simply has no separate endpoint should fall back
+// to the ambient docker seam it always used, with the limitation stated as
+// a note rather than either silently kept or treated as a failure.
+var ErrDockerEndpointUnsupported = errors.New("this platform's machine runner has no separate docker endpoint")
 
 // ErrMachineUnavailable is what every runner operation returns when the
 // helper cannot run at all: the binary is absent, or the platform has no
@@ -62,6 +104,56 @@ type MachineRunner interface {
 // sentinel's own text is the generic marker; the concrete reason is
 // appended by machineUnavailable, so the message is never doubled.
 var ErrMachineUnavailable = errors.New("no VM runner available on this platform")
+
+// machineStartGrace is how long awaitMachineStart waits after a runner's
+// start command has been spawned before declaring it successfully
+// detached. A VM boot is measured in minutes, so this window is far too
+// short to observe one finishing — that is deliberate, since waiting on
+// the boot is exactly what Start must not do (B4.4). It exists only to
+// give an instant failure (a missing sibling binary, a corrupt profile, an
+// invalid instance name) time to surface: those exit in milliseconds, well
+// inside the window, and a real boot is never still going to exit this
+// early. A var rather than a const so a test can shrink it and observe
+// both outcomes without waiting two seconds.
+var machineStartGrace = 2 * time.Second
+
+// MachineStartGrace reports the grace period awaitMachineStart waits out,
+// so a caller composing a message about a start that survived it (the
+// machine driver's apply note) names the same duration this package
+// actually waits, rather than a hard-coded guess that could drift from it.
+func MachineStartGrace() time.Duration { return machineStartGrace }
+
+// awaitMachineStart runs an already-started command for machineStartGrace
+// and reports what it saw. cmd must have had Start called on it already,
+// with its Stdout and Stderr both routed through a buffer (out) so a
+// failure's error can quote what the child wrote even when the caller
+// supplied no destination writer of its own.
+//
+// A nil return means the child was still running when the window closed —
+// exactly the outcome an unwatched cmd.Start() would have reported, and
+// the caller leaves it running, detached, for the same reason a real boot
+// takes minutes. A non-nil return means the child exited before the
+// window closed. That is never a boot finishing early — every runner this
+// package supports takes far longer than machineStartGrace to become
+// ready — so any exit inside the window is reported as a failure, quoting
+// whatever the child managed to write before it went.
+func awaitMachineStart(cmd *exec.Cmd, out *bytes.Buffer) error {
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case werr := <-done:
+		text := strings.TrimSpace(out.String())
+		if werr == nil {
+			werr = errors.New("exited before its warm-up could plausibly have finished")
+		}
+		if text == "" {
+			return fmt.Errorf("exited during startup: %w", werr)
+		}
+		return fmt.Errorf("exited during startup: %w: %s", werr, text)
+	case <-time.After(machineStartGrace):
+		return nil
+	}
+}
 
 // colimaProfile is one profile as `colima list --json` reports it.
 type colimaProfile struct {

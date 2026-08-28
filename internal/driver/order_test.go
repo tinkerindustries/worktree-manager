@@ -244,6 +244,14 @@ func TestTeardownAllRegistryHandleWithoutSpecRow(t *testing.T) {
 	if len(rep.Survivors) != 1 || rep.Survivors[0].Name != "old_resource" {
 		t.Fatalf("survivors = %+v, want the spec-less handle", rep.Survivors)
 	}
+	// Failing closed is only useful if the message also says what to do
+	// about it: the two ways out of a stranded entry (item 5).
+	reason := rep.Survivors[0].Reason
+	for _, want := range []string{"restore", "wt rm", "wt rm --abandon"} {
+		if !strings.Contains(reason, want) {
+			t.Errorf("the survivor's reason must name %q as a way out: %s", want, reason)
+		}
+	}
 }
 
 type scriptedErr string

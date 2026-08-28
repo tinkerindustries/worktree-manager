@@ -8,6 +8,8 @@ package platform
 // names the platform that has a runner — a silent degrade reads as success
 // (plan.md §3), so the driver never pretends a machine exists here.
 
+import "io"
+
 // Machine returns no runner on this platform.
 func Machine() MachineRunner { return unsupportedMachine{} }
 
@@ -23,7 +25,7 @@ func (unsupportedMachine) List() ([]MachineInstance, error) {
 }
 
 // Start cannot run.
-func (unsupportedMachine) Start(name string) error {
+func (unsupportedMachine) Start(name string, output io.Writer) error {
 	return machineUnavailable("the machine driver runs Colima on macOS and WSL2 on Windows")
 }
 
@@ -34,3 +36,12 @@ func (unsupportedMachine) Delete(name string) error {
 
 // DeleteCommand names no bypass: there is nothing to tear down by hand.
 func (unsupportedMachine) DeleteCommand(name string) string { return "" }
+
+// DockerEndpoint has no answer here either: this platform runs no
+// per-worktree VM at all, so there is no separate daemon to name — the
+// same "unsupported" sentinel WSL2 returns, and for the same reason the
+// namespace driver treats them alike, falling back to the ambient docker
+// seam it always used on this platform.
+func (unsupportedMachine) DockerEndpoint(name string) (string, error) {
+	return "", ErrDockerEndpointUnsupported
+}

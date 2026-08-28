@@ -244,11 +244,17 @@ func TestFixtureReservedAndShared(t *testing.T) {
 // in fieldSet.
 func TestEveryTypeFieldListHasARule(t *testing.T) {
 	lists := [][]string{
-		{"kind", "files", "pool", "on_exhaustion", "template", "default", "flag", "seed", "purge", "driver", "max_concurrent", "keep_flag"},
+		// port
+		{"kind", "files", "pool", "on_exhaustion", "template", "default", "flag", "seed", "purge", "driver", "max_concurrent", "keep_flag", "machine"},
+		// namespace — the one type "machine" is valid for, so it is absent
+		// from this list on purpose.
 		{"form", "size", "offset", "pool", "on_exhaustion", "default", "flag", "seed", "purge", "driver", "max_concurrent", "keep_flag"},
-		{"form", "offset", "kind", "files", "template", "default", "flag", "seed", "purge", "driver", "max_concurrent", "keep_flag"},
-		{"form", "size", "offset", "kind", "files", "pool", "on_exhaustion", "driver", "max_concurrent", "keep_flag"},
-		{"form", "size", "offset", "kind", "files", "pool", "on_exhaustion", "default", "flag", "seed", "purge"},
+		// cidr
+		{"form", "offset", "kind", "files", "template", "default", "flag", "seed", "purge", "driver", "max_concurrent", "keep_flag", "machine"},
+		// state-path
+		{"form", "size", "offset", "kind", "files", "pool", "on_exhaustion", "driver", "max_concurrent", "keep_flag", "machine"},
+		// machine
+		{"form", "size", "offset", "kind", "files", "pool", "on_exhaustion", "default", "flag", "seed", "purge", "machine"},
 	}
 	seen := map[string]bool{}
 	for _, list := range lists {

@@ -7,6 +7,7 @@ package coord
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/api"
@@ -96,8 +97,13 @@ func (h *Handler) teardownEntry(s *Session, e *store.Entry, sp *spec.Spec, purge
 		// Nothing survived: the entry drops and the slot frees. A machine
 		// kept by --keep-vm is a deliberate survivor — the note says so,
 		// naming the documented bypass, so the leftover is never silent
-		// (B4.3).
-		notes := h.keptMachineNotes(sp, e, keepFlags)
+		// (B4.3). rep.Notes rides along too: "clean" only means nothing is
+		// left holding the slot, not that nothing happened worth saying —
+		// a namespace's forced removal of a foreign container (item 2)
+		// succeeds and frees the slot, and would otherwise be dropped here
+		// exactly as it always was on the tearing-down path, where
+		// rep.Summary() already includes it.
+		notes := append(h.keptMachineNotes(sp, e, keepFlags), rep.Notes...)
 		if !ok {
 			return respErr(1, fmt.Sprintf("no registry entry for app %q slug %q", app, slug),
 				"the entry went away mid-teardown; re-run 'wt list' to see the current state")
@@ -152,7 +158,11 @@ func (h *Handler) machine() platform.MachineRunner {
 // entryEnv builds the driver environment for one entry: everything an
 // operation needs beyond the resolved value, read fresh from the store at
 // call time — the ledger's bases and reservations, the coordinator's home,
-// the docker seam. It is the shared construction behind teardown,
+// the docker seam, and the machine log directory (<store root>/logs) a
+// starting VM's output is written into (1b) — the store's own root is
+// the one place already private on both platforms, so the machine driver
+// need not invent a second permission model for a directory that carries
+// nothing secret today. It is the shared construction behind teardown,
 // materialise and the rm verb, so the three cannot drift apart on what an
 // operation may see (03-drivers.md §2).
 func (h *Handler) entryEnv(e *store.Entry, sp *spec.Spec) (driver.Env, *api.Error) {
@@ -174,9 +184,10 @@ func (h *Handler) entryEnv(e *store.Entry, sp *spec.Spec) (driver.Env, *api.Erro
 	env := driver.Env{
 		Spec: sp, App: e.App, Slug: e.Slug, Slot: e.Slot,
 		Home: home, Worktree: e.Path,
-		Resolved: e.Resources,
-		Docker:   h.docker(),
-		Machine:  h.machine(),
+		Resolved:      e.Resources,
+		Docker:        h.docker(),
+		Machine:       h.machine(),
+		MachineLogDir: filepath.Join(h.st.Root(), "logs"),
 	}
 	if band := findBand(bands, e.App); band != nil {
 		env.Bases = band.Bases

@@ -417,6 +417,91 @@ func TestRmVerbSurvivorsHoldTheSlot(t *testing.T) {
 	}
 }
 
+// TestRmVerbAbandonDropsTheEntryWithoutTearingDown is item 5b's core claim:
+// --abandon recovers an entry no ordinary teardown can free (here, a driver
+// that always reports a survivor — standing in for the resource-removed-
+// from-the-spec case sequence.go's own survivor message is about) by
+// dropping the registry row directly. The driver's Teardown must never be
+// called: --abandon runs no driver at all.
+func TestRmVerbAbandonDropsTheEntryWithoutTearingDown(t *testing.T) {
+	stub := &stubDriver{teardownErr: &driver.TeardownError{Resource: "compose", Survivors: []driver.Survivor{
+		{Kind: "container", Name: "c1", Resource: "compose", Reason: "still there"},
+	}}}
+	h, sess, sp, ref := setupTeardown(t, driver.NewRegistry(stub))
+
+	resp := h.Request(context.Background(), sess, verbRm, &api.RmArgs{
+		App: ref.App, Slug: ref.Slug, Spec: *sp, Abandon: true,
+	})
+	if resp.Error != nil {
+		t.Fatalf("rm --abandon refused: %+v", resp.Error)
+	}
+	var res api.RmResult
+	decodeResult(t, resp, &res)
+	if !res.EntryFound || !res.Removed {
+		t.Fatalf("result = %+v, want entry found and removed", res)
+	}
+	if len(stub.tornDown) != 0 {
+		t.Errorf("--abandon must run no driver's teardown, got %v", stub.tornDown)
+	}
+	if len(res.Notes) == 0 || !strings.Contains(res.Notes[0], "compose") {
+		t.Errorf("the note must name what was abandoned: %v", res.Notes)
+	}
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
+	}
+	if registryEntry(reg, ref.App, ref.Slug) != nil {
+		t.Error("the entry survived --abandon; the slot is not freed")
+	}
+}
+
+// TestRmVerbAbandonDryRunPreviewsWithoutDropping: --abandon --dry-run names
+// what would be abandoned and changes nothing, exactly like the ordinary
+// preview.
+func TestRmVerbAbandonDryRunPreviewsWithoutDropping(t *testing.T) {
+	stub := &stubDriver{}
+	h, sess, sp, ref := setupTeardown(t, driver.NewRegistry(stub))
+
+	resp := h.Request(context.Background(), sess, verbRm, &api.RmArgs{
+		App: ref.App, Slug: ref.Slug, Spec: *sp, Abandon: true, DryRun: true,
+	})
+	if resp.Error != nil {
+		t.Fatalf("rm --abandon --dry-run refused: %+v", resp.Error)
+	}
+	var res api.RmResult
+	decodeResult(t, resp, &res)
+	if !res.EntryFound || res.Removed {
+		t.Errorf("result = %+v, want entry found and nothing removed", res)
+	}
+	if len(stub.tornDown) != 0 {
+		t.Errorf("--abandon --dry-run must run no driver, got %v", stub.tornDown)
+	}
+	reg, rerr := h.Store.ReadRegistry()
+	if rerr != nil {
+		t.Fatalf("reading the registry: %v", rerr)
+	}
+	if registryEntry(reg, ref.App, ref.Slug) == nil {
+		t.Error("the entry must survive a dry run")
+	}
+}
+
+// TestRmVerbAbandonRequiresOwnership: --abandon is still a mutating call on
+// the entry, so a foreign client is refused exactly like an ordinary rm.
+func TestRmVerbAbandonRequiresOwnership(t *testing.T) {
+	stub := &stubDriver{}
+	h, _, sp, ref := setupTeardown(t, driver.NewRegistry(stub))
+	other, err := h.ConnectPeer(5000, api.KindHost, "")
+	if err != nil {
+		t.Fatalf("second hello refused: %+v", err)
+	}
+	resp := h.Request(context.Background(), other, verbRm, &api.RmArgs{
+		App: ref.App, Slug: ref.Slug, Spec: *sp, Abandon: true,
+	})
+	if resp.Error == nil || resp.Error.Code != 3 {
+		t.Fatalf("foreign --abandon = %+v, want exit 3", resp.Error)
+	}
+}
+
 // decodeResult decodes a response's result into v.
 func decodeResult(t *testing.T, resp *api.Response, v any) {
 	t.Helper()

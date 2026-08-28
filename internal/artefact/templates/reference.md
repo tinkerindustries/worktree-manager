@@ -50,6 +50,19 @@ registry, never from the working tree: reap the processes bound to the
 worktree's ports, tear down in dependency order, drop the entry. The
 directory can be deleted first; the handle is the registry's.
 
+## Removing a resource from `wt.yaml`
+
+Tear down every worktree first, then remove the resource from the spec —
+never the other way round. A teardown reads a resource's handle from the
+spec row that describes it (its kind, its files, where it seeds from); a
+resource whose row is already gone cannot be interpreted, so its teardown
+refuses rather than guessing, and the entry it belongs to is stuck holding
+its slot with no committed way to free it. `wt rm --abandon` exists for a
+repository that already got here: it drops the registry entry and frees
+the slot without tearing anything down, printing exactly what it left
+behind for hand cleanup. It is not an alternative to the safe order above —
+it is the recovery once that order was missed.
+
 ## The documented bypass
 
 When the helper cannot run, the manual commands are the hooks in

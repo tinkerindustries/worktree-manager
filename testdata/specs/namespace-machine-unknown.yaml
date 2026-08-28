@@ -1,0 +1,18 @@
+# Invalid: the namespace's machine: names a resource this spec does not
+# declare. Rejected at validation naming the missing resource — the
+# no-inference rule means this is a required, checked reference rather
+# than a guess at "the one machine resource, if there happens to be one".
+version: 1
+app: namespace-machine-unknown-app
+slots:
+  max: 4
+resources:
+  - type: namespace
+    name: compose
+    kind: compose
+    template: "{app}-{slug}-{slot}"
+    machine: vm
+emit:
+  descriptor:
+    filename: wt-env.yaml
+    format: yaml

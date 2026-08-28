@@ -175,7 +175,7 @@ func runCleanup(args []string, stdout, stderr io.Writer) int {
 				}
 				row.Detail += noteSuffix(oc.Note)
 			} else {
-				res, rerr := rmRequest(sess, sp, e.Slug, false, false, nil, nil)
+				res, rerr := rmRequest(sess, sp, e.Slug, false, false, false, nil, nil)
 				if rerr != nil {
 					final = append(final, cleanupRow{Slug: e.Slug, Action: "failed", Detail: rerr.Msg})
 					continue

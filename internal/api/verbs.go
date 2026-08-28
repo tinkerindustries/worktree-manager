@@ -285,6 +285,16 @@ type RmArgs struct {
 	// torn down.
 	DryRun     bool     `json:"dry_run,omitempty"`
 	PurgeFlags []string `json:"purge_flags,omitempty"`
+	// Abandon drops the registry entry and frees the slot without running
+	// any driver's teardown — the escape hatch for an entry a removed
+	// spec resource has stranded (item 5), where TeardownAll's own
+	// survivor reason names this flag as one of the two ways out. It is
+	// unrelated to KeepFlags and to a --force removal-policy override:
+	// those still tear down through the drivers and only change what a
+	// safety check does first; Abandon tears down through none of them.
+	// The reaper still does not run under it — nothing is being destroyed,
+	// so there is nothing to protect a process from.
+	Abandon bool `json:"abandon,omitempty"`
 }
 
 // ReapAction is one process the reaper signalled — or, under --dry-run, one

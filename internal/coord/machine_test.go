@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,13 +59,16 @@ func (f *coordFakeMachine) List() ([]platform.MachineInstance, error) {
 	}
 	return f.instances, nil
 }
-func (f *coordFakeMachine) Start(name string) error {
+func (f *coordFakeMachine) Start(name string, output io.Writer) error {
 	f.started = append(f.started, name)
 	return nil
 }
 func (f *coordFakeMachine) Delete(name string) error {
 	f.deleted = append(f.deleted, name)
 	return nil
+}
+func (f *coordFakeMachine) DockerEndpoint(name string) (string, error) {
+	return "unix:///fake/" + name + "/docker.sock", nil
 }
 func (f *coordFakeMachine) DeleteCommand(name string) string {
 	return "colima delete " + name + " --data --force"
@@ -221,6 +225,76 @@ func TestCoordRmKeepVMLeavesTheInstanceUp(t *testing.T) {
 	mustUnmarshal(t, resp.Result, &second)
 	if second.EntryFound {
 		t.Fatal("the first rm dropped the entry; the second must find nothing")
+	}
+}
+
+// poisonDocker fails or refuses every call, letting a test prove a code
+// path never reaches the docker seam at all — the assertion items 3 and 4
+// exist to make true in exactly this scenario (a namespace bound to a
+// machine that no longer exists must never touch docker to discover that).
+type poisonDocker struct{}
+
+func (poisonDocker) poisoned() error                             { return errors.New("poisonDocker: this call must never happen") }
+func (d poisonDocker) Version() error                            { return d.poisoned() }
+func (d poisonDocker) ListContainers(string) ([]string, error)   { return nil, d.poisoned() }
+func (d poisonDocker) ListNetworks(string) ([]string, error)     { return nil, d.poisoned() }
+func (d poisonDocker) ListVolumes(string) ([]string, error)      { return nil, d.poisoned() }
+func (d poisonDocker) ListNetworksAll() ([]string, error)        { return nil, d.poisoned() }
+func (d poisonDocker) NetworkSubnet(string) (string, error)      { return "", d.poisoned() }
+func (d poisonDocker) RemoveContainers([]string) error           { return d.poisoned() }
+func (d poisonDocker) RemoveNetworks([]string) error             { return d.poisoned() }
+func (d poisonDocker) RemoveVolumes([]string) error              { return d.poisoned() }
+func (d poisonDocker) NetworkEndpoints(string) ([]string, error) { return nil, d.poisoned() }
+func (d poisonDocker) DisconnectContainer(string, string) error  { return d.poisoned() }
+func (d poisonDocker) WithHost(string) driver.Docker             { return d }
+
+// machineNamespaceSpec binds a compose namespace to a machine resource —
+// the shape items 3 and 4 exist for: a per-worktree VM and the compose
+// project that lives inside it.
+func machineNamespaceSpec(t *testing.T) *spec.Spec {
+	t.Helper()
+	s := &spec.Spec{
+		Version: 1, App: "vm-compose-app",
+		Slots: spec.Slots{Max: intPtr(8)},
+		Resources: []spec.Resource{
+			{Type: "machine", Name: "vm", Driver: strPtr("auto"), Template: strPtr("{app}-{slug}-{slot}")},
+			{Type: "namespace", Name: "compose", Kind: strPtr("compose"),
+				Template: strPtr("{app}-{slug}-{slot}"), Machine: strPtr("vm")},
+		},
+		Emit: spec.Emit{Descriptor: spec.Descriptor{Filename: "wt-env.yaml", Format: "yaml"}},
+	}
+	if err := spec.Validate(s); err != nil {
+		t.Fatalf("machine+namespace spec does not validate: %v", err)
+	}
+	return s
+}
+
+// TestCoordRmVacuousWhenBoundMachineGoneEndToEnd proves items 3 and 4 wired
+// together through the real coordinator, not just the driver in isolation:
+// a namespace bound to a machine that was never started (or was deleted by
+// hand) tears down without ever touching docker, and the entry drops
+// cleanly. This is the fix for the wedge TeardownOrder's machine-last
+// ordering otherwise produces — the namespace's own teardown would
+// otherwise fail against a daemon that the next step deletes anyway, and
+// no later `wt rm` could ever reach it.
+func TestCoordRmVacuousWhenBoundMachineGoneEndToEnd(t *testing.T) {
+	m := &coordFakeMachine{} // no instances: the bound machine does not exist
+	h, sess := setupMachineHarness(t, m)
+	h.H.Docker = poisonDocker{}
+	sp := machineNamespaceSpec(t)
+	slug := "wt-1"
+	allocateMachine(t, h, sess, sp, slug)
+
+	resp := h.Request(context.Background(), sess, "rm", &api.RmArgs{
+		App: sp.App, Slug: slug, Spec: *sp,
+	})
+	if resp.Error != nil {
+		t.Fatalf("rm: %v", resp.Error)
+	}
+	var res api.RmResult
+	mustUnmarshal(t, resp.Result, &res)
+	if !res.Removed {
+		t.Fatalf("a namespace whose bound machine is gone must be torn down vacuously and the entry must drop, got %+v", res)
 	}
 }
 

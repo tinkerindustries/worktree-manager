@@ -11,12 +11,22 @@ package coord
 // each partial state (04-lifecycle.md §7.3), and "directory present with no
 // entry" is still a `git worktree remove` the client runs. Ownership is
 // still enforced — a foreign entry is refused like every mutating call.
+//
+// --abandon (item 5) is a fourth path, checked before the reap and before
+// the driver registry is required: it drops the entry directly, runs no
+// driver and signals nothing. It exists for an entry a removed spec
+// resource has stranded — TeardownAll cannot interpret a handle without its
+// spec row, so it survives every ordinary teardown and holds its slot with
+// no committed way to free it — and its notes always name exactly what was
+// left behind, because dropping a record of real, still-running resources
+// without ever saying so would be worse than the entry it replaces.
 
 import (
 	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/mrgeoffrich/worktree-manager/internal/api"
 	"github.com/mrgeoffrich/worktree-manager/internal/spec"
@@ -50,6 +60,41 @@ func (h *Handler) rm(s *Session, req *api.Request) *api.Response {
 	if perr := h.checkOwner(s, e); perr != nil {
 		return &api.Response{Error: perr}
 	}
+
+	if args.Abandon {
+		// --abandon exists for exactly the entry no driver's teardown can
+		// resolve any more — a resource removed from the spec after the
+		// entry was allocated (item 5) — so it runs neither the reaper nor
+		// any driver: there is nothing here it could safely signal or tear
+		// down, only a registry row to drop. Ownership was already
+		// checked above; nothing else about this entry needs to be true
+		// for the drop itself to be safe, which is what lets it recover an
+		// entry a driver registry failure (h.Drivers == nil) would
+		// otherwise also strand.
+		resources := slices.Sorted(maps.Keys(e.Resources))
+		list := strings.Join(resources, ", ")
+		if list == "" {
+			list = "(none)"
+		}
+		if args.DryRun {
+			return &api.Response{Result: mustJSON(api.RmResult{
+				EntryFound: true, Path: e.Path, Resources: resources,
+				Notes: []string{fmt.Sprintf(
+					"--abandon: would drop the registry entry and free the slot without tearing down %d resource(s), left for hand cleanup: %s",
+					len(resources), list)},
+			})}
+		}
+		if err := h.st.DeleteEntry(args.App, args.Slug); err != nil {
+			return h.storeErr("writing the registry", err)
+		}
+		return &api.Response{Result: mustJSON(api.RmResult{
+			EntryFound: true, Path: e.Path, Resources: resources, Removed: true,
+			Notes: []string{fmt.Sprintf(
+				"--abandon: dropped the registry entry and freed the slot without tearing down %d resource(s), left for hand cleanup: %s",
+				len(resources), list)},
+		})}
+	}
+
 	// The drivers are needed only for the teardown, so the no-entry data
 	// outcome above does not depend on the registry being installed.
 	if h.Drivers == nil {

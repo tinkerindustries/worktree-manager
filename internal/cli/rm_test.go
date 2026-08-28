@@ -490,6 +490,99 @@ func TestRmDryRunPreviewsAndChangesNothing(t *testing.T) {
 	}
 }
 
+// TestRmAbandonPassesTheFlagAndPrintsWhatItLeftBehind is item 5b's CLI
+// half: --abandon reaches the coordinator's rm verb, and the coordinator's
+// own notes come back printed — --abandon is destructive-adjacent, so its
+// whole point is that the operator learns exactly what it did. This also
+// pins the fix to a real gap the flag would otherwise have fallen into:
+// runRm used to build its final report from its own notes alone and never
+// looked at the ones the rm verb returned.
+func TestRmAbandonPassesTheFlagAndPrintsWhatItLeftBehind(t *testing.T) {
+	main, worktree, _ := rmFixture(t)
+	var gotAbandon bool
+	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, map[string]func(*api.Request) *api.Response{
+		"rm": func(req *api.Request) *api.Response {
+			var args api.RmArgs
+			json.Unmarshal(req.Args, &args)
+			gotAbandon = args.Abandon
+			if args.DryRun {
+				return &api.Response{Result: mustJSONT(api.RmResult{
+					EntryFound: true, Path: worktree, Resources: []string{"compose"},
+				})}
+			}
+			return &api.Response{Result: mustJSONT(api.RmResult{
+				EntryFound: true, Path: worktree, Resources: []string{"compose"}, Removed: true,
+				Notes: []string{"--abandon: dropped the registry entry and freed the slot without tearing down 1 resource(s), left for hand cleanup: compose"},
+			})}
+		},
+	}))
+	fakeGh(t, `echo '{"number":0}'`)
+
+	code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1", "--abandon")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want %d; stderr: %s", code, ExitOK, stderr)
+	}
+	if !gotAbandon {
+		t.Error("the rm request must carry Abandon: true")
+	}
+	if !strings.Contains(stderr, "left for hand cleanup: compose") {
+		t.Errorf("stderr = %q, want the coordinator's abandon note printed", stderr)
+	}
+}
+
+// TestRmAbandonDryRunPreviewSaysAbandonNotTeardown: the dry-run preview
+// under --abandon must never claim a teardown would happen, since none
+// does — it names what would be abandoned instead.
+func TestRmAbandonDryRunPreviewSaysAbandonNotTeardown(t *testing.T) {
+	main, worktree, _ := rmFixture(t)
+	t.Setenv("WT_ENDPOINT", rmCoord(t, worktree, nil))
+	fakeGh(t, `echo '{"number":0}'`)
+
+	code, _, stderr := runCLI(t, "rm", "--cwd", main, "--slug", "wt-1", "--abandon", "--dry-run")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want %d; stderr: %s", code, ExitOK, stderr)
+	}
+	if !strings.Contains(stderr, "would abandon the resources without tearing them down") {
+		t.Errorf("stderr = %q, want the abandon-specific preview wording", stderr)
+	}
+	if strings.Contains(stderr, "would tear down the resources") {
+		t.Errorf("stderr = %q, must not use the ordinary teardown wording under --abandon", stderr)
+	}
+}
+
+// TestRmAbandonWithPurgeIsUsage: --abandon runs no driver, so a purge —
+// which only happens as part of a state-path's own teardown — would
+// silently do nothing under it. The combination is refused before rm ever
+// dials the coordinator, the same way an unresolvable --purge value is.
+//
+// The repository is built inline here rather than through purge_test.go's
+// purgeSpecRepo/withPurgeDB: those live behind a `//go:build !acceptance`
+// tag, and this file carries no tag of its own, so a call to them would
+// leave `go vet -tags acceptance ./...` (CLAUDE.md's own gate) unable to
+// compile this package at all.
+func TestRmAbandonWithPurgeIsUsage(t *testing.T) {
+	sp := lifecycleSpec(t)
+	for i := range sp.Resources {
+		if sp.Resources[i].Name == "db" {
+			sp.Resources[i].Purge = &spec.Purge{Flag: "--purge-db"}
+		}
+	}
+	dir := t.TempDir()
+	data, err := spec.EmitYAML(sp)
+	if err != nil {
+		t.Fatalf("emitting the spec: %v", err)
+	}
+	writeT(t, filepath.Join(dir, "wt.yaml"), string(data))
+
+	code, _, stderr := runCLI(t, "rm", "--cwd", dir, "--slug", "gone", "--abandon", "--purge", "db")
+	if code != ExitUsage {
+		t.Fatalf("exit = %d, want %d (usage); stderr:\n%s", code, ExitUsage, stderr)
+	}
+	if !strings.Contains(stderr, "--abandon") || !strings.Contains(stderr, "db") {
+		t.Errorf("the refusal must name both --abandon and the selected resource:\n%s", stderr)
+	}
+}
+
 // TestRmDirectoryPresentNoEntry: with no registry entry, rm is a `git
 // worktree remove` and nothing to deallocate (04-lifecycle.md §7.3).
 func TestRmDirectoryPresentNoEntry(t *testing.T) {

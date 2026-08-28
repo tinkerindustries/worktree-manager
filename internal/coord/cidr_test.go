@@ -142,13 +142,16 @@ func (d *overlapDocker) Version() error { return nil }
 func (d *overlapDocker) ListContainers(string) ([]string, error) {
 	return nil, nil
 }
-func (d *overlapDocker) ListNetworks(string) ([]string, error) { return nil, nil }
-func (d *overlapDocker) ListVolumes(string) ([]string, error)  { return nil, nil }
-func (d *overlapDocker) ListNetworksAll() ([]string, error)    { return []string{"wt-held"}, nil }
-func (d *overlapDocker) NetworkSubnet(string) (string, error)  { return d.subnet, nil }
-func (d *overlapDocker) RemoveContainers([]string) error       { return nil }
-func (d *overlapDocker) RemoveNetworks([]string) error         { return nil }
-func (d *overlapDocker) RemoveVolumes([]string) error          { return nil }
+func (d *overlapDocker) ListNetworks(string) ([]string, error)     { return nil, nil }
+func (d *overlapDocker) ListVolumes(string) ([]string, error)      { return nil, nil }
+func (d *overlapDocker) ListNetworksAll() ([]string, error)        { return []string{"wt-held"}, nil }
+func (d *overlapDocker) NetworkSubnet(string) (string, error)      { return d.subnet, nil }
+func (d *overlapDocker) RemoveContainers([]string) error           { return nil }
+func (d *overlapDocker) RemoveNetworks([]string) error             { return nil }
+func (d *overlapDocker) RemoveVolumes([]string) error              { return nil }
+func (d *overlapDocker) NetworkEndpoints(string) ([]string, error) { return nil, nil }
+func (d *overlapDocker) DisconnectContainer(string, string) error  { return nil }
+func (d *overlapDocker) WithHost(string) driver.Docker             { return d }
 
 // noNetworksDocker is the docker seam for a test whose subject is the
 // allocator rather than the probe: a reachable daemon holding no network,

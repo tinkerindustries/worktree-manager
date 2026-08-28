@@ -12,6 +12,16 @@ package driver
 // (PLAN-SCOPE.md, "No docker client library"; shell out to the docker
 // binary, and report it as unavailable when it is absent or the daemon is
 // unreachable).
+//
+// execDocker carries an optional host: a DOCKER_HOST value that, when set,
+// is appended to every child's environment, overriding whatever DOCKER_HOST
+// or docker context the coordinator's own ambient environment carries
+// (os/exec keeps the last of a duplicate key, the same rule
+// platform.HelperCommand already leans on for PATH). WithHost is how the
+// namespace driver reaches a bound machine's own daemon instead of the
+// ambient one (item 4); the zero value's empty host is the seam every
+// caller had before that existed, and every caller that never binds a
+// machine still gets exactly that.
 
 import (
 	"fmt"
@@ -21,18 +31,24 @@ import (
 	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 )
 
-// execDocker runs the docker CLI.
-type execDocker struct{}
+// execDocker runs the docker CLI, optionally against a specific endpoint.
+type execDocker struct{ host string }
 
-// NewDocker builds the real runner, used by the coordinator's teardown path
-// by default.
+// NewDocker builds the real runner bound to the ambient environment, used
+// by the coordinator's teardown path by default.
 func NewDocker() Docker { return execDocker{} }
+
+// WithHost returns a copy bound to endpoint. An empty endpoint is the same
+// as never calling this: the ambient environment decides.
+func (d execDocker) WithHost(endpoint string) Docker {
+	return execDocker{host: endpoint}
+}
 
 // Version probes the daemon. An absent binary and an unreachable daemon are
 // both ErrUnavailable — the caller reports unavailable and says what fixes
 // it.
-func (execDocker) Version() error {
-	cmd, err := dockerCmd("version", "--format", "{{.Server.Version}}")
+func (d execDocker) Version() error {
+	cmd, err := d.dockerCmd("version", "--format", "{{.Server.Version}}")
 	if err != nil {
 		return err
 	}
@@ -46,21 +62,21 @@ func (execDocker) Version() error {
 
 // ListContainers returns the container IDs carrying the project label.
 func (d execDocker) ListContainers(project string) ([]string, error) {
-	return dockerList(project, "ps", "-a",
+	return d.dockerList(project, "ps", "-a",
 		"--filter", "label=com.docker.compose.project="+project,
 		"--format", "{{.ID}}")
 }
 
 // ListNetworks returns the network IDs carrying the project label.
 func (d execDocker) ListNetworks(project string) ([]string, error) {
-	return dockerList(project, "network", "ls",
+	return d.dockerList(project, "network", "ls",
 		"--filter", "label=com.docker.compose.project="+project,
 		"--format", "{{.ID}}")
 }
 
 // ListNetworksAll returns the name of every network on the daemon.
 func (d execDocker) ListNetworksAll() ([]string, error) {
-	return dockerList("", "network", "ls", "--format", "{{.Name}}")
+	return d.dockerList("", "network", "ls", "--format", "{{.Name}}")
 }
 
 // NetworkSubnet returns the network's first IPv4 subnet as a CIDR string,
@@ -68,7 +84,7 @@ func (d execDocker) ListNetworksAll() ([]string, error) {
 // (macvlan, ipvlan, or a bare user-defined network) cannot overlap
 // anything.
 func (d execDocker) NetworkSubnet(name string) (string, error) {
-	cmd, err := dockerCmd("network", "inspect",
+	cmd, err := d.dockerCmd("network", "inspect",
 		"--format", "{{range .IPAM.Config}}{{.Subnet}} {{end}}", name)
 	if err != nil {
 		return "", err
@@ -85,14 +101,42 @@ func (d execDocker) NetworkSubnet(name string) (string, error) {
 
 // ListVolumes returns the volume names carrying the project label.
 func (d execDocker) ListVolumes(project string) ([]string, error) {
-	return dockerList(project, "volume", "ls",
+	return d.dockerList(project, "volume", "ls",
 		"--filter", "label=com.docker.compose.project="+project,
 		"--format", "{{.Name}}")
 }
 
+// NetworkEndpoints returns the names of every container attached to
+// network, whatever labels it carries — the label-only listings above
+// cannot see a container the application attached at runtime through the
+// Docker API rather than through compose.
+func (d execDocker) NetworkEndpoints(network string) ([]string, error) {
+	cmd, err := d.dockerCmd("network", "inspect",
+		"--format", "{{range .Containers}}{{.Name}}{{\"\\n\"}}{{end}}", network)
+	if err != nil {
+		return nil, err
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("inspecting the endpoints of network %q: %w", network, err)
+	}
+	var names []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line != "" {
+			names = append(names, line)
+		}
+	}
+	return names, nil
+}
+
+// DisconnectContainer force-disconnects container from network.
+func (d execDocker) DisconnectContainer(network, container string) error {
+	return d.runDocker("network", "disconnect", "-f", network, container)
+}
+
 // dockerList runs a docker list command and splits its lines.
-func dockerList(project string, args ...string) ([]string, error) {
-	cmd, err := dockerCmd(args...)
+func (d execDocker) dockerList(project string, args ...string) ([]string, error) {
+	cmd, err := d.dockerCmd(args...)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +159,7 @@ func (d execDocker) RemoveContainers(ids []string) error {
 		return nil
 	}
 	args := append([]string{"rm", "-f"}, ids...)
-	return runDocker(args...)
+	return d.runDocker(args...)
 }
 
 // RemoveNetworks removes the networks by ID.
@@ -124,7 +168,7 @@ func (d execDocker) RemoveNetworks(ids []string) error {
 		return nil
 	}
 	args := append([]string{"network", "rm"}, ids...)
-	return runDocker(args...)
+	return d.runDocker(args...)
 }
 
 // RemoveVolumes removes the volumes by name.
@@ -133,13 +177,13 @@ func (d execDocker) RemoveVolumes(names []string) error {
 		return nil
 	}
 	args := append([]string{"volume", "rm"}, names...)
-	return runDocker(args...)
+	return d.runDocker(args...)
 }
 
 // runDocker runs one docker command and turns a failure into an error
 // carrying the CLI's stderr.
-func runDocker(args ...string) error {
-	cmd, err := dockerCmd(args...)
+func (d execDocker) runDocker(args ...string) error {
+	cmd, err := d.dockerCmd(args...)
 	if err != nil {
 		return err
 	}
@@ -162,16 +206,28 @@ func runDocker(args ...string) error {
 // helper is not consulted today; running the CLI with a PATH it can work
 // in is still the coordinator's job rather than the next command author's.
 //
+// d.host, when set, is appended as DOCKER_HOST after HelperCommand's own
+// environment: os/exec keeps the last of a duplicate key, so this
+// overrides whatever DOCKER_HOST the coordinator's ambient environment (or
+// the currently-active docker context, which docker reads only when
+// DOCKER_HOST is unset) would otherwise have supplied. This is the whole
+// of item 4's fix — nothing about the command construction above needs to
+// change, because the daemon a command reaches is entirely a function of
+// this one variable.
+//
 // The refusal names the locations searched, which is the thing that makes
 // this diagnosable, and offers both remedies — Docker absent and Docker
 // installed somewhere the coordinator cannot see are different problems
 // with the same symptom.
-func dockerCmd(args ...string) (*exec.Cmd, error) {
+func (d execDocker) dockerCmd(args ...string) (*exec.Cmd, error) {
 	cmd, err := platform.HelperCommand("docker", args...)
 	if err != nil {
 		return nil, &ErrUnavailable{Reason: err.Error() +
 			"; install Docker Desktop (or the docker CLI) if it is absent, " +
 			"or set " + platform.HelperDirsEnv + " to the directory holding it"}
+	}
+	if d.host != "" {
+		cmd.Env = append(cmd.Env, "DOCKER_HOST="+d.host)
 	}
 	return cmd, nil
 }
