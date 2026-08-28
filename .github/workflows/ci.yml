@@ -1,5 +1,20 @@
 name: ci
 
+# Every job runs on a self-hosted runner in the tinkerindustries fleet. The
+# account's Actions spending is blocked, so hosted runners refuse jobs within
+# a few seconds; self-hosted runners consume no Actions minutes. FLEET.md in
+# tinkerindustries/github-action-runner describes the machines.
+#
+#   arc-linux       Linux amd64, ephemeral k3s pod on the Linux box.
+#                   Unprivileged, so no Docker daemon.
+#   arc-runner-set  Linux arm64, ephemeral k3s pod in a Colima VM on the Mac.
+#                   Has a Docker daemon; the acceptance gates need one.
+#   macos-local     The Mac itself. Xcode for the Swift menu bar app.
+#   windows-local   SHOCKWAVE, a Windows service runner.
+#
+# A job whose runner is asleep queues until the workflow times out rather
+# than failing, so check the runner is online before relying on a push.
+
 on:
   push:
     branches:
@@ -12,7 +27,7 @@ permissions:
 jobs:
   lint:
     name: gofmt
-    runs-on: ubuntu-latest
+    runs-on: arc-linux
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -29,7 +44,7 @@ jobs:
 
   vet:
     name: go vet
-    runs-on: ubuntu-latest
+    runs-on: arc-linux
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -40,7 +55,7 @@ jobs:
 
   test:
     name: go test
-    runs-on: ubuntu-latest
+    runs-on: arc-linux
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -54,7 +69,7 @@ jobs:
 
   staticcheck:
     name: staticcheck
-    runs-on: ubuntu-latest
+    runs-on: arc-linux
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -67,7 +82,7 @@ jobs:
 
   api-drift:
     name: the described API is current
-    runs-on: ubuntu-latest
+    runs-on: arc-linux
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -92,7 +107,7 @@ jobs:
 
   sqlc-drift:
     name: the store queries are current
-    runs-on: ubuntu-latest
+    runs-on: arc-linux
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -112,7 +127,7 @@ jobs:
 
   cross-build:
     name: build ${{ matrix.goos }}/${{ matrix.goarch }}
-    runs-on: ubuntu-latest
+    runs-on: arc-linux
     strategy:
       matrix:
         include:
@@ -157,8 +172,14 @@ jobs:
     # so the failures are visible and countable; it does not fail the run,
     # because a permanently red required job would hide the Linux signal
     # that does gate.
+    #
+    # SHOCKWAVE, a self-hosted runner on the Windows machine. windows-latest
+    # is a billed hosted runner and the account's Actions spending is
+    # blocked, so the job never started there. This is the first machine to
+    # run this code on Windows, so treat a red result here as a finding
+    # about the code rather than about the runner.
     name: windows unit and in-process tests (advisory)
-    runs-on: windows-latest
+    runs-on: windows-local
     continue-on-error: true
     steps:
       - uses: actions/checkout@v7
@@ -172,7 +193,11 @@ jobs:
 
   swift:
     name: swift build and test (macapp)
-    runs-on: macos-latest
+    # geoff-mac, a self-hosted runner on the Mac itself. macos-latest is a
+    # billed hosted runner and the account's Actions spending is blocked, so
+    # the job never started. The Swift toolchain it needs is already on that
+    # machine.
+    runs-on: macos-local
     steps:
       - uses: actions/checkout@v7
       - name: swift build
@@ -184,7 +209,11 @@ jobs:
 
   acceptance:
     name: acceptance gates (docker)
-    runs-on: ubuntu-latest
+    # arc-runner-set, the Colima cluster on the Mac, is the only runner in
+    # the fleet with a Docker daemon: its pods get a dind sidecar. arc-linux
+    # runs unprivileged on a host carrying production containers, so it has
+    # no daemon on purpose. This pod is linux/arm64.
+    runs-on: arc-runner-set
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -197,6 +226,9 @@ jobs:
       # container with --network host, reaching the coordinator's loopback
       # address over WT_ENDPOINT. Only the client binary needs sharing
       # into the container now, so the runner's docker daemon must still
-      # be able to share the workspace path (true on ubuntu-latest).
+      # be able to share the workspace path. The dind sidecar shares the
+      # pod's network namespace and mounts the same workspace volume, so
+      # both --network host and the bind mount behave as they did on a
+      # hosted runner.
       - name: go test -tags acceptance
         run: go test -tags acceptance ./...

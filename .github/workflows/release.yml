@@ -24,7 +24,12 @@ permissions:
 jobs:
   version:
     name: check the tag
-    runs-on: ubuntu-latest
+    # arc-linux, a self-hosted runner in the tinkerindustries fleet: an
+    # ephemeral k3s pod on the Linux box, amd64 as ubuntu-latest was. The
+    # account's Actions spending is blocked, so hosted runners refuse jobs
+    # within a few seconds. FLEET.md in tinkerindustries/github-action-runner
+    # describes the machines.
+    runs-on: arc-linux
     outputs:
       version: ${{ steps.tag.outputs.version }}
       prerelease: ${{ steps.tag.outputs.prerelease }}
@@ -58,7 +63,12 @@ jobs:
 
   linux-windows:
     name: assemble the linux and windows archives
-    runs-on: ubuntu-latest
+    # arc-linux, a self-hosted runner in the tinkerindustries fleet: an
+    # ephemeral k3s pod on the Linux box, amd64 as ubuntu-latest was. The
+    # account's Actions spending is blocked, so hosted runners refuse jobs
+    # within a few seconds. FLEET.md in tinkerindustries/github-action-runner
+    # describes the machines.
+    runs-on: arc-linux
     needs: version
     steps:
       - uses: actions/checkout@v7
@@ -77,7 +87,13 @@ jobs:
 
   darwin:
     name: assemble the darwin archives with the menu bar app
-    runs-on: macos-14
+    # macos-local, the Mac itself. The Swift menu bar app cannot be
+    # cross-compiled, so this half of the release needs real macOS with
+    # Xcode. Unlike macos-14 this machine is not a clean image: it carries
+    # the login shell's pyenv, nvm, rustup and Homebrew, so a build here can
+    # pick up a local toolchain version. The Swift build uses Xcode's
+    # toolchain directly, which is why that does not bite this job.
+    runs-on: macos-local
     needs: version
     steps:
       - uses: actions/checkout@v7
@@ -171,7 +187,12 @@ jobs:
 
   publish:
     name: publish the release
-    runs-on: ubuntu-latest
+    # arc-linux, a self-hosted runner in the tinkerindustries fleet: an
+    # ephemeral k3s pod on the Linux box, amd64 as ubuntu-latest was. The
+    # account's Actions spending is blocked, so hosted runners refuse jobs
+    # within a few seconds. FLEET.md in tinkerindustries/github-action-runner
+    # describes the machines.
+    runs-on: arc-linux
     needs: [version, linux-windows, darwin]
     steps:
       - uses: actions/download-artifact@v4
