@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -28,7 +29,7 @@ func TestValidateSlug(t *testing.T) {
 		{"has_space", "must match"},
 		{"under_score", "must match"},
 		{strings.Repeat("a", spec.SlugMaxLen), ""},
-		{strings.Repeat("a", spec.SlugMaxLen+1), "cap is 32"},
+		{strings.Repeat("a", spec.SlugMaxLen+1), fmt.Sprintf("cap is %d", spec.SlugMaxLen)},
 	}
 	for _, tt := range tests {
 		got := ValidateSlug(tt.slug)
@@ -45,7 +46,7 @@ func TestValidateSlug(t *testing.T) {
 // TestValidateSlugAgreesWithSpec pins the one-implementation rule: the
 // reason-giving form and spec.ValidSlug never disagree.
 func TestValidateSlugAgreesWithSpec(t *testing.T) {
-	slugs := []string{"", "a", "no", "Brisk-Otter", "-x", "x_y", strings.Repeat("a", 33), strings.Repeat("b", 32)}
+	slugs := []string{"", "a", "no", "Brisk-Otter", "-x", "x_y", strings.Repeat("a", spec.SlugMaxLen+1), strings.Repeat("b", spec.SlugMaxLen)}
 	for _, s := range slugs {
 		valid := spec.ValidSlug(s)
 		reason := ValidateSlug(s)

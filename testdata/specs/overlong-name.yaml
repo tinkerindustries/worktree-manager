@@ -1,5 +1,6 @@
 # Invalid: the namespace template repeats {slug} until the worst-case
-# resolution (a 32-character slug) exceeds the 63-character namespace cap.
+# resolution (a slug of spec.SlugMaxLen characters) exceeds the
+# 63-character namespace cap.
 # Rejected at validation, not at allocation (03-drivers §7).
 version: 1
 app: compose-app

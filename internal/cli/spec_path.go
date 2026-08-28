@@ -38,8 +38,8 @@ func runSpecPath(args []string, stdout, stderr io.Writer) int {
 	}
 	if !spec.ValidSlug(*slug) {
 		WriteError(stderr, UsageError(
-			"give a kebab-case slug of at most 32 characters, e.g. --slug brisk-otter",
-			"--slug %q is not a valid slug (must match ^[a-z0-9][a-z0-9-]*$, at most 32 characters)", *slug))
+			fmt.Sprintf("give a kebab-case slug of at most %d characters, e.g. --slug brisk-otter", spec.SlugMaxLen),
+			"--slug %q is not a valid slug (must match ^[a-z0-9][a-z0-9-]*$, at most %d characters)", *slug, spec.SlugMaxLen))
 		return ExitUsage
 	}
 

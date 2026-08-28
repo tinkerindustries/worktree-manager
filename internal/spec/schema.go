@@ -31,10 +31,24 @@ var SupportedVersions = []int{Version}
 // state a constraint it is quoted; where none is stated the cap is a phase-0
 // choice, recorded here and in the phase-0 report.
 const (
-	// SlugMaxLen is the slug cap from docs/design/01-identity.md §4.1:
-	// "Length is capped at 32 characters", two constraints binding (DNS
-	// labels at 63 octets, sun_path at 104/108 bytes).
-	SlugMaxLen = 32
+	// SlugMaxLen is the slug cap. docs/design/01-identity.md §4.1 sets it
+	// at 32 with two constraints binding (DNS labels at 63 octets,
+	// sun_path at 104/108 bytes); this raises it to 43, which the document
+	// predates. Claude Code names a worktree after the task that prompted
+	// it and appends a hash, so the names it generates routinely run past
+	// 32 characters — the WorktreeCreate hook has to accept them, and a
+	// name it cannot pass to `wt spec path` fails worktree creation
+	// outright.
+	//
+	// 43 is the largest value the 63-octet DNS bound leaves once a layered
+	// compose template is paid for. Validate resolves every template
+	// against a slug of exactly this length (see the worst-case context in
+	// Validate), so raising this number shrinks how much template a spec
+	// may write: testdata/fixtures/compose-app resolves
+	// "{app}-{slug}-{slot}" and then "{compose}-test", which reaches
+	// exactly 63 at 43 and overflows at 44. Any further increase would
+	// invalidate specs that are legal today.
+	SlugMaxLen = 43
 
 	// NamespaceMaxLen is the resolved compose project name cap. M1 §4.1:
 	// a project name derived from the slug becomes part of network and
@@ -63,7 +77,9 @@ const (
 
 	// ResourceNameMaxLen caps a resource's own name. No document states
 	// one; this is a phase-0 choice: resource names are template variables
-	// and stay slug-sized, matching the slug cap.
+	// and stay short. It was set to match the slug cap when that cap was
+	// also 32 and is now an independent number — a resource name is
+	// author-chosen and needs no room for a generated suffix.
 	ResourceNameMaxLen = 32
 )
 
