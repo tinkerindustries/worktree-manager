@@ -1,0 +1,88 @@
+# worktree-manager's own spec — the adoption signal for this repository.
+# Shape per docs/design/03-drivers.md §3.1; the reasoning behind each
+# choice is in docs/wt-decision-record.md.
+#
+# Two worktrees of this repository contend for exactly two things: the
+# port a development coordinator listens on, and the store that
+# coordinator owns. Both are isolated below. Everything else the audit
+# found is machine-global and deliberately shared — see `shared:`.
+version: 1
+app: worktree-manager
+
+slots:
+  max: 8
+
+resources:
+  # The development coordinator's loopback port: port = base + slot.
+  # Never 7834 — that is the installed coordinator's, held by a host
+  # reservation no band may allocate from.
+  - type: port
+    name: coord
+
+  # The development coordinator's WT_HOME: its SQLite store, its
+  # endpoint.json and its host token. Inside the worktree rather than
+  # under {home} deliberately: a state path is deleted on teardown only
+  # when the caller purges it, so a store under {home} would outlive
+  # every worktree that made one. This one goes when the tree goes.
+  - type: state-path
+    name: store
+    template: "{worktree}/.wt-dev/"
+
+# The machine-global resources this repository reaches and does not
+# isolate (03-drivers §6). Each is a deliberate act by the developer, not
+# something a worktree does on its own.
+shared:
+  - name: "~/.wt/wt.db and 127.0.0.1:7834"
+    impact: >-
+      the installed coordinator's store and port, which manage every
+      adopted repository on this machine. A development wtd must never be
+      pointed at them; that is what the `home` and `coord` resources are
+      for.
+  - name: "~/.local/bin/wt and ~/.local/bin/wtd"
+    impact: >-
+      the installed binaries. dist/install.sh run from a worktree
+      replaces the whole machine's installation, not the worktree's.
+  - name: "~/.claude/settings.json"
+    impact: >-
+      `wt claude install` merges the WorktreeCreate and WorktreeRemove
+      hooks into the user's own settings file. Run from a worktree it
+      still writes the machine-global file.
+  - name: "the launchd registration (dev.mrgeoffrich.worktreemanager)"
+    impact: >-
+      `wt daemon install` registers a per-user service. There is one, and
+      a worktree cannot have its own.
+
+# The reaper's allowlist (04-lifecycle §6): a leftover development
+# coordinator still holding a worktree's port is the one process teardown
+# may signal. The installed coordinator shares this binary name but never
+# holds a band port — 7834 is host-reserved — so it is never a target.
+reaper:
+  binaries: [wtd]
+
+hooks:
+  build:
+    run: go build -o {worktree}/bin/ ./cmd/wt ./cmd/wtd
+    timeout: 5m
+  # Launched in the background; the health hook's probe is what waits for
+  # it. No timeout — a timeout would kill the process group and take the
+  # coordinator with it.
+  start:
+    run: "nohup {worktree}/bin/wtd --addr 127.0.0.1:{coord} >{worktree}/wtd.log 2>&1 &"
+  # `wt list` exits 5 when it cannot dial the coordinator and 0 when it
+  # can, so it is the probe. WT_HOME is in the hook environment, so the
+  # client reads the endpoint.json this worktree's own wtd just wrote.
+  health:
+    run: "{worktree}/bin/wt list --json"
+    timeout: 30s
+
+emit:
+  descriptor:
+    filename: wt-env.json
+    format: json
+  env:
+    path: .env
+    seed: false
+    keys:
+      WT_HOME: "{store}"
+      WT_COORD_ADDR: "127.0.0.1:{coord}"
+      WT_COORD_PORT: "{coord}"

@@ -166,8 +166,11 @@ adoption's phase 6 is where it is committed to `.gitignore` instead.
 ## Phase 5 — Generate
 
 The artefacts (07-agent-surface.md), generated per repo — they name this
-repo's facts, and much of a skill's value is in what it states before
-anything runs. The file inventory and the exact managed-block format are
+repo's facts. Creating and removing a worktree are not among them: Claude
+Code's own `WorktreeCreate` and `WorktreeRemove` hooks, registered once
+per machine by `wt claude install`, answer for every repository, so a
+per-repo create or remove skill would be a second implementation of what
+the hooks already do. The file inventory and the exact managed-block format are
 in `references/primitives.md`; the acceptance fixtures render the same
 files through `internal/artefact`, so the fixture is the executable
 reference for what the generate phase must produce.
@@ -183,7 +186,7 @@ Rules that bind every generated file:
 - **The body is stable; the facts live in the block.** Anything the file
   needs at runtime reads its own block (the tripwire reads the descriptor
   filename from its own block). Regeneration replaces only the block, so
-  hand edits outside it survive — a generated skill will be edited, and
+  hand edits outside it survive — a generated file will be edited, and
   the edits are worth more than the regeneration.
 - Write the hooks' entries into `.claude/settings.json`, merging with
   anything already there (never clobber other settings). The SessionStart
@@ -201,32 +204,20 @@ Rules that bind every generated file:
 
 The generated artefacts:
 
-1. `.claude/skills/worktree-create/SKILL.md` — the create skill: the
-   pre-flight (clean tree, `git pull --ff-only`, never auto-stash),
-   the `<adjective>-<animal>` slug generation with collision handling
-   (a generated collision regenerates up to three times then asks; a
-   supplied collision stops and asks), the worktree mechanism, the
-   base branch, the description, `wt init`, the report, `--no-env`
-   always stated, stop there.
-2. `.claude/skills/worktree-remove/SKILL.md` — the remove skill: exit 3
-   stops and asks, `--force` never appears as a remedy, the rails
-   (never force a git worktree remove, never delete the worktree you
-   stand in, never the remote branch, never pick a target on its own,
-   never clean up on a failure path).
-3. `.claude/hooks/wt-session-start.sh` — the tripwire: classifies cwd
+1. `.claude/hooks/wt-session-start.sh` — the tripwire: classifies cwd
    via git, prints one sentence (no environment → `wt init`; descriptor
    present → one-line summary), never allocates.
-4. `.claude/hooks/wt-guard.sh` — the opt-in enforcement hook: calls
+2. `.claude/hooks/wt-guard.sh` — the opt-in enforcement hook: calls
    `wt guard --json` (local, no socket), maps a denial to the hook
    protocol, fails open and says so. It sets `WT_GUARD_CACHE` — the
    per-session classification cache (the phase-7 decision): a worktree
    removed mid-session drops the cache and the next call reclassifies,
    failing open with a one-time note.
-5. `docs/wt.md` — the reference doc: why the tooling exists, the slot
+3. `docs/wt.md` — the reference doc: why the tooling exists, the slot
    model, what `init` writes, what stays shared and why, the registry
    and resolution chain, the teardown ordering, the documented bypass,
    the co-resident production stack, and the facts block.
-6. `CLAUDE.md` — the tripwire section (appended to the repo's own text
+4. `CLAUDE.md` — the tripwire section (appended to the repo's own text
    if there is one): this repo uses per-worktree environments; never
    hardcode a port or a path, read them with `wt show`; something else
    creates the worktree, `wt init` attaches to it.
@@ -246,9 +237,9 @@ is delayed: it shows up weeks later as a bug that looks unrelated.
 
 Two worktrees, side by side, at the same time.
 
-- Make two worktrees by whatever normally makes them (the create skill's
-  mechanism, or `git worktree add` by hand), at the paths `wt spec path
-  --slug <slug>` gives — proving the repository's own convention, not a
+- Make two worktrees by whatever normally makes them (the
+  `WorktreeCreate` hook, or `git worktree add` by hand), at the paths
+  `wt spec path --slug <slug>` gives — proving the repository's own convention, not a
   path chosen for the test.
 - `wt init` both; `wt start` both.
 - Confirm both healthy simultaneously, and the two resource tables

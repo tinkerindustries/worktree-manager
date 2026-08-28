@@ -860,12 +860,24 @@ func TestDoctorFindingsEachNameACommand(t *testing.T) {
 	stale.Slug = "wt-stale"
 	fleetEntry(t, h, stale)
 
-	// A listener holding the entry's port: the resource-drift fixture.
-	l, err := net.Listen("tcp", "127.0.0.1:7001")
+	// A listener holding an entry's port: the resource-drift fixture. The
+	// port is probed rather than fixed at 7001. Two worktrees of this
+	// repository run their test suites at the same time, and a hardcoded
+	// port makes whichever one starts second fail on a bind the test
+	// never intended to exercise.
+	driftPort := freeCoordPort(t)
+	l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", driftPort))
 	if err != nil {
-		t.Fatalf("binding port 7001: %v", err)
+		t.Fatalf("binding port %d: %v", driftPort, err)
 	}
 	defer l.Close()
+
+	// The entry that claims it: drift is a recorded port some other
+	// process holds, so the fixture needs both halves.
+	drift := baseFleetEntry(worktree, true)
+	drift.App, drift.Slug, drift.Slot = sp.App, "wt-drift", 8
+	drift.Resources = map[string]spec.Resolved{"api": {Type: "port", Value: driftPort}}
+	fleetEntry(t, h, drift)
 
 	// A second app's band overlapping this one's: the band-overlap fixture.
 	max := 8
@@ -901,13 +913,13 @@ func TestDoctorFindingsEachNameACommand(t *testing.T) {
 	}
 	// Every §4 row this phase produces, with a remedy naming a command.
 	want := []string{
-		"the worktree directory",            // entry present, directory gone → wt rm / wt reconcile
-		"present but has no registry entry", // directory present, no entry → wt init
-		"managed key",                       // duplicate managed key outside the block → wt init
-		"port 7001 is bound",                // resource drift → wt init
-		"bands of app",                      // band ledger overlap → wt bands reserve
-		"approaching its slot ceiling",      // slot ceiling → wt cleanup / wt rm
-		"names no reaper binaries",          // reaper can never signal → reaper.binaries
+		"the worktree directory",                   // entry present, directory gone → wt rm / wt reconcile
+		"present but has no registry entry",        // directory present, no entry → wt init
+		"managed key",                              // duplicate managed key outside the block → wt init
+		fmt.Sprintf("port %d is bound", driftPort), // resource drift → wt init
+		"bands of app",                             // band ledger overlap → wt bands reserve
+		"approaching its slot ceiling",             // slot ceiling → wt cleanup / wt rm
+		"names no reaper binaries",                 // reaper can never signal → reaper.binaries
 	}
 	for _, substr := range want {
 		found := false
