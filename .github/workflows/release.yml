@@ -1,21 +1,18 @@
 name: release
-
-# A tagged push cuts the release: dist/build.sh assembles one archive per
-# platform (both binaries plus the platform's installer) and the artefacts
-# are attached to the tag's GitHub release. The tag is the release version
-# and must be `v` followed by a semantic version (RELEASE.md, "Versioning";
-# semver.org 2.0.0) — a tag that is not is refused here before anything is
-# built, because the tag is the only name the binaries carry. Nothing is
-# published to a package manager channel — the PLAN-SCOPE.md non-goal for
-# packaging.
+# The release: pushing a v* tag assembles one archive per platform and
+# publishes them against the tag.
 #
-# The macapp job (below) is the menu bar app's phase-4 shipping half
-# (macapp/PLAN.md): it builds, signs and notarizes WorktreeMenu.app and
-# attaches the result to the same release. It runs only when the six
-# signing secrets are configured on this repository; with none of them
-# set it logs why and does nothing else, so a tag push behaves exactly as
-# it does today until a Developer ID certificate and an App Store Connect
-# key are added.
+# The assembly is split across two runners because the macOS menu bar app
+# is a Swift build and cannot be cross-compiled. The linux and windows
+# archives are assembled on Linux, the darwin archives on macOS with
+# WorktreeMenu.app staged inside them, and the publish job joins the two
+# halves into one release with one SHA256SUMS over every archive.
+#
+# The darwin job signs and notarizes the app when the six signing secrets
+# are configured on this repository. With none of them set it says so and
+# ad-hoc signs instead, which still ships an app: install.sh clears the
+# quarantine attribute for an ad-hoc bundle, and a Developer ID bundle
+# that has been notarized and stapled needs no such handling.
 on:
   push:
     tags:
@@ -25,24 +22,20 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    name: build and publish the distribution
+  version:
+    name: check the tag
     runs-on: ubuntu-latest
-    # Exposed so the macapp job (below) can name the same version without
-    # re-deriving it from the tag itself; this does not change anything
-    # this job does.
     outputs:
       version: ${{ steps.tag.outputs.version }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version: "1.26"
-      # The tag is checked before the build, so a misnamed tag costs
-      # nothing and produces no half-release. dist/build.sh applies the
-      # same rule to the version it is handed; this step exists so the
+      # The tag is checked before anything is built, so a misnamed tag
+      # costs nothing and produces no half-release. dist/build.sh applies
+      # the same rule to the version it is handed; this step exists so the
       # failure names the tag rather than the version derived from it.
       - name: check the tag is a semantic version
+        id: tag
         run: |
           version="${GITHUB_REF_NAME#v}"
           semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
@@ -62,53 +55,40 @@ jobs:
           *) echo "prerelease=false" >>"$GITHUB_OUTPUT" ;;
           esac
           echo "version=$version" >>"$GITHUB_OUTPUT"
-        id: tag
-      - name: assemble the distribution
-        run: dist/build.sh "${{ steps.tag.outputs.version }}"
-      - name: publish the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PRERELEASE: ${{ steps.tag.outputs.prerelease }}
-        run: |
-          notes=$(cat <<EOF
-          The $GITHUB_REF_NAME distribution: one archive per platform containing \`wt\` and \`wtd\` plus the installer (\`install.sh\`, \`install.ps1\`).
 
-          Verify with the \`SHA256SUMS\` attached here, unpack, and run the installer:
-
-          \`\`\`sh
-          ./install.sh                 # host install: both binaries, coordinator registered and started
-          ./install.sh --client-only   # container install: the wt client alone
-          \`\`\`
-
-          See RELEASE.md for versioning, the compatibility policy, container clients and rollback.
-          EOF
-          )
-          flags=""
-          if [ "$PRERELEASE" = "true" ]; then
-            flags="--prerelease"
-          fi
-          gh release create "$GITHUB_REF_NAME" \
-            dist/out/wt-*.tar.gz dist/out/wt-*.zip dist/out/SHA256SUMS \
-            --title "Worktree Manager $GITHUB_REF_NAME" \
-            --notes "$notes" \
-            $flags
-
-  macapp:
-    name: build, sign and notarize the menu bar app
-    runs-on: macos-14
-    needs: build
+  linux-windows:
+    name: assemble the linux and windows archives
+    runs-on: ubuntu-latest
+    needs: version
     steps:
       - uses: actions/checkout@v7
-      # None of this job's remaining steps run without all six secrets:
-      # a Developer ID Application certificate (as a base64 .p12) and its
-      # import password, the identity string codesign signs with, and
-      # the three App Store Connect API key values notarytool needs to
-      # submit unattended. This repository carries none of them today —
-      # there is no Developer ID certificate and no App Store Connect key
-      # in the environment this job was written in — so this step is
-      # expected to report "not configured" and every step after it is
-      # skipped, leaving the rest of this release exactly as build (above)
-      # produced it.
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+      - name: assemble
+        env:
+          WT_CELLS: "linux/amd64 linux/arm64 windows/amd64"
+        run: dist/build.sh "${{ needs.version.outputs.version }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux-windows
+          path: dist/out/
+          retention-days: 1
+
+  darwin:
+    name: assemble the darwin archives with the menu bar app
+    runs-on: macos-14
+    needs: version
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+      # Signing needs all six: a Developer ID Application certificate (as
+      # a base64 .p12) and its import password, the identity string
+      # codesign signs with, and the three App Store Connect key values
+      # notarytool needs to submit unattended. Absent any of them the app
+      # is still built and still ships, ad-hoc signed.
       - name: check for signing credentials
         id: creds
         env:
@@ -125,16 +105,15 @@ jobs:
             echo "present=true" >>"$GITHUB_OUTPUT"
           else
             echo "present=false" >>"$GITHUB_OUTPUT"
-            echo "::notice::macapp signing secrets are not fully configured (need MACAPP_SIGNING_IDENTITY, MACAPP_CERTIFICATE_P12, MACAPP_CERTIFICATE_PASSWORD, MACAPP_NOTARY_KEY_ID, MACAPP_NOTARY_KEY_ISSUER, MACAPP_NOTARY_KEY_P8); the signed menu bar app is not attached to this release"
+            echo "::notice::macapp signing secrets are not fully configured (need MACAPP_SIGNING_IDENTITY, MACAPP_CERTIFICATE_P12, MACAPP_CERTIFICATE_PASSWORD, MACAPP_NOTARY_KEY_ID, MACAPP_NOTARY_KEY_ISSUER, MACAPP_NOTARY_KEY_P8); the menu bar app in this release is ad-hoc signed"
           fi
       - name: build WorktreeMenu.app
-        if: steps.creds.outputs.present == 'true'
         run: macapp/Scripts/bundle.sh --configuration release
       # The standard shape for getting a Developer ID certificate onto a
-      # hosted runner: decode the .p12 into a fresh, job-local keychain
-      # and unlock it, so codesign can find the identity without a
-      # GUI prompt. The runner is destroyed after the job either way;
-      # deleting the keychain below is belt and braces.
+      # hosted runner: decode the .p12 into a fresh, job-local keychain and
+      # unlock it, so codesign can find the identity without a GUI prompt.
+      # The runner is destroyed after the job either way; deleting the
+      # keychain below is belt and braces.
       - name: import the signing certificate into a temporary keychain
         if: steps.creds.outputs.present == 'true'
         env:
@@ -153,6 +132,9 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN_PATH" "$(security default-keychain -d user | tr -d ' "')"
           rm -f "$CERT_PATH"
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >>"$GITHUB_ENV"
+      # sign.sh signs, notarizes and staples the bundle in place, so the
+      # archives assembled below carry the stapled app. A stapled ticket is
+      # what lets Gatekeeper approve it without asking Apple at launch.
       - name: sign, notarize and staple
         if: steps.creds.outputs.present == 'true'
         env:
@@ -164,7 +146,7 @@ jobs:
           KEY_PATH="$RUNNER_TEMP/macapp-notary-key.p8"
           printf '%s' "$MACAPP_NOTARY_KEY_P8" >"$KEY_PATH"
           export MACAPP_NOTARY_KEY_PATH="$KEY_PATH"
-          macapp/Scripts/sign.sh --version "${{ needs.build.outputs.version }}" --out "$RUNNER_TEMP/macapp-out"
+          macapp/Scripts/sign.sh --version "${{ needs.version.outputs.version }}" --out "$RUNNER_TEMP/macapp-out"
           rm -f "$KEY_PATH"
       - name: remove the temporary keychain
         if: always() && steps.creds.outputs.present == 'true'
@@ -172,18 +154,65 @@ jobs:
           if [ -n "${KEYCHAIN_PATH:-}" ]; then
             security delete-keychain "$KEYCHAIN_PATH" || true
           fi
-      # The outer SHA256SUMS already exists as a release asset (the build
-      # job attached it); this downloads it, appends the new zip's
-      # digest, and re-uploads it in place, the same manifest a downloader
-      # already trusts extended by one line.
-      - name: attach the signed app to the release
-        if: steps.creds.outputs.present == 'true'
+      # The two darwin binaries are signed with the same identity when one
+      # is configured: wtd is a resident process that registers itself with
+      # launchd, which is the shape Gatekeeper is most suspicious of.
+      - name: assemble
+        env:
+          WT_CELLS: "darwin/arm64 darwin/amd64"
+          WT_MACAPP_BUNDLE: macapp/.build/WorktreeMenu.app
+          WT_DARWIN_SIGNING_IDENTITY: ${{ steps.creds.outputs.present == 'true' && secrets.MACAPP_SIGNING_IDENTITY || '' }}
+        run: dist/build.sh "${{ needs.version.outputs.version }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-darwin
+          path: dist/out/
+          retention-days: 1
+
+  publish:
+    name: publish the release
+    runs-on: ubuntu-latest
+    needs: [version, linux-windows, darwin]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: parts
+      # Each half wrote a SHA256SUMS over the archives it produced. The
+      # release carries one manifest covering every archive, so the two are
+      # concatenated and sorted by filename. README.txt is generated from
+      # the version alone and is identical in both halves, so either copy
+      # will do.
+      - name: join the two halves
+        run: |
+          mkdir -p out
+          cp parts/*/wt-*.tar.gz parts/*/wt-*.zip out/
+          cat parts/*/SHA256SUMS | sort -k2 >out/SHA256SUMS
+          ls -1 out
+      - name: publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
         run: |
-          VERSION="${{ needs.build.outputs.version }}"
-          ZIP="$RUNNER_TEMP/macapp-out/WorktreeMenu-$VERSION.zip"
-          gh release upload "$GITHUB_REF_NAME" "$ZIP"
-          gh release download "$GITHUB_REF_NAME" -p SHA256SUMS -O "$RUNNER_TEMP/SHA256SUMS" --clobber
-          (cd "$RUNNER_TEMP/macapp-out" && shasum -a 256 "WorktreeMenu-$VERSION.zip") >>"$RUNNER_TEMP/SHA256SUMS"
-          gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/SHA256SUMS" --clobber
+          notes=$(cat <<EOF
+          The $GITHUB_REF_NAME distribution: one archive per platform containing \`wt\` and \`wtd\` plus the installer (\`install.sh\`, \`install.ps1\`). The macOS archives also carry \`WorktreeMenu.app\`, which the installer installs into \`/Applications\` and starts.
+
+          Verify with the \`SHA256SUMS\` attached here, unpack, and run the installer:
+
+          \`\`\`sh
+          ./install.sh                 # host install: both binaries, coordinator registered and started, menu bar app on macOS
+          ./install.sh --no-menubar    # the same without the menu bar app
+          ./install.sh --client-only   # container install: the wt client alone
+          \`\`\`
+
+          See RELEASE.md for versioning, the compatibility policy, container clients and rollback.
+          EOF
+          )
+          flags=""
+          if [ "$PRERELEASE" = "true" ]; then
+            flags="--prerelease"
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            out/wt-*.tar.gz out/wt-*.zip out/SHA256SUMS \
+            --title "Worktree Manager $GITHUB_REF_NAME" \
+            --notes "$notes" \
+            $flags
