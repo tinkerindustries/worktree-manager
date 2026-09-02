@@ -117,6 +117,21 @@ const (
 	// until a phase that needs another one extends the schema.
 	DefaultMachineDriver = "auto"
 
+	// PurgeOnTeardownFlag is the on_teardown value that deletes a state
+	// store only when the run selects it, by resource name or by the
+	// resource's own purge.flag. It is the default, so a spec that
+	// declares nothing keeps its stores through every teardown.
+	PurgeOnTeardownFlag = "flag"
+
+	// PurgeOnTeardownAlways is the on_teardown value that deletes the
+	// store as part of the teardown, unless the run passes the resource's
+	// purge.keep_flag.
+	PurgeOnTeardownAlways = "always"
+
+	// DefaultPurgeOnTeardown is the mode a purge block with no on_teardown
+	// carries.
+	DefaultPurgeOnTeardown = PurgeOnTeardownFlag
+
 	// DefaultMachineMaxConcurrent is 4: M3 §4.5's example and the stated
 	// reason — "past roughly four the pool exhausts".
 	DefaultMachineMaxConcurrent = 4
@@ -291,9 +306,18 @@ type Seed struct {
 	Default *string  `yaml:"default,omitempty"`
 }
 
-// Purge is a state-path resource's purge declaration, M3 §4.4.
+// Purge is a state-path resource's purge declaration, M3 §4.4: whether a
+// teardown deletes the store, and how one run says otherwise.
+//
+// on_teardown: always is the machine's keep_flag shape applied to a store —
+// the teardown deletes it, and the run that wants it kept passes keep_flag.
+// A repository whose per-worktree store is dead weight the moment the
+// worktree goes declares it; every other repository leaves the field absent
+// and the store survives a teardown nobody asked to purge.
 type Purge struct {
-	Flag string `yaml:"flag,omitempty"`
+	Flag       string `yaml:"flag,omitempty"`
+	OnTeardown string `yaml:"on_teardown,omitempty"` // flag (default) | always
+	KeepFlag   string `yaml:"keep_flag,omitempty"`
 }
 
 // Reserved is the spec's committed defaults — properties of the repository,

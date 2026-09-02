@@ -213,6 +213,9 @@ func factSheet(sp *spec.Spec, band map[string]int) []string {
 			} else if r.Seed != nil && r.Seed.Default != nil {
 				mode = "seeded mode " + *r.Seed.Default
 			}
+			if spec.PurgeOnTeardown(r) == spec.PurgeOnTeardownAlways {
+				mode += fmt.Sprintf(", purged when the worktree is removed (keep it for a run with %s)", r.Purge.KeepFlag)
+			}
 			lines = append(lines, fmt.Sprintf("- %s: state-path, %s", r.Name, mode))
 		case "namespace":
 			lines = append(lines, fmt.Sprintf("- %s: namespace (%s)", r.Name, spec.NamespaceKind(r)))

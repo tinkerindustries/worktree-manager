@@ -1073,12 +1073,18 @@ components:
       - Default
     Purge:
       type: object
-      description: Purge is a state-path resource's purge declaration, M3 §4.4.
+      description: "Purge is a state-path resource's purge declaration, M3 §4.4: whether a teardown deletes the store, and how one run says otherwise."
       properties:
         Flag:
           type: string
+        OnTeardown:
+          type: string
+        KeepFlag:
+          type: string
       required:
       - Flag
+      - OnTeardown
+      - KeepFlag
     Reserved:
       type: object
       description: Reserved is the spec's committed defaults — properties of the repository, unlike the host-global band reservations, which live in the ledger (ARCHITECTURE.md §8.4).

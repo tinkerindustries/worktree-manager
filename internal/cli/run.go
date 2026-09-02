@@ -82,13 +82,16 @@ usage:
                                      no emission, no coordinator
   wt rm --slug <s> [--json]         safety checks (dirty tree, unpushed
       [--dry-run] [--keep-processes] commits, open PR), then reap, tear
-      [--purge <resource>]... [--cwd] down and deallocate in the
-                                     coordinator, then git worktree
+      [--purge <resource>]...        down and deallocate in the
+      [--keep <resource>]... [--cwd] coordinator, then git worktree
                                      remove; works with the directory
                                      already gone. --purge names a
                                      state-path resource whose store is
-                                     deleted; without it every store
-                                     survives. The spec's own purge.flag
+                                     deleted, --keep one the spec purges
+                                     on teardown or a machine to leave
+                                     up. A store survives unless the spec
+                                     says purge.on_teardown: always. The
+                                     spec's own purge.flag, purge.keep_flag
                                      and keep_flag names are flags too
   wt bands reserve --host            reserve host-global ports no app may
       --port <p>... --note <text>    allocate from; the note names what

@@ -146,12 +146,15 @@ type Env struct {
 	SeedModes map[string]string
 	// PurgeFlags are the CLI purge flags the caller passed (e.g.
 	// "--purge-db"). A state-path resource whose purge.flag was passed is
-	// purged on teardown; every other state-path is left alone — teardown
-	// only happens when the purge flag is given (03-drivers.md §4.4).
+	// purged on teardown; every other state-path follows the spec's
+	// purge.on_teardown, which leaves the store alone unless the
+	// repository declared always (03-drivers.md §4.4).
 	PurgeFlags []string
-	// KeepFlags are the CLI keep flags the caller passed (e.g.
-	// "--keep-vm"). A machine resource whose keep_flag was passed is left
-	// up on teardown — the entry drops but the VM stays (B4.3).
+	// KeepFlags are the CLI keep flags the caller passed (e.g. "--keep-vm"
+	// or a state-path's purge.keep_flag). A machine resource whose
+	// keep_flag was passed is left up on teardown — the entry drops but the
+	// VM stays (B4.3) — and a state-path resource whose purge.keep_flag was
+	// passed keeps its store for this run.
 	KeepFlags []string
 	// Reservations are the ledger's host-global reservations at call time.
 	// The namespace driver refuses to tear down a project whose name matches

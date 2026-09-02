@@ -122,8 +122,8 @@ phase-2 answers. Then:
   inventory. This is the conversation made concrete: two tables side by
   side is what surfaces a missed collision before anything is built.
 
-One judgment call belongs here and nowhere else: the `removal:` block,
-which decides what each of `wt rm`'s three safety checks does on a hit —
+Three judgment calls belong here and nowhere else. The first is the
+`removal:` block, which decides what each of `wt rm`'s three safety checks does on a hit —
 `refuse` or `warn`. The defaults suit a personal repository (refuse on
 uncommitted changes, warn on unpushed commits and an open pull request),
 because a branch that was never pushed and a machine without `gh` are
@@ -142,7 +142,26 @@ configuration and not something either binary infers. `wt cleanup` and
 the coordinator's sweep are not affected by the block: they require a
 merged pull request whatever it says.
 
-The second call here is `worktrees:`, where this repository's worktrees
+The second call is each state store's `purge:` block: does the store
+outlive the worktree? One nobody reads once the tree is gone — a
+per-worktree cache, an app's user-data directory — accumulates on disk
+until somebody remembers a flag, so declare it:
+
+```yaml
+    purge:
+      on_teardown: always
+      keep_flag: "--keep-userdata"
+```
+
+The teardown then deletes it, and `--keep-userdata` (or `--keep
+<resource>`) keeps it for one run. Leave the block off, or declare
+`flag:` alone, and the store survives every teardown that did not ask for
+it, which is the right answer for a database somebody may still want to
+inspect. `on_teardown: always` needs a per-worktree template and refuses a
+`default: shared` resource, so ask what the store holds before writing it.
+`wt cleanup` and the coordinator's sweep are teardowns and honour it.
+
+The third call is `worktrees:`, where this repository's worktrees
 go. Say nothing and they go to `.claude/worktrees/<slug>` — the directory
 Claude Code's own `isolation: "worktree"` creates trees in, so the manual
 flow and the automatic one land in one place. Override it only for a

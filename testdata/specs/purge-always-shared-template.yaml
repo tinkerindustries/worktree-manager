@@ -1,0 +1,18 @@
+# Invalid: the userdata store is deleted on every teardown, and its template
+# names no {slug}, {slot} or {worktree} — every worktree resolves the same
+# directory, so the first rm would delete the store the others are using.
+version: 1
+app: shared-store
+
+resources:
+  - type: state-path
+    name: userdata
+    template: "{home}/.shared-store/userdata/"
+    purge:
+      on_teardown: always
+      keep_flag: "--keep-userdata"
+
+emit:
+  descriptor:
+    filename: wt-env.json
+    format: json

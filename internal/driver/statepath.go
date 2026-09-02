@@ -1,10 +1,17 @@
 package driver
 
 // statepath.go is the state-path driver: a per-worktree filesystem path,
-// applied by creating the directory and seeding per mode, torn down only
-// when the purge flag is given, and guarded by the structural purge refusal
-// — a purge whose resolved path is the shared source, or any ancestor of it,
-// is refused and the refusal names the path (03-drivers.md §4.4, B6.3).
+// applied by creating the directory and seeding per mode, purged on
+// teardown by the spec's policy, and guarded by the structural purge
+// refusal — a purge whose resolved path is the shared source, or any
+// ancestor of it, is refused and the refusal names the path
+// (03-drivers.md §4.4, B6.3).
+//
+// The policy is the repository's: a store survives a teardown that did not
+// select it, unless the resource declares purge.on_teardown: always, which
+// deletes it as part of the teardown and leaves purge.keep_flag as the
+// one-run way to say otherwise. spec.Purges is the decision, so what
+// `wt rm` reports and what this driver deletes come from one rule.
 //
 // A seeded store is a snapshot taken at creation that diverges as work
 // continues, not a live mirror (B6.2): the driver records that seeding
@@ -35,8 +42,8 @@ func (*StatePath) Type() string { return "state-path" }
 // HasApply reports that the driver creates the directory and seeds it.
 func (*StatePath) HasApply() bool { return true }
 
-// HasTeardown reports that the driver purges — only when the purge flag is
-// given.
+// HasTeardown reports that the driver purges — by the spec's purge policy,
+// which is flag-only unless the resource declares on_teardown: always.
 func (*StatePath) HasTeardown() bool { return true }
 
 // GatesAllocation reports that a path is not a shared resource: a per-slot
@@ -154,9 +161,10 @@ func (sp *StatePath) seed(path string, dirTarget bool, from string, res *ApplyRe
 	return copyFile(from, path)
 }
 
-// Teardown purges the path, and only when the purge flag for this resource
-// was passed — a state store is never torn down otherwise (03-drivers.md
-// §4.4). The purge refusal is structural: a purge whose resolved path is
+// Teardown purges the path when the spec's purge policy says to: the run
+// selected the resource, or the resource declares on_teardown: always and
+// the run did not pass its keep flag (03-drivers.md §4.4). The purge
+// refusal is structural: a purge whose resolved path is
 // the shared source or any ancestor of it is refused, naming the resolved
 // path, because deleting the shared store would wipe every project's data.
 // The check runs on the resolved, symlink-realised path using
@@ -167,7 +175,14 @@ func (sp *StatePath) Teardown(r *spec.Resource, value any, env Env) error {
 	if err != nil {
 		return err
 	}
-	if !sp.purgeGiven(r, env) {
+	if !spec.Purges(r, env.PurgeFlags, env.KeepFlags) {
+		return nil
+	}
+	if sp.mode(r, env) == "shared" && !spec.PurgeSelected(r, env.PurgeFlags) {
+		// Mode shared: the resolved path is the shared store rather than
+		// this worktree's copy of it, and apply created nothing. A purge
+		// the run did not ask for never deletes it; one that names the
+		// resource still faces the structural refusal below.
 		return nil
 	}
 	if r.Seed != nil {
@@ -288,19 +303,6 @@ func (sp *StatePath) mode(r *spec.Resource, env Env) string {
 		return *r.Seed.Default
 	}
 	return spec.DefaultSeedMode
-}
-
-// purgeGiven reports whether the caller passed this resource's purge flag.
-func (sp *StatePath) purgeGiven(r *spec.Resource, env Env) bool {
-	if r.Purge == nil || r.Purge.Flag == "" {
-		return false
-	}
-	for _, f := range env.PurgeFlags {
-		if f == r.Purge.Flag {
-			return true
-		}
-	}
-	return false
 }
 
 // resolveFrom resolves the seed.from template against the same context the

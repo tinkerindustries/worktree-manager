@@ -30,6 +30,7 @@ func TestInvalidSpecsRejected(t *testing.T) {
 		{"unknown-removal-policy.yaml", "removal.open_pr", `"ignore" is not a removal policy`},
 		{"worktree-path-without-slug.yaml", "worktrees.path", "must reference {slug}"},
 		{"worktree-base-flag.yaml", "worktrees.base", "must not start with a hyphen"},
+		{"purge-always-shared-template.yaml", "resources[0].purge.on_teardown", "needs a per-worktree template"},
 		{"namespace-machine-unknown.yaml", "resources[0].machine", `no resource named "vm"`},
 		{"namespace-machine-wrong-type.yaml", "resources[1].machine", `is type "state-path", not machine`},
 		{"namespace-machine-on-plain.yaml", "resources[1].machine", "only valid for kind: compose"},
@@ -148,6 +149,41 @@ func TestValidateRefusals(t *testing.T) {
 			"seed default outside modes",
 			"version: 1\napp: x\nresources:\n  - type: state-path\n    name: db\n    template: \"{home}/db.sqlite\"\n    seed:\n      from: \"{home}/src.sqlite\"\n      modes: [empty]\n      default: seeded\n",
 			"resources[0].seed.default", "not one of the declared modes",
+		},
+		{
+			"purge block with neither flag nor on_teardown",
+			"version: 1\napp: x\nresources:\n  - type: state-path\n    name: db\n    template: \"{home}/{slug}/db.sqlite\"\n    purge: {}\n",
+			"resources[0].purge.flag", `required unless on_teardown is "always"`,
+		},
+		{
+			"purge unknown on_teardown",
+			"version: 1\napp: x\nresources:\n  - type: state-path\n    name: db\n    template: \"{home}/{slug}/db.sqlite\"\n    purge:\n      on_teardown: sometimes\n",
+			"resources[0].purge.on_teardown", `unknown on_teardown "sometimes"`,
+		},
+		{
+			"purge always without keep_flag",
+			"version: 1\napp: x\nresources:\n  - type: state-path\n    name: db\n    template: \"{home}/{slug}/db.sqlite\"\n    purge:\n      on_teardown: always\n",
+			"resources[0].purge.keep_flag", "required with on_teardown: always",
+		},
+		{
+			"purge keep_flag without the dashes",
+			"version: 1\napp: x\nresources:\n  - type: state-path\n    name: db\n    template: \"{home}/{slug}/db.sqlite\"\n    purge:\n      on_teardown: always\n      keep_flag: keep-db\n",
+			"resources[0].purge.keep_flag", "must start with --",
+		},
+		{
+			"purge keep_flag equal to purge flag",
+			"version: 1\napp: x\nresources:\n  - type: state-path\n    name: db\n    template: \"{home}/{slug}/db.sqlite\"\n    purge:\n      on_teardown: always\n      flag: \"--purge-db\"\n      keep_flag: \"--purge-db\"\n",
+			"resources[0].purge.keep_flag", "cannot both delete the store and keep it",
+		},
+		{
+			"purge keep_flag without on_teardown always",
+			"version: 1\napp: x\nresources:\n  - type: state-path\n    name: db\n    template: \"{home}/{slug}/db.sqlite\"\n    purge:\n      flag: \"--purge-db\"\n      keep_flag: \"--keep-db\"\n",
+			"resources[0].purge.keep_flag", "only valid with on_teardown: always",
+		},
+		{
+			"purge always on a shared store",
+			"version: 1\napp: x\nresources:\n  - type: state-path\n    name: db\n    template: \"{home}/{slug}/db.sqlite\"\n    default: shared\n    purge:\n      on_teardown: always\n      keep_flag: \"--keep-db\"\n",
+			"resources[0].purge.on_teardown", "not valid for a resource whose default is shared",
 		},
 		{
 			"machine unknown driver",

@@ -102,6 +102,26 @@ func validateStatic(s *Spec) error {
 		}
 	}
 
+	// A store the teardown deletes by default must be one worktree's:
+	// the template has to reach {slug}, {slot} or {worktree}, directly or
+	// through the resources it references. Without one of them every
+	// worktree resolves the same path, and the first rm deletes the store
+	// the others are still using.
+	for i := range s.Resources {
+		r := &s.Resources[i]
+		if r.Type != "state-path" || PurgeOnTeardown(r) != PurgeOnTeardownAlways {
+			continue
+		}
+		if !templateIsolates(s, r, map[string]bool{}) {
+			return &FieldError{
+				Field: resField(i, "purge.on_teardown"),
+				Reason: fmt.Sprintf(
+					"%q needs a per-worktree template: %s references none of {slug}, {slot} or {worktree}, so every worktree resolves the same path and the first teardown would delete the store the others are using",
+					PurgeOnTeardownAlways, *r.Template),
+			}
+		}
+	}
+
 	if err := validateReserved(&s.Reserved); err != nil {
 		return err
 	}
@@ -276,6 +296,9 @@ func validateResourceFields(i int, r *Resource, slotMax int) error {
 				return &FieldError{Field: field("seed.default"), Reason: fmt.Sprintf("seed default %q is not one of the declared modes %v", def, r.Seed.Modes)}
 			}
 		}
+		if err := validatePurge(i, r); err != nil {
+			return err
+		}
 	case "machine":
 		for _, f := range []string{"form", "size", "offset", "kind", "files", "pool", "on_exhaustion", "default", "flag", "seed", "purge", "machine"} {
 			if err := absent(r, f, field(f)); err != nil {
@@ -332,6 +355,75 @@ func absent(r *Resource, field, name string) error {
 		return &FieldError{Field: name, Reason: "not valid for this resource type"}
 	}
 	return nil
+}
+
+// validatePurge checks a state-path resource's purge block. The rails are
+// the machine's, applied to a store: a purge nothing can select declares
+// nothing, and a store deleted by default needs the one flag that says
+// otherwise for a run.
+func validatePurge(i int, r *Resource) error {
+	field := func(f string) string { return resField(i, f) }
+	if r.Purge == nil {
+		return nil
+	}
+	mode := PurgeOnTeardown(r)
+	if mode != PurgeOnTeardownFlag && mode != PurgeOnTeardownAlways {
+		return &FieldError{Field: field("purge.on_teardown"), Reason: fmt.Sprintf(
+			"unknown on_teardown %q; supported values: [%s %s]", r.Purge.OnTeardown, PurgeOnTeardownFlag, PurgeOnTeardownAlways)}
+	}
+	if mode == PurgeOnTeardownFlag {
+		if r.Purge.Flag == "" {
+			return &FieldError{Field: field("purge.flag"), Reason: fmt.Sprintf(
+				"required unless on_teardown is %q — a purge block with neither declares nothing, and the store would survive every teardown", PurgeOnTeardownAlways)}
+		}
+		if r.Purge.KeepFlag != "" {
+			return &FieldError{Field: field("purge.keep_flag"), Reason: fmt.Sprintf(
+				"only valid with on_teardown: %s — a store that survives a teardown by default has nothing to keep it from", PurgeOnTeardownAlways)}
+		}
+		return nil
+	}
+	if r.Purge.KeepFlag == "" {
+		return &FieldError{Field: field("purge.keep_flag"), Reason: fmt.Sprintf(
+			"required with on_teardown: %s — a store the teardown deletes needs one flag that keeps it for a run, the way a machine's keep_flag does", PurgeOnTeardownAlways)}
+	}
+	if !strings.HasPrefix(r.Purge.KeepFlag, "--") {
+		return &FieldError{Field: field("purge.keep_flag"), Reason: fmt.Sprintf(
+			"%q must start with -- : it is spelled on the command line as 'wt rm %s'", r.Purge.KeepFlag, r.Purge.KeepFlag)}
+	}
+	if r.Purge.KeepFlag == r.Purge.Flag {
+		return &FieldError{Field: field("purge.keep_flag"), Reason: fmt.Sprintf(
+			"%q is also purge.flag; one flag cannot both delete the store and keep it", r.Purge.KeepFlag)}
+	}
+	if r.Default != nil && *r.Default == "shared" {
+		return &FieldError{Field: field("purge.on_teardown"), Reason: fmt.Sprintf(
+			"%q is not valid for a resource whose default is shared: the path is every worktree's store, and deleting it on one worktree's teardown would wipe the others", PurgeOnTeardownAlways)}
+	}
+	return nil
+}
+
+// templateIsolates reports whether a resource's template reaches one of the
+// per-worktree variables, following the resources it references. seen
+// bounds the walk: a template cycle is refused elsewhere, and this must
+// terminate whatever order the checks run in.
+func templateIsolates(s *Spec, r *Resource, seen map[string]bool) bool {
+	if r == nil || r.Template == nil || seen[r.Name] {
+		return false
+	}
+	seen[r.Name] = true
+	vars, err := templateVars(*r.Template)
+	if err != nil {
+		return false
+	}
+	for _, v := range vars {
+		switch v {
+		case "slug", "slot", "worktree":
+			return true
+		}
+		if dep := ResourceByName(s, v); dep != nil && templateIsolates(s, dep, seen) {
+			return true
+		}
+	}
+	return false
 }
 
 func requireTemplate(i int, r *Resource) error {

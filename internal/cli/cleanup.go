@@ -140,6 +140,17 @@ func runCleanup(args []string, stdout, stderr io.Writer) int {
 	for _, e := range entries {
 		rows = append(rows, cleanupDecision(e))
 	}
+	// cleanup passes no purge flag, so the stores it deletes are the ones
+	// the spec purges on teardown. It deletes them without being asked,
+	// which is exactly why every row that would clean says so.
+	purged := newPurgePlan(sp, nil, nil, nil).names
+	if len(purged) > 0 {
+		for i := range rows {
+			if rows[i].Action == "would-clean" {
+				rows[i].Detail += fmt.Sprintf("; the spec purges the state stores %s on teardown", strings.Join(purged, ", "))
+			}
+		}
+	}
 
 	if !*dryRun {
 		// The real run: each would-clean row becomes its outcome. Own
@@ -174,6 +185,9 @@ func runCleanup(args []string, stdout, stderr io.Writer) int {
 					continue
 				}
 				row.Detail += noteSuffix(oc.Note)
+				if len(purged) > 0 {
+					row.Detail += "; purged the state stores: " + strings.Join(purged, ", ")
+				}
 			} else {
 				res, rerr := rmRequest(sess, sp, e.Slug, false, false, false, nil, nil)
 				if rerr != nil {
@@ -186,6 +200,9 @@ func runCleanup(args []string, stdout, stderr io.Writer) int {
 					continue
 				}
 				row.Detail = fmt.Sprintf("merged PR; resources torn down (%s), the registry entry was dropped", strings.Join(res.Resources, ", "))
+				if len(purged) > 0 {
+					row.Detail += "; purged the state stores: " + strings.Join(purged, ", ")
+				}
 			}
 			row.Detail += cleanupGitRemoveDetail(e)
 			final = append(final, row)

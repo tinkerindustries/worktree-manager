@@ -208,11 +208,33 @@ The T6 driver, and the one with the most policy attached.
       flag: "--purge-db"
 ```
 
+A store that is dead weight the moment the worktree goes declares the other form, which is the machine's `keep_flag` shape (§4.5) applied to a state store:
+
+```yaml
+  - type: state-path
+    name: userdata
+    template: "{home}/.bacio/worktrees/{slug}/userdata/"
+    purge:
+      on_teardown: always
+      keep_flag: "--keep-userdata"
+```
+
 **Apply.** Create the directory, and seed per mode. C2's three modes are bacio's and generalise: seeded from live, empty, or shared (no isolation at all).
 
 B6.2 requires the briefing to state plainly that a seeded store is a snapshot taken at creation that diverges as work continues, and is not a live mirror. M7 renders that; the driver supplies the fact that seeding occurred and when.
 
-**Teardown.** Only when the purge flag is given. B6.3's refusal is structural rather than advisory: a purge whose resolved path is the shared source — or any ancestor of it — is refused, and the refusal names the path. Deleting the shared store would wipe every project's data, so this check runs on the resolved, symlink-realised path using M1 §3.1's containment test, not on the template.
+**Teardown.** The repository's policy, from `purge.on_teardown`. `flag` is the default and the behaviour a spec that declares nothing gets: the store survives unless the run selects it, by resource name (`--purge <name>`) or by the `purge.flag` the resource declares. `always` deletes the store as part of the teardown, and `purge.keep_flag` — spelled `--keep <name>` as well — is how one run says otherwise. `wt cleanup` and the coordinator's sweep are teardowns too, and both honour `always`; neither passes a flag, so `flag` mode is untouched by them.
+
+Four rails hold `always`, checked at validation because a store deleted by default is not recoverable:
+
+- `keep_flag` is required, so the one-run opt-out always exists.
+- The template must reach `{slug}`, `{slot}` or `{worktree}`, directly or through the resources it references. Without one of them every worktree resolves the same path and the first `rm` deletes the store the others are using.
+- `default: shared` refuses it. A shared store is every worktree's, and one worktree's teardown does not get to delete it.
+- A run whose seed mode is `shared` purges nothing it was not asked to purge: apply created nothing, and the path is the shared store rather than a copy of it.
+
+B6.3's refusal is structural rather than advisory: a purge whose resolved path is the shared source — or any ancestor of it — is refused, and the refusal names the path. Deleting the shared store would wipe every project's data, so this check runs on the resolved, symlink-realised path using M1 §3.1's containment test, not on the template. It applies to both forms, and to a default purge it is the last check standing.
+
+One rule decides, `spec.Purges`, and both the driver and `wt rm` read it — so what the report names and what the teardown deleted cannot disagree. `wt rm --dry-run` names the stores it would delete and says which of them the spec deletes by default.
 
 **Verify.** Path exists, is writable, and for the seeded mode, when it was seeded.
 
