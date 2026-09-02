@@ -49,6 +49,17 @@ func withPurgeDB(sp *spec.Spec) {
 	}
 }
 
+// withAlwaysPurgeDB makes the lifecycle spec's db store one the teardown
+// deletes, with a keep flag for the run that wants it kept.
+func withAlwaysPurgeDB(sp *spec.Spec) {
+	for i := range sp.Resources {
+		if sp.Resources[i].Name == "db" {
+			sp.Resources[i].Purge = &spec.Purge{
+				OnTeardown: spec.PurgeOnTeardownAlways, KeepFlag: "--keep-db"}
+		}
+	}
+}
+
 // TestRmPurgeValueMatchingNothingIsRefused: a --purge value that selects
 // no resource stops rm with a usage error naming what can be purged. It
 // used to parse, select nothing and exit 0 having deleted nothing.
@@ -205,5 +216,172 @@ func TestRmDryRunSeparatesTeardownFromPurge(t *testing.T) {
 	db := fmt.Sprint(env.readDescriptor(wt).Resources["db"].Value)
 	if _, err := os.Stat(db); err != nil {
 		t.Errorf("a dry run deleted the db store %s: %v", db, err)
+	}
+}
+
+// TestRmKeepValueMatchingNothingIsRefused: a --keep value that names no
+// keepable resource stops rm with a usage error naming what can be kept,
+// the same shape --purge has.
+func TestRmKeepValueMatchingNothingIsRefused(t *testing.T) {
+	dir := purgeSpecRepo(t, withAlwaysPurgeDB)
+	code, _, stderr := runCLI(t, "rm", "--cwd", dir, "--slug", "gone", "--keep", "builds")
+	if code != ExitUsage {
+		t.Fatalf("exit = %d, want %d (usage); stderr:\n%s", code, ExitUsage, stderr)
+	}
+	if !strings.Contains(stderr, "names nothing this repository can keep") {
+		t.Errorf("the refusal does not say the value selected nothing:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "--keep-db") {
+		t.Errorf("the refusal does not name what can be kept:\n%s", stderr)
+	}
+}
+
+// TestRmRegistersTheSpecsPurgeKeepFlag: the keep flag the spec declares is
+// a flag rm accepts, exactly as a machine's keep_flag is.
+func TestRmRegistersTheSpecsPurgeKeepFlag(t *testing.T) {
+	dir := purgeSpecRepo(t, withAlwaysPurgeDB)
+	_, _, stderr := runCLI(t, "rm", "--cwd", dir, "--slug", "gone", "--keep-db")
+	if strings.Contains(stderr, "flag provided but not defined") {
+		t.Errorf("the spec declares purge.keep_flag --keep-db and rm rejects it:\n%s", stderr)
+	}
+}
+
+// TestRmRefusesPurgingAndKeepingTheSameStore: the two flags ask for
+// opposite things, so the run stops rather than silently letting one win.
+func TestRmRefusesPurgingAndKeepingTheSameStore(t *testing.T) {
+	dir := purgeSpecRepo(t, withAlwaysPurgeDB)
+	code, _, stderr := runCLI(t, "rm", "--cwd", dir, "--slug", "gone", "--purge", "db", "--keep-db")
+	if code != ExitUsage {
+		t.Fatalf("exit = %d, want %d (usage); stderr:\n%s", code, ExitUsage, stderr)
+	}
+	if !strings.Contains(stderr, "opposite things") || !strings.Contains(stderr, "db") {
+		t.Errorf("the refusal does not name the contradiction:\n%s", stderr)
+	}
+}
+
+// alwaysPurgeCache rewrites the adopted fixture's cache resource into a
+// store the teardown deletes, and commits it, so a worktree branched
+// afterwards carries the policy. db keeps its flag-only purge, so one
+// teardown exercises both halves of the schema.
+func alwaysPurgeCache(t *testing.T, env *adoptionEnv) {
+	t.Helper()
+	path := filepath.Join(env.main, "wt.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the fixture spec: %v", err)
+	}
+	sp, err := spec.Parse(data)
+	if err != nil {
+		t.Fatalf("parsing the fixture spec: %v", err)
+	}
+	for i := range sp.Resources {
+		if sp.Resources[i].Name == "cache" {
+			sp.Resources[i].Purge = &spec.Purge{
+				OnTeardown: spec.PurgeOnTeardownAlways, KeepFlag: "--keep-cache"}
+		}
+	}
+	if err := spec.Validate(sp); err != nil {
+		t.Fatalf("the mutated fixture spec does not validate: %v", err)
+	}
+	out, err := spec.EmitYAML(sp)
+	if err != nil {
+		t.Fatalf("emitting the fixture spec: %v", err)
+	}
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		t.Fatalf("writing the fixture spec: %v", err)
+	}
+	gitT(t, env.main, "commit", "-am", "purge the cache store on teardown")
+}
+
+// TestRmPurgesOnTeardownWhenTheSpecSaysAlways drives the real coordinator
+// and the real state-path driver: a store the spec purges on teardown goes
+// with the worktree, the keep flag and --keep <resource> each save it for
+// one run, and a store still in flag mode is untouched throughout.
+func TestRmPurgesOnTeardownWhenTheSpecSaysAlways(t *testing.T) {
+	env := newAdoptionEnv(t, true)
+	installFakeGh(t)
+	chdir(t, env.main)
+	if code, _, stderr := runCLI(t, "bands", "reserve", "--base", fmt.Sprintf("api=%d", adoptionBand)); code != ExitOK {
+		t.Fatalf("bands reserve exit = %d; stderr: %s", code, stderr)
+	}
+	alwaysPurgeCache(t, env)
+
+	for _, tc := range []struct {
+		slug     string
+		args     []string
+		wantGone bool
+	}{
+		{slug: "pd-default", args: nil, wantGone: true},
+		{slug: "pd-keepflag", args: []string{"--keep-cache"}, wantGone: false},
+		{slug: "pd-keepname", args: []string{"--keep", "cache"}, wantGone: false},
+	} {
+		t.Run(tc.slug, func(t *testing.T) {
+			wt := env.worktree(tc.slug)
+			env.initWorktree(wt, tc.slug)
+			d := env.readDescriptor(wt)
+			cache := fmt.Sprint(d.Resources["cache"].Value)
+			db := fmt.Sprint(d.Resources["db"].Value)
+			if _, err := os.Stat(cache); err != nil {
+				t.Fatalf("the cache store was not created: %v", err)
+			}
+
+			args := append([]string{"rm", "--cwd", env.main, "--slug", tc.slug, "--json"}, tc.args...)
+			code, stdout, stderr := runCLI(t, args...)
+			if code != ExitOK {
+				t.Fatalf("rm exit = %d; stderr:\n%s", code, stderr)
+			}
+			var res rmResult
+			if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &res); err != nil {
+				t.Fatalf("rm stdout is not one JSON object: %v\n%s", err, stdout)
+			}
+
+			_, serr := os.Stat(cache)
+			if tc.wantGone && serr == nil {
+				t.Errorf("rm %v exited 0 but the cache store %s survives", tc.args, cache)
+			}
+			if !tc.wantGone && serr != nil {
+				t.Errorf("rm %v deleted the cache store %s: %v", tc.args, cache, serr)
+			}
+			named := len(res.Purged) == 1 && res.Purged[0] == "cache"
+			if named != tc.wantGone {
+				t.Errorf("purged = %v, want cache named = %v", res.Purged, tc.wantGone)
+			}
+			// db declares a purge flag and nothing passed it: a store in
+			// flag mode is untouched by a teardown that purges another.
+			if _, err := os.Stat(db); err != nil {
+				t.Errorf("the flag-only db store %s must survive: %v", db, err)
+			}
+		})
+	}
+}
+
+// TestRmDryRunNamesTheDefaultPurge: the preview says which stores the
+// spec's own policy would delete and how to keep one, so nobody finds out
+// by losing the directory.
+func TestRmDryRunNamesTheDefaultPurge(t *testing.T) {
+	env := newAdoptionEnv(t, true)
+	installFakeGh(t)
+	chdir(t, env.main)
+	if code, _, stderr := runCLI(t, "bands", "reserve", "--base", fmt.Sprintf("api=%d", adoptionBand)); code != ExitOK {
+		t.Fatalf("bands reserve exit = %d; stderr: %s", code, stderr)
+	}
+	alwaysPurgeCache(t, env)
+	wt := env.worktree("pd-dry")
+	env.initWorktree(wt, "pd-dry")
+	cache := fmt.Sprint(env.readDescriptor(wt).Resources["cache"].Value)
+
+	_, _, stderr := runCLI(t, "rm", "--cwd", env.main, "--slug", "pd-dry", "--dry-run")
+	if !strings.Contains(stderr, "would purge the state stores: cache") {
+		t.Errorf("the preview must name the store the spec purges on teardown:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "--keep") {
+		t.Errorf("the preview must say how to keep it for a run:\n%s", stderr)
+	}
+	_, _, stderr = runCLI(t, "rm", "--cwd", env.main, "--slug", "pd-dry", "--dry-run", "--keep-cache")
+	if !strings.Contains(stderr, "would purge the state stores: none") {
+		t.Errorf("a dry run with the keep flag must say nothing would be deleted:\n%s", stderr)
+	}
+	if _, err := os.Stat(cache); err != nil {
+		t.Errorf("a dry run deleted the cache store %s: %v", cache, err)
 	}
 }

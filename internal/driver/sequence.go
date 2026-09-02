@@ -122,11 +122,12 @@ func (rep TeardownReport) Clean() bool {
 // in reverse dependency order, continuing past a failure and collecting
 // what survived — stopping early would leave more behind than continuing
 // does (03-drivers.md §5). purgeFlags are the CLI purge flags the caller
-// passed; a state-path resource whose purge.flag was passed is purged, every
-// other state-path is left alone (03-drivers.md §4.4). keepFlags are the CLI
-// keep flags the caller passed (e.g. "--keep-vm"); a machine resource whose
-// keep_flag was passed is left up — the entry drops but the VM stays
-// (B4.3).
+// passed; a state-path resource whose purge.flag was passed is purged, and
+// every other state-path follows the spec's purge.on_teardown
+// (03-drivers.md §4.4). keepFlags are the CLI keep flags the caller passed;
+// a machine resource whose keep_flag was passed is left up — the entry
+// drops but the VM stays (B4.3) — and a state-path whose purge.keep_flag
+// was passed keeps its store for this run.
 //
 // The iteration covers the union of the spec's resources and the recorded
 // values: a value with no spec row (the spec changed since allocation)

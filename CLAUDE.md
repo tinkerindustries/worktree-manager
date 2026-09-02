@@ -64,7 +64,10 @@ configuration; neither binary branches on repo identity.
   evaluator, the walk-up `wt.yaml` finder, and the quoted YAML emitter.
   It owns the accessors every other package used to copy:
   `ResourceByName`, `NamespaceKind`, `HookByName`, `HookNames`,
-  `WorktreePath` and the IPv4 block arithmetic, the `removal:` block —
+  `WorktreePath` and the IPv4 block arithmetic, the state-path purge
+  decision (`Purges`, `PurgeOnTeardown`) with the rails validation holds a
+  store deleted on teardown to (a keep flag, a per-worktree template, and
+  a default that is not shared), the `removal:` block —
   rm's per-check safety policy and its defaults, through `RemovalPolicy` —
   and the `worktrees:` block: where this repository's worktrees go and
   what they branch from. `path:` defaults to `.claude/worktrees/{slug}`
@@ -92,13 +95,21 @@ configuration; neither binary branches on repo identity.
   reaches `git worktree remove`, which is still never forced. cleanup and
   the sweep ignore the block and require a merged PR. git and gh reach it
   through a runner function. Deleting a state store is separate from
-  tearing one down: `rm` deletes one only when the caller selects it, by
-  resource name (`--purge db`) or by the flag the spec's `purge:` block
-  declares (`--purge-db`), which `rm` registers the way it registers a
-  machine's `keep_flag`. A `--purge` value selecting no resource is a usage
-  error naming what the repository can purge, a declared flag colliding
-  with one of rm's own is refused rather than left to panic the flag
-  package, and both the dry run and the report name the stores deleted.
+  tearing one down, and which one a teardown does is the repository's
+  policy, from the resource's `purge:` block: by default `rm` deletes a
+  store only when the caller selects it, by resource name (`--purge db`)
+  or by the flag the block declares (`--purge-db`), which `rm` registers
+  the way it registers a machine's `keep_flag`. A resource declaring
+  `on_teardown: always` is deleted with the worktree instead, and its
+  required `keep_flag` — spelled `--keep <resource>` as well — is the
+  one-run way out, the shape `--keep-vm` has for a machine. `spec.Purges`
+  is the one decision both the driver and rm read, so the report cannot
+  name something the teardown did not delete. A `--purge` or `--keep`
+  value selecting no resource is a usage error naming what the repository
+  can purge or keep, selecting and keeping one store in the same run is
+  another, a declared flag colliding with one of rm's own is refused
+  rather than left to panic the flag package, and both the dry run and the
+  report name the stores deleted.
   After a teardown reports success, rm asks doctor whether anything of the
   entry outlived it and reports what it finds as drift — never as an exit
   code, because rm cannot undo what it has already destroyed, and never as

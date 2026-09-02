@@ -89,7 +89,7 @@ repairs. The slug defaults to the directory basename.
 Run the bring-up hooks (start, seed, health). No allocation, no
 emission, no coordinator — local.
 
-### `wt rm --slug <s> [--cwd <dir>] [--strict|--force]`
+### `wt rm --slug <s> [--cwd <dir>] [--strict|--force] [--purge <r>] [--keep <r>]`
 
 Safety checks (uncommitted changes, unpushed commits, open PR via `gh`),
 then reap, tear down and deallocate in the coordinator, then `git
@@ -104,6 +104,15 @@ local-only branches and no `gh` is removable out of the box. `--strict`
 and `--force` override the spec for one run, in the two directions.
 `wt cleanup` and the coordinator's sweep ignore the block entirely: they
 still require a merged pull request.
+
+Tearing a state path down and deleting its store are different things.
+Which one a teardown does is the repository's policy too, from the
+resource's `purge:` block. By default a store survives, and the run that
+wants it deleted names it — `--purge <resource>`, or the `purge.flag` the
+resource declares. A resource declaring `on_teardown: always` is deleted
+with the worktree, and `--keep <resource>` (or its `purge.keep_flag`)
+keeps it for one run. `wt rm --dry-run` names the stores a real run would
+delete and says which of them the spec deletes by default.
 
 ### `wt show [--json | --brief] [--cwd <dir>]`
 

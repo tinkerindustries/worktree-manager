@@ -250,6 +250,71 @@ func TestStatePathTeardownOnlyWhenPurgeGiven(t *testing.T) {
 	}
 }
 
+// TestStatePathTeardownPurgesOnTeardownWhenTheSpecSaysAlways: a resource
+// declaring purge.on_teardown: always has its store deleted by a teardown
+// that passes nothing, and kept by one that passes the resource's
+// keep_flag — the machine's --keep-vm shape, applied to a store.
+func TestStatePathTeardownPurgesOnTeardownWhenTheSpecSaysAlways(t *testing.T) {
+	home := t.TempDir()
+	res := &spec.Resource{Type: "state-path", Name: "userdata",
+		Template: strPtr(filepath.Join(home, "worktrees", "{slug}", "userdata") + "/"),
+		Purge:    &spec.Purge{OnTeardown: spec.PurgeOnTeardownAlways, KeepFlag: "--keep-userdata"},
+	}
+
+	for _, tc := range []struct {
+		name      string
+		keepFlags []string
+		wantGone  bool
+	}{
+		{"no flags", nil, true},
+		{"the keep flag", []string{"--keep-userdata"}, false},
+		{"another resource's keep flag", []string{"--keep-vm"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, s := statePathEnv(t, home, res, nil)
+			env.KeepFlags = tc.keepFlags
+			path := statePathValue(t, s, env, "userdata")
+			if err := os.MkdirAll(path, 0o755); err != nil {
+				t.Fatalf("creating the store: %v", err)
+			}
+			if err := (&StatePath{}).Teardown(res, path, env); err != nil {
+				t.Fatalf("Teardown: %v", err)
+			}
+			_, err := os.Stat(path)
+			if tc.wantGone && !os.IsNotExist(err) {
+				t.Errorf("the store must be gone after the teardown: %v", err)
+			}
+			if !tc.wantGone && err != nil {
+				t.Errorf("the keep flag must leave the store in place: %v", err)
+			}
+		})
+	}
+}
+
+// TestStatePathDefaultPurgeSkipsASharedMode: a run whose seed mode is
+// shared holds the shared store rather than a copy of it, and apply
+// created nothing. A purge nobody asked for leaves it alone.
+func TestStatePathDefaultPurgeSkipsASharedMode(t *testing.T) {
+	home := t.TempDir()
+	res := &spec.Resource{Type: "state-path", Name: "userdata",
+		Template: strPtr(filepath.Join(home, "worktrees", "{slug}", "userdata") + "/"),
+		Seed:     &spec.Seed{From: "{home}/shared/", Modes: []string{"seeded", "shared"}, Default: strPtr("seeded")},
+		Purge:    &spec.Purge{OnTeardown: spec.PurgeOnTeardownAlways, KeepFlag: "--keep-userdata"},
+	}
+	env, s := statePathEnv(t, home, res, map[string]string{"userdata": "shared"})
+	path := statePathValue(t, s, env, "userdata")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("creating the store: %v", err)
+	}
+
+	if err := (&StatePath{}).Teardown(res, path, env); err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("mode shared must survive a purge nobody asked for: %v", err)
+	}
+}
+
 // TestStatePathPurgeRefusalNamesThePath is exit criterion 7, the direct
 // case: a purge whose resolved path is the shared source itself is refused
 // and the refusal names the resolved path.
