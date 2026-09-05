@@ -195,7 +195,7 @@ function Test-Binaries {
         $want = $null
         foreach ($line in Get-Content $manifest) {
             $fields = $line -split "\s+"
-            if ($fields.Count -ge 2 -and $fields[1] -eq $bin) {
+            if ($fields.Count -ge 2 -and $fields[1].TrimStart('*') -eq $bin) {
                 $want = $fields[0]
                 break
             }
@@ -205,7 +205,7 @@ function Test-Binaries {
         }
         $got = (Get-FileHash -Algorithm SHA256 -Path (Join-Path $ScriptDir $bin)).Hash.ToLower()
         if ($got -ne $want.ToLower()) {
-            Write-Error "checksum mismatch for $bin: the archive's SHA256SUMS says $want, the file hashes to $got (pass -SkipVerify to install anyway)"
+            Write-Error "checksum mismatch for ${bin}: the archive's SHA256SUMS says $want, the file hashes to $got (pass -SkipVerify to install anyway)"
         }
     }
     Write-Host "verified $($Bins -join ' and ') against SHA256SUMS"
