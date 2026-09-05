@@ -1,6 +1,10 @@
 # build outputs from dist/build.sh (never committed)
 dist/out/
 
+# generated Windows version-info resources (dist/build.sh; never committed)
+/cmd/wt/*.syso
+/cmd/wtd/*.syso
+
 # SwiftPM build output for the menu bar app (never committed)
 macapp/.build/
 

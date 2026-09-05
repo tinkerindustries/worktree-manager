@@ -77,6 +77,16 @@ LDFLAGS="-X github.com/mrgeoffrich/worktree-manager/internal/cli.version=$VERSIO
 -X github.com/mrgeoffrich/worktree-manager/internal/cli.commit=$COMMIT \
 -X main.version=$VERSION -X main.commit=$COMMIT"
 
+# The numeric MAJOR.MINOR.PATCH out of VERSION, with any -prerelease and
+# +build metadata stripped — what the Windows version resource's numeric
+# FixedFileInfo quad needs (it takes four integers, not a semver string).
+VER_CORE="${VERSION%%-*}"
+VER_CORE="${VER_CORE%%+*}"
+VER_MAJOR="${VER_CORE%%.*}"
+VER_REST="${VER_CORE#*.}"
+VER_MINOR="${VER_REST%%.*}"
+VER_PATCH="${VER_REST#*.}"
+
 # WT_CELLS restricts which platform cells this run assembles, as a
 # space-separated list of <os>/<arch>. The darwin archives are assembled
 # on a macOS runner because the menu bar app is a Swift build and cannot
@@ -175,8 +185,42 @@ stage_for() { # goos goarch ext bin-ext
 	DIR="$STAGE/$NAME"
 	mkdir -p "$DIR"
 
+	# A Windows binary with no file properties — no company, product or
+	# description, the blank fields Explorer's Details tab and Defender's
+	# reputation model both notice — reads as more suspicious than one that
+	# carries them, and this project's binaries have never carried any.
+	# goversioninfo generates the resource Go itself cannot: a pure-Go
+	# build-time tool (never a go.mod dependency, invoked by pinned version
+	# the way sqlc is) that writes a .syso file into the package directory,
+	# which `go build` links in by filename suffix alone — no host mingw or
+	# windres needed, so the cross-compile stays CGO_ENABLED=0. Named per
+	# GOARCH so a stray file from one cell is never mistaken for another's,
+	# and removed once both binaries are built so the source tree carries
+	# nothing generated between runs.
+	if [ "$GOOS" = "windows" ]; then
+		WT_RSRC="$ROOT/cmd/wt/resource_windows_$GOARCH.syso"
+		WTD_RSRC="$ROOT/cmd/wtd/resource_windows_$GOARCH.syso"
+		set -- -skip-versioninfo -64 \
+			-company mrgeoffrich -product-name "Worktree Manager" \
+			-copyright "Worktree Manager" \
+			-file-version "$VERSION" -product-version "$VERSION" \
+			-ver-major "$VER_MAJOR" -ver-minor "$VER_MINOR" -ver-patch "$VER_PATCH" -ver-build 0 \
+			-product-ver-major "$VER_MAJOR" -product-ver-minor "$VER_MINOR" -product-ver-patch "$VER_PATCH" -product-ver-build 0
+		go run github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.7.0 \
+			-o "$WT_RSRC" -description "Worktree Manager client" \
+			-internal-name "wt$BINEXT" -original-name "wt$BINEXT" "$@"
+		go run github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.7.0 \
+			-o "$WTD_RSRC" -description "Worktree Manager coordinator" \
+			-internal-name "wtd$BINEXT" -original-name "wtd$BINEXT" "$@"
+	fi
+
 	CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -ldflags "$LDFLAGS" -o "$DIR/wt$BINEXT" ./cmd/wt
 	CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -ldflags "$LDFLAGS" -o "$DIR/wtd$BINEXT" ./cmd/wtd
+
+	if [ "$GOOS" = "windows" ]; then
+		rm -f "$WT_RSRC" "$WTD_RSRC"
+	fi
+
 	cp "$OUT/README.txt" "$DIR/README.txt"
 
 	# The menu bar app rides in the darwin archives when one was built and
