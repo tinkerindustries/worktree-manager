@@ -214,8 +214,22 @@ stage_for() { # goos goarch ext bin-ext
 			-internal-name "wtd$BINEXT" -original-name "wtd$BINEXT" "$@"
 	fi
 
+	# wtd alone gets -H=windowsgui on that platform: it is the one binary a
+	# supervisor starts without a terminal already open (the Task Scheduler
+	# logon task), and a console-subsystem exe launched that way raises a
+	# visible console window in the user's session for as long as it runs.
+	# wt stays a console binary — a person runs it from a terminal and
+	# expects its output there. wtd's own account of itself moves to
+	# <store root>/logs/wtd.log accordingly (cmd/wtd/main.go), since a
+	# GUI-subsystem process started with no inherited console has no stderr
+	# to write to.
+	WTD_LDFLAGS="$LDFLAGS"
+	if [ "$GOOS" = "windows" ]; then
+		WTD_LDFLAGS="$WTD_LDFLAGS -H=windowsgui"
+	fi
+
 	CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -ldflags "$LDFLAGS" -o "$DIR/wt$BINEXT" ./cmd/wt
-	CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -ldflags "$LDFLAGS" -o "$DIR/wtd$BINEXT" ./cmd/wtd
+	CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -ldflags "$WTD_LDFLAGS" -o "$DIR/wtd$BINEXT" ./cmd/wtd
 
 	if [ "$GOOS" = "windows" ]; then
 		rm -f "$WT_RSRC" "$WTD_RSRC"

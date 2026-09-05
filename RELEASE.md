@@ -411,6 +411,7 @@ fresh.
 | Registration (macOS) | `~/Library/LaunchAgents/com.mrgeoffrich.wtd.plist` — `RunAtLoad` + `KeepAlive`, not socket activation, which needs the C-only `launch_activate_socket` |
 | Registration (Linux) | `~/.config/systemd/user/com.mrgeoffrich.wtd.{service,socket}`, with socket activation. A user unit stops at logout unless `loginctl enable-linger <user>` is set |
 | Registration (Windows) | `%LOCALAPPDATA%\wt\com.mrgeoffrich.wtd.xml`, registered via `schtasks` |
+| Coordinator log | `<store>/logs/wtd.log`, alongside the machine driver's per-instance logs. `wtd` also logs to stderr, but `wtd.exe` is built without a console subsystem (`-H=windowsgui`), so the Windows logon task raises no window and the file is the only account of it there |
 
 A registration carrying a container token is written 0600 on unix, and the
 token is never echoed.

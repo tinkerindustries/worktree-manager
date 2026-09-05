@@ -412,7 +412,14 @@ configuration; neither binary branches on repo identity.
   the archives and a second one inside each archive covering the two
   binaries by bare name, and wires the archive version and commit into
   both binaries with `-ldflags -X` so `wt --version`/`wtd --version`
-  report them),
+  report them; on windows `wtd` alone also gets `-H=windowsgui`, because it
+  is the one binary a supervisor starts with no terminal already open — the
+  Task Scheduler logon task — and a console-subsystem exe launched that way
+  raises a visible window for as long as it runs; `wt` stays a console
+  binary, and `wtd`'s own account of itself moves to
+  `<store root>/logs/wtd.log` accordingly (`cmd/wtd/main.go`), since a
+  GUI-subsystem process started with no inherited console has no stderr to
+  reach),
   `install.sh`/`install.ps1` (verify the binaries against the archive's
   `SHA256SUMS` before copying — a missing manifest or a mismatched
   digest refuses, naming `--skip-verify`/`-SkipVerify` as the deliberate

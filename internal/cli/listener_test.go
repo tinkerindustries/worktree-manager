@@ -185,6 +185,29 @@ func readTcpDescriptor(t *testing.T, worktree string) *descriptor.Descriptor {
 	return d
 }
 
+// TestWtdWritesItsOwnLogFile: wtd.exe is built without a console subsystem
+// on Windows (dist/build.sh) so the Task Scheduler logon task raises no
+// window, which means stderr has nothing to reach when there is no
+// inherited console. <store root>/logs/wtd.log is what a person actually
+// has to look at in that case, so it must carry the same startup account
+// stderr does, on every platform.
+func TestWtdWritesItsOwnLogFile(t *testing.T) {
+	_, stop := startWtdTCP(t)
+	defer stop()
+
+	// startWtdTCP points WT_HOME at the coordinator's store root and sets
+	// it in this process's environment too (the client resolves the same
+	// endpoint.json from it), so it names the log's directory as well.
+	logPath := filepath.Join(os.Getenv("WT_HOME"), "logs", "wtd.log")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("reading %s: %v", logPath, err)
+	}
+	if !strings.Contains(string(data), "wtd starting") {
+		t.Errorf("the log file does not carry the startup line:\n%s", data)
+	}
+}
+
 // TestLoopbackTCPEndToEndAgainstRealWtd is the R1 verification of the
 // HTTP wire end to end: a real wtd process, the real wire, the real
 // client.

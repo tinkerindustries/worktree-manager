@@ -16,14 +16,19 @@
 //
 // Lifecycle: SIGINT and SIGTERM cancel the serving context, in-flight
 // requests finish, and the process exits 0. Structured logging with
-// log/slog goes to stderr — wtd is the only binary that logs; the client
-// prints and does not log.
+// log/slog goes to stderr and to <store root>/logs/wtd.log — wtd is the
+// only binary that logs; the client prints and does not log. The file
+// exists because wtd.exe is built without a console subsystem on Windows
+// (dist/build.sh), so the Task Scheduler logon task that runs it there
+// raises no window; a GUI-subsystem process started with no console
+// inherited has nothing for its stderr writes to reach.
 package main
 
 import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -37,6 +42,32 @@ import (
 	"github.com/mrgeoffrich/worktree-manager/internal/platform"
 	"github.com/mrgeoffrich/worktree-manager/internal/store"
 )
+
+// logsDirName and logFileName name wtd's own log, under the store root
+// alongside the machine driver's per-instance logs (<store root>/logs).
+const (
+	logsDirName = "logs"
+	logFileName = "wtd.log"
+)
+
+// openLogFile opens <root>/logs/wtd.log for append, creating the directory
+// privately first (platform.EnsurePrivateDir — the same call the machine
+// driver's own log opens through). A failure here is not fatal: run falls
+// back to stderr alone and says so, since a coordinator that refuses to
+// start over a log file it cannot open would be a worse outcome than one
+// that logs nowhere durable.
+func openLogFile(root string) (*os.File, string, error) {
+	dir := filepath.Join(root, logsDirName)
+	if err := platform.EnsurePrivateDir(dir); err != nil {
+		return nil, "", fmt.Errorf("creating the log directory %s: %w", dir, err)
+	}
+	path := filepath.Join(dir, logFileName)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, "", fmt.Errorf("opening the log file %s: %w", path, err)
+	}
+	return f, path, nil
+}
 
 // version and commit are the coordinator's release identity, printed by
 // `wtd --version` as "wtd <version> (<commit>)" and logged at startup.
@@ -86,14 +117,24 @@ func run(args []string) int {
 		return 1
 	}
 
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	slog.SetDefault(log)
-
 	root, err := store.Root()
 	if err != nil {
-		log.Error("resolving the store root", "err", err)
+		fmt.Fprintf(os.Stderr, "wtd: %v\n", err)
 		return 1
 	}
+
+	var out io.Writer = os.Stderr
+	logFile, logPath, logErr := openLogFile(root)
+	if logErr == nil {
+		defer logFile.Close()
+		out = io.MultiWriter(logFile, os.Stderr)
+	}
+	log := slog.New(slog.NewTextHandler(out, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	slog.SetDefault(log)
+	if logErr != nil {
+		log.Warn("could not open the coordinator's own log file; logging to stderr only", "err", logErr)
+	}
+
 	st, err := store.Open(root)
 	if err != nil {
 		log.Error("opening the store", "err", err)
@@ -165,7 +206,7 @@ func run(args []string) int {
 			log.Error("reserving the coordinator's own port in the band ledger", "err", perr)
 			return 1
 		}
-		log.Info("wtd starting", "version", version, "store", root, "addr", ln.Addr().String(), "activated", true)
+		log.Info("wtd starting", "version", version, "store", root, "log_file", logPath, "addr", ln.Addr().String(), "activated", true)
 		if err := srv.ServeListener(ctx, ln); err != nil {
 			log.Error("coordinator stopped with an error", "err", err)
 			return 1
@@ -187,7 +228,7 @@ func run(args []string) int {
 		log.Error("reserving the coordinator's own port in the band ledger", "err", perr)
 		return 1
 	}
-	log.Info("wtd starting", "version", version, "store", root, "addr", listenAddr, "container_token", *containerToken != "", "allow_host", strings.Join(allowedHosts, ","))
+	log.Info("wtd starting", "version", version, "store", root, "log_file", logPath, "addr", listenAddr, "container_token", *containerToken != "", "allow_host", strings.Join(allowedHosts, ","))
 	if err := srv.Serve(ctx, listenAddr); err != nil {
 		log.Error("coordinator stopped with an error", "err", err)
 		return 1
