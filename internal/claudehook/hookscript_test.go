@@ -159,6 +159,25 @@ func runScript(t *testing.T, body []byte, wt string, env []string, stdin string)
 	return code, out.String(), errb.String()
 }
 
+// TestRegisteredCommandSurvivesShellParsing runs shellQuote's output through
+// the exact mechanism Claude Code uses on a registered hook — `sh -c
+// <command>`, the command as shell script text, not an argv already split
+// for it — and proves a Windows-style backslash path comes out the other
+// side unchanged. An unquoted path fails this: sh's escape processing
+// silently drops every backslash before the hook script ever runs.
+func TestRegisteredCommandSurvivesShellParsing(t *testing.T) {
+	sh := shellForHook(t)
+	path := `C:\Users\geoff\.claude\hooks\wt-worktree-create.sh`
+	cmd := exec.Command(sh, "-c", "printf '%s' "+shellQuote(path))
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("sh -c: %v", err)
+	}
+	if string(out) != path {
+		t.Errorf("the path came through as %q, want %q", out, path)
+	}
+}
+
 // TestCreateNormalisesTheNameItIsHanded: Claude Code names a worktree after
 // the task that prompted it, so the name arriving at the hook is not
 // necessarily a legal slug and is nobody's choice. It is normalised rather

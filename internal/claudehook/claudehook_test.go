@@ -83,7 +83,7 @@ func TestInstallWritesScriptsAndRegistersBothEvents(t *testing.T) {
 
 	root := readSettingsFile(t, l)
 	for _, s := range scripts {
-		if got, want := commandFor(t, root, s.Event), l.ScriptPath(s.File); got != want {
+		if got, want := commandFor(t, root, s.Event), shellQuote(l.ScriptPath(s.File)); got != want {
 			t.Errorf("%s registered to %q, want %q", s.Event, got, want)
 		}
 	}
@@ -164,7 +164,7 @@ func TestInstallRefusesAForeignRegistrationAndWritesNothing(t *testing.T) {
 	if _, err := Install(l, Options{Force: true}); err != nil {
 		t.Fatalf("forced install: %v", err)
 	}
-	if got, want := commandFor(t, readSettingsFile(t, l), CreateEvent), l.ScriptPath(createScript); got != want {
+	if got, want := commandFor(t, readSettingsFile(t, l), CreateEvent), shellQuote(l.ScriptPath(createScript)); got != want {
 		t.Errorf("forced install registered %q, want %q", got, want)
 	}
 }
@@ -537,6 +537,60 @@ func TestRefreshOnlySkipsAForeignRegistration(t *testing.T) {
 	}
 	if got, want := commandFor(t, readSettingsFile(t, l), CreateEvent), "/opt/mine.sh"; got != want {
 		t.Errorf("the refresh repointed the registration to %q, want %q left alone", got, want)
+	}
+}
+
+// TestInstallMigratesAnUnquotedRegistrationToShellQuoted: an older wt
+// registered the bare script path as the command. Claude Code runs a
+// registered command as `sh -c <command>` — shell script text — and an
+// unquoted Windows path's backslashes are sh's own escape character, so an
+// unquoted registration is the bug this package now refuses to write.
+// Re-running install over one must bring it up to the quoted form rather
+// than reporting it already registered.
+func TestInstallMigratesAnUnquotedRegistrationToShellQuoted(t *testing.T) {
+	l := layoutIn(t)
+	if err := os.MkdirAll(l.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	unquoted := l.ScriptPath(createScript)
+	commandJSON, err := json.Marshal(unquoted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	existing := `{"hooks": {"WorktreeCreate": [{"hooks": [{"type": "command", "command": ` +
+		string(commandJSON) + `}]}]}}`
+	if err := os.WriteFile(l.SettingsPath(), []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Install(l, Options{}); err != nil {
+		t.Fatalf("install over an unquoted registration: %v", err)
+	}
+	if got, want := commandFor(t, readSettingsFile(t, l), CreateEvent), shellQuote(unquoted); got != want {
+		t.Errorf("registered command = %q, want the quoted form %q", got, want)
+	}
+}
+
+// TestShellQuoteSurvivesAWindowsPath proves the fix directly, independent
+// of a shell: a backslash-separated path must round-trip through
+// shellQuote and shellUnquote unchanged, because those backslashes are
+// exactly what an unquoted registration loses to sh's escape processing.
+func TestShellQuoteSurvivesAWindowsPath(t *testing.T) {
+	path := `C:\Users\geoff\.claude\hooks\wt-worktree-create.sh`
+	quoted := shellQuote(path)
+	got, ok := shellUnquote(quoted)
+	if !ok {
+		t.Fatalf("shellUnquote(%q) reported not ok", quoted)
+	}
+	if got != path {
+		t.Errorf("round-tripped to %q, want %q", got, path)
+	}
+	if commandPath(quoted) != path {
+		t.Errorf("commandPath(%q) = %q, want %q", quoted, commandPath(quoted), path)
+	}
+	// An older, unquoted registration is still recognised by path.
+	if commandPath(path) != path {
+		t.Errorf("commandPath of an unquoted path changed it: %q", commandPath(path))
 	}
 }
 

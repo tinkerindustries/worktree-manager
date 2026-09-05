@@ -346,20 +346,26 @@ func updateSettings(l Layout, opts Options, register bool) ([]Change, error) {
 	dirty := false
 	for _, s := range scripts {
 		want := l.ScriptPath(s.File)
+		wantCmd := shellQuote(want)
 		found, recognised := registeredCommand(hooks[s.Event])
+		foundPath := commandPath(found)
 		// A registration is this tool's when it names the script this
 		// layout would write, or one of the same name somewhere else —
 		// which is what a moved ~/.claude leaves behind. Anything else
 		// is the user's, and is refused rather than replaced.
-		mine := recognised && (found == want || filepath.Base(found) == s.File)
+		mine := recognised && (foundPath == want || filepath.Base(foundPath) == s.File)
 		if hooks[s.Event] != nil && !mine && !opts.Force {
 			return nil, &ConflictError{Path: path, What: s.Event, Found: describeFound(found), Flag: "--force"}
 		}
 		switch {
-		case register && found == want:
+		case register && found == wantCmd:
 			changes = append(changes, Change{Action: "unchanged", Path: path, Detail: s.Event + " already registered"})
 		case register:
-			hooks[s.Event] = entryFor(want)
+			// found == wantCmd already handled above, so reaching here
+			// with mine true means an older, unquoted registration —
+			// the one a Windows path never survives sh -c unquoted —
+			// is being brought up to the quoted form.
+			hooks[s.Event] = entryFor(wantCmd)
 			dirty = true
 			changes = append(changes, Change{Action: "register", Path: path, Detail: s.Event})
 		case hooks[s.Event] == nil:
@@ -429,9 +435,46 @@ func mapAt(root map[string]any, key, path string) (map[string]any, error) {
 	return m, nil
 }
 
+// shellQuote renders path as a single-quoted POSIX shell literal. Claude
+// Code runs a registered command as `sh -c <command>` — shell script text,
+// not an argv the OS has already split for it — so an absolute path's own
+// characters are shell syntax unless quoted. On Windows that path is
+// backslash-separated, and an unquoted backslash is sh's own escape
+// character: outside quotes, `\U` parses as a literal `U`, silently
+// dropping the backslash before the hook script ever runs. Single quotes
+// disable every kind of shell interpretation except for a literal single
+// quote, which needs the standard close-quote, escaped-quote, reopen-quote
+// trick.
+func shellQuote(path string) string {
+	return "'" + strings.ReplaceAll(path, "'", `'\''`) + "'"
+}
+
+// shellUnquote reverses shellQuote. ok is false for anything not in exactly
+// that shape, which is how commandPath tells this package's quoted form
+// from an older, unquoted registration or a user's own command.
+func shellUnquote(command string) (path string, ok bool) {
+	if len(command) < 2 || command[0] != '\'' || command[len(command)-1] != '\'' {
+		return "", false
+	}
+	return strings.ReplaceAll(command[1:len(command)-1], `'\''`, "'"), true
+}
+
+// commandPath recovers the filesystem path a registered command names,
+// whether it is this package's current shell-quoted form or the unquoted
+// path an older wt wrote, so ownership and idempotency both compare paths
+// rather than command syntax.
+func commandPath(command string) string {
+	if path, ok := shellUnquote(command); ok {
+		return path
+	}
+	return command
+}
+
 // entryFor is the settings shape one event takes: a single matcher group
 // holding a single command hook. WorktreeCreate and WorktreeRemove carry
-// no matcher, so none is written.
+// no matcher, so none is written. command is the full shell command line —
+// shellQuote(path), so the script's own path survives being parsed as sh
+// script text.
 func entryFor(command string) []any {
 	return []any{
 		map[string]any{
