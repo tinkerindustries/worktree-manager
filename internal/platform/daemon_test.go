@@ -61,8 +61,9 @@ func TestSupervisorRegistrationPathReal(t *testing.T) {
 // launch_activate_socket, a C API, and this project is CGO_ENABLED=0
 // throughout. On Linux the systemd service unit carries ExecStart with
 // --activate and Restart=always, and the paired .socket unit owns the
-// listener (SocketMode 0700). On Windows the task XML is written (the
-// schtasks registration itself is never run under a prefix).
+// listener — a loopback TCP ListenStream, because the transport is HTTP
+// over TCP. On Windows the task XML is written (the schtasks registration
+// itself is never run under a prefix).
 func TestInstallSupervisorPrefix(t *testing.T) {
 	prefix := tempDir(t)
 	wtd := filepath.Join(prefix, "wtd")
@@ -128,13 +129,27 @@ func TestInstallSupervisorPrefix(t *testing.T) {
 		}
 		sock := string(sockData)
 		for _, want := range []string{
-			"ListenStream=%t/wt/sock",
-			"SocketMode=0700",
+			// The registration pinned no address, so the socket unit
+			// names the compiled-in default — the listener still has to
+			// be the TCP socket the client dials.
+			"ListenStream=" + DefaultCoordinatorAddr,
 			"WantedBy=sockets.target",
 		} {
 			if !strings.Contains(sock, want) {
 				t.Errorf("socket unit lacks %s:\n%s", want, sock)
 			}
+		}
+		// SocketMode sets the mode of an AF_UNIX socket or a FIFO and is
+		// meaningless for a TCP listener; carrying it would mean the unit
+		// had drifted back to a unix socket nothing dials.
+		if strings.Contains(sock, "SocketMode") {
+			t.Errorf("socket unit carries SocketMode, which means nothing for a TCP listener:\n%s", sock)
+		}
+		// --activate and --addr are mutually exclusive in wtd: the
+		// listener is the socket unit's, so the service unit must not
+		// name an address too. A unit that carries both never starts.
+		if strings.Contains(file, "--addr") {
+			t.Errorf("service unit passes --addr alongside --activate, which wtd refuses:\n%s", file)
 		}
 	case "windows":
 		// The task XML is written UTF-16 (schtasks /Create /XML requires

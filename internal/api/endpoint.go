@@ -41,7 +41,9 @@ const EndpointFileName = "endpoint.json"
 // DefaultAddr is the compiled-in coordinator address: 127.0.0.1:7833.
 // The client falls back to it when neither WT_ENDPOINT nor an endpoint
 // file is present, and wtd listens on it unless --addr says otherwise.
-const DefaultAddr = "127.0.0.1:7833"
+// The constant itself is platform's, because a supervisor registration
+// needs the same default and platform cannot import this package.
+const DefaultAddr = platform.DefaultCoordinatorAddr
 
 // DefaultEndpoint is the compiled-in base URL.
 const DefaultEndpoint = "http://" + DefaultAddr

@@ -387,8 +387,14 @@ func TestDaemonInstallWritesContainerTokenIntoRegistration(t *testing.T) {
 	// The registration file carries the token (the file is 0600 on unix
 	// when it does).
 	reg := readRegistration(t, filepath.Join(prefix, registrationFilenameForThisPlatform()))
-	if !strings.Contains(reg, "--addr") || !strings.Contains(reg, "--container-token") || !strings.Contains(reg, tcpTestToken) {
-		t.Errorf("the registration does not carry the listener configuration:\n%s", reg)
+	if !strings.Contains(reg, "--container-token") || !strings.Contains(reg, tcpTestToken) {
+		t.Errorf("the registration does not carry the container token:\n%s", reg)
+	}
+	// The address is named too, wherever this platform's registration keeps
+	// it — the flag on launchd and the Task Scheduler, the socket unit's
+	// ListenStream under systemd socket activation.
+	if whole := readWholeRegistration(t, prefix); !strings.Contains(whole, "127.0.0.1:7331") {
+		t.Errorf("the registration does not carry the listen address:\n%s", whole)
 	}
 	// The 0600 rail is unix: Windows file modes are ACL-shaped, and the
 	// task XML's secrecy comes from the profile ACL, not a mode bit.
@@ -459,10 +465,10 @@ func TestDaemonInstallCustomAddrNeedsNoContainerToken(t *testing.T) {
 		t.Errorf("the transcript must say containers are not admitted when no token was given:\n%s", stdout)
 	}
 
-	reg := readRegistration(t, filepath.Join(prefix, registrationFilenameForThisPlatform()))
-	if !strings.Contains(reg, "127.0.0.1:9001") {
-		t.Errorf("the registration does not carry the address:\n%s", reg)
+	if whole := readWholeRegistration(t, prefix); !strings.Contains(whole, "127.0.0.1:9001") {
+		t.Errorf("the registration does not carry the address:\n%s", whole)
 	}
+	reg := readRegistration(t, filepath.Join(prefix, registrationFilenameForThisPlatform()))
 	if strings.Contains(reg, "--container-token") {
 		t.Errorf("the registration carries --container-token though none was configured:\n%s", reg)
 	}
@@ -486,9 +492,16 @@ func TestDaemonInstallPinsAFreePortWhenTheDefaultIsHeld(t *testing.T) {
 	if !strings.Contains(stdout, "listening on:") {
 		t.Errorf("the transcript must always name the address it registered:\n%s", stdout)
 	}
-	reg := readRegistration(t, filepath.Join(prefix, registrationFilenameForThisPlatform()))
-	if !strings.Contains(reg, "--addr") {
-		t.Errorf("the registration must pin a concrete address rather than leaving it to the default:\n%s", reg)
+	// The transcript's address is the one the registration must name: what
+	// makes the pin a pin is that the two agree, whichever file of this
+	// platform's registration carries it.
+	_, rest, _ := strings.Cut(stdout, "listening on:")
+	pinned := strings.TrimSpace(strings.SplitN(rest, "\n", 2)[0])
+	if pinned == "" {
+		t.Fatalf("the transcript names no address after 'listening on:':\n%s", stdout)
+	}
+	if whole := readWholeRegistration(t, prefix); !strings.Contains(whole, pinned) {
+		t.Errorf("the registration must pin the concrete address %s rather than leaving it to the default:\n%s", pinned, whole)
 	}
 }
 
@@ -531,8 +544,7 @@ func TestDaemonInstallKeepsTheAddressItAlreadyHad(t *testing.T) {
 	if !strings.Contains(stdout, held) {
 		t.Errorf("re-install moved the coordinator off %s:\n%s", held, stdout)
 	}
-	reg := readRegistration(t, filepath.Join(prefix, registrationFilenameForThisPlatform()))
-	if !strings.Contains(reg, held) {
-		t.Errorf("the registration does not keep the existing address %s:\n%s", held, reg)
+	if whole := readWholeRegistration(t, prefix); !strings.Contains(whole, held) {
+		t.Errorf("the registration does not keep the existing address %s:\n%s", held, whole)
 	}
 }
