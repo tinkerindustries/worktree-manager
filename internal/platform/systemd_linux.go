@@ -135,12 +135,47 @@ func systemdEscapeExec(p string) string {
 	return `"` + r.Replace(p) + `"`
 }
 
+// systemdStep is one systemctl invocation of the registration sequence and
+// the phrase its failure is reported as.
+type systemdStep struct {
+	args    []string
+	failure string
+}
+
+// systemdRegisterSteps is the systemctl sequence that registers and starts
+// the coordinator's units: daemon-reload, enable for the login start
+// (WantedBy on both), then restart both so the coordinator now running is
+// the one this install just registered.
+//
+// restart, not `enable --now`. `--now` only *starts* a unit and does
+// nothing at all to one already running, which made every upgrade
+// ineffective: install.sh replaces the binary on disk and drives
+// `wt daemon install`, the unit was already active, so the old coordinator
+// kept serving from the replaced (unlinked) inode until the next logout —
+// while `wt daemon status` reported "running" and the installer reported
+// success. A re-install that changes the address has the same shape: the
+// socket unit's new ListenStream only takes effect once the socket has
+// restarted. macOS never had this problem, because
+// bootout/bootstrap/kickstart stops the agent as a matter of course.
+//
+// The socket restarts first, so the listener is rebound before the service
+// re-consumes it; the service restart is what execs the new binary.
+// Restarting the service alone would leave the previous ListenStream bound.
+//
+// It is a value rather than four calls so the sequence can be asserted
+// without a test registering anything with the machine's systemd — which no
+// test may do (TestInstallSupervisorRealRegistrationNeverRunsInTests).
+func systemdRegisterSteps() []systemdStep {
+	return []systemdStep{
+		{[]string{"daemon-reload"}, "reloading the systemd user manager"},
+		{[]string{"enable", SystemdServiceFilename, SystemdSocketFilename}, "enabling the coordinator's systemd units"},
+		{[]string{"restart", SystemdSocketFilename}, "starting the coordinator's socket unit"},
+		{[]string{"restart", SystemdServiceFilename}, "starting the coordinator"},
+	}
+}
+
 // installSystemdUnits writes the service and socket units and, outside a
-// test prefix, registers and starts them: daemon-reload, then
-// enable --now on both units — enable for the login start (WantedBy on
-// both), --now for the immediate start that mirrors launchctl kickstart.
-// The service start consumes the socket unit's descriptor, so the
-// coordinator is listening as soon as the units are up.
+// test prefix, registers and starts them through systemdRegisterSteps.
 func installSystemdUnits(prefix, wtdPath, addr, containerToken string, allowedHosts []string) (InstallSupervisorResult, error) {
 	dir, err := systemdUserDir(prefix)
 	if err != nil {
@@ -175,17 +210,19 @@ func installSystemdUnits(prefix, wtdPath, addr, containerToken string, allowedHo
 			Note: note,
 		}, nil
 	}
-	if err := systemctl("daemon-reload"); err != nil {
-		return InstallSupervisorResult{RegistrationPath: svc, Label: SystemdUnitLabel},
-			fmt.Errorf("reloading the systemd user manager: %w", err)
-	}
-	if err := systemctl("enable", "--now", SystemdServiceFilename, SystemdSocketFilename); err != nil {
-		return InstallSupervisorResult{RegistrationPath: svc, Label: SystemdUnitLabel},
-			fmt.Errorf("enabling and starting the coordinator's systemd units: %w", err)
+	for _, step := range systemdRegisterSteps() {
+		if err := systemctl(step.args...); err != nil {
+			return InstallSupervisorResult{RegistrationPath: svc, Label: SystemdUnitLabel},
+				fmt.Errorf("%s: %w", step.failure, err)
+		}
 	}
 	return InstallSupervisorResult{
 		RegistrationPath: svc, Label: SystemdUnitLabel, Loaded: true,
-		Note: lingeringCaveatText(),
+		// The caveat only when it applies: lingeringCaveat checks whether
+		// lingering is actually enabled, where lingeringCaveatText states
+		// it unconditionally and so told a person to enable what they had
+		// already enabled.
+		Note: lingeringCaveat(prefix),
 	}, nil
 }
 

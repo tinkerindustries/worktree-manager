@@ -74,3 +74,57 @@ func TestSystemdUnitsAgreeOnTheListener(t *testing.T) {
 		t.Errorf("the socket unit for an unpinned registration does not fall back to %s:\n%s", DefaultCoordinatorAddr, d)
 	}
 }
+
+// TestSystemdRegisterStepsRestartsWhatIsAlreadyRunning is the regression
+// test for an upgrade that did nothing. The sequence used `enable --now`,
+// and --now only *starts* a unit — against one already running it is not an
+// error, it is a no-op. So install.sh replaced wtd on disk, drove
+// `wt daemon install`, and the old coordinator went on serving from the
+// replaced (now unlinked) inode until the next logout, with the installer
+// and `wt daemon status` both reporting success.
+//
+// The sequence is asserted rather than run: no test may register anything
+// with the machine's own systemd.
+func TestSystemdRegisterStepsRestartsWhatIsAlreadyRunning(t *testing.T) {
+	steps := systemdRegisterSteps()
+
+	var flat []string
+	for _, s := range steps {
+		flat = append(flat, strings.Join(s.args, " "))
+		if s.failure == "" {
+			t.Errorf("step %q has no failure phrase; every step reports what it was doing", strings.Join(s.args, " "))
+		}
+	}
+	got := strings.Join(flat, "; ")
+
+	// --now is the bug: it would leave a running coordinator untouched.
+	for _, s := range flat {
+		if strings.Contains(s, "--now") {
+			t.Errorf("the sequence uses `--now`, which does nothing to an already-running unit: %s", got)
+		}
+	}
+
+	want := []string{
+		"daemon-reload",
+		"enable " + SystemdServiceFilename + " " + SystemdSocketFilename,
+		// The socket first: it owns the listener, so a changed
+		// ListenStream binds only once the socket has restarted.
+		"restart " + SystemdSocketFilename,
+		// Then the service, which is what execs the newly installed binary.
+		"restart " + SystemdServiceFilename,
+	}
+	if len(flat) != len(want) {
+		t.Fatalf("sequence = %q, want %q", got, strings.Join(want, "; "))
+	}
+	for i := range want {
+		if flat[i] != want[i] {
+			t.Errorf("step %d = %q, want %q (whole sequence: %s)", i, flat[i], want[i], got)
+		}
+	}
+
+	// The units must be enabled for the login start as well as restarted:
+	// a coordinator that only runs until reboot is not registered.
+	if !strings.Contains(got, "enable ") {
+		t.Errorf("the sequence never enables the units, so nothing starts at login: %s", got)
+	}
+}
