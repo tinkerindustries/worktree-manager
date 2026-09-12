@@ -114,35 +114,89 @@ if [ -e "$path" ]; then
   die "$path already exists"
 fi
 
-# --- the branch has to be new -------------------------------------------
+# --- an existing branch is adopted ---------------------------------------
 #
-# Checking out an existing branch is not what the caller asked for, and the
-# check has to reach the remote to be worth making: somebody else's branch
-# of this name on origin passes a local-refs check and surfaces later as a
-# rejected non-fast-forward push, after work has been committed onto it.
-# All three refs are checked, and a hit stops rather than adopting.
+# The branch asked for by name may already exist. A worktree removed earlier
+# leaves its branch behind, Claude Code names a worktree after the task so
+# the name can land on a branch nobody remembers making, and a session
+# resumed onto its own branch asks for the branch it was already on.
+# Refusing costs the caller a worktree over a name they did not choose, so a
+# branch that exists is checked out.
+#
+# The collision the refusal was about is real, and the answer to it is that
+# nothing here is silent. A branch only origin has is fetched first, so the
+# local branch starts at the tip somebody else last pushed and the push that
+# follows is a fast-forward. A branch in this repository is checked out
+# exactly as it stands, and the notice names it and says what it is behind.
+# Where a branch cannot be adopted at all — checked out in another worktree,
+# or on origin and unobtainable — the refusal names which.
+existing=""
 if git -C "$root" show-ref --verify --quiet "refs/heads/$slug"; then
-  die "the branch $slug already exists in this repository; this hook creates branches and never checks out an existing one. Remove or rename it, or ask for a different name."
+  existing="local"
 fi
+
 # The remote checks are skipped entirely where there is no origin. A
 # repository with local-only branches is an ordinary case, not a degraded
 # one, and saying "could not reach origin" about a remote that does not
 # exist is noise rather than a caveat.
-if git -C "$root" remote get-url origin >/dev/null 2>&1; then
+if [ -z "$existing" ] && git -C "$root" remote get-url origin >/dev/null 2>&1; then
+  on_origin=""
   if git -C "$root" show-ref --verify --quiet "refs/remotes/origin/$slug"; then
-    die "the branch $slug already exists on origin (as a remote-tracking ref); committing onto it here would collide with whoever owns it. Ask for a different name."
-  fi
-  # ls-remote is the only check that sees a branch pushed since the last
-  # fetch. It needs the network, so a failure is reported as not knowing
-  # rather than as an answer: an offline machine still gets its worktree,
-  # and the two local checks above have already run.
-  if remote_heads="$(git -C "$root" ls-remote --heads origin "$slug" 2>>"$log_file")"; then
+    on_origin=1
+  elif remote_heads="$(git -C "$root" ls-remote --heads origin "$slug" 2>>"$log_file")"; then
+    # ls-remote is the only check that sees a branch pushed since the last
+    # fetch. It needs the network, so a failure is reported as not knowing
+    # rather than as an answer: an offline machine still gets its worktree.
     if [ -n "$remote_heads" ]; then
-      die "the branch $slug already exists on origin; committing onto it here would collide with whoever owns it. Ask for a different name."
+      on_origin=1
     fi
   else
-    log_quiet "could not reach origin to check whether the branch $slug exists there; the local refs were checked and are clear"
+    log_quiet "could not reach origin to check whether the branch $slug exists there; this repository has no branch of that name, so a new one is made"
   fi
+  if [ -n "$on_origin" ]; then
+    # Fetched, so the new local branch starts where origin's copy is now and
+    # the push that follows is a fast-forward.
+    if git -C "$root" fetch --quiet origin "$slug" >>"$log_file" 2>&1 \
+        && git -C "$root" show-ref --verify --quiet "refs/remotes/origin/$slug"; then
+      existing="origin"
+    elif git -C "$root" show-ref --verify --quiet "refs/remotes/origin/$slug"; then
+      existing="origin"
+      log_quiet "could not fetch origin's copy of $slug; branching from the copy fetched last time, which may be behind"
+    else
+      die "the branch $slug exists on origin and its commits could not be fetched, so a new branch of that name here would collide with it at push time. Run 'git fetch origin $slug' and ask again."
+    fi
+  fi
+fi
+
+if [ "$existing" = "local" ]; then
+  # Said, because the commits made in this worktree land on a branch that
+  # already exists, and push there too where it has an upstream.
+  log_quiet "the branch $slug already exists in this repository, so this worktree checks it out rather than branching a new one"
+  upstream="$(git -C "$root" rev-parse --abbrev-ref --symbolic-full-name "$slug@{upstream}" 2>/dev/null || true)"
+  if [ -n "$upstream" ]; then
+    behind="$(git -C "$root" rev-list --count "$slug..$upstream" 2>/dev/null || true)"
+    if [ -n "$behind" ] && [ "$behind" != "0" ]; then
+      log_quiet "the branch $slug is $behind commit(s) behind $upstream"
+    fi
+  fi
+  # One branch cannot be checked out in two worktrees, and git's own refusal
+  # names neither the worktree holding it nor the way out. The loop reads the
+  # porcelain listing rather than the table so the pairing of a worktree with
+  # its branch does not depend on the width of a column.
+  occupied="$(
+    git -C "$root" worktree list --porcelain 2>/dev/null | while IFS= read -r line; do
+      if [ "${line#worktree }" != "$line" ]; then
+        holder="${line#worktree }"
+      elif [ "$line" = "branch refs/heads/$slug" ]; then
+        printf '%s\n' "${holder:-}"
+      fi
+    done
+  )"
+  if [ -n "$occupied" ]; then
+    die "the branch $slug is already checked out at $occupied, and git will not check one branch out in two worktrees. Work in that one, or remove it with 'wt rm'."
+  fi
+elif [ "$existing" = "origin" ]; then
+  log_quiet "the branch $slug exists on origin and not in this repository, so this worktree is made on origin's copy of it; commits made here push back to origin/$slug"
 fi
 
 # --- resolve the base ----------------------------------------------------
@@ -154,7 +208,11 @@ fi
 # fortnight silently branches off a fortnight-old main. Neither is visible
 # at the time.
 base=""
-if [ "$adopted" = 1 ]; then
+if [ -n "$existing" ]; then
+  # An existing branch is its own base: the worktree is checked out where
+  # that branch points, so worktrees.base is neither resolved nor fetched.
+  base=""
+elif [ "$adopted" = 1 ]; then
   # A remote-tracking base is only as fresh as the last fetch, so fetch it.
   # Failure here is not fatal — an offline machine still has the ref it
   # fetched last time, and the note says the base may be stale.
@@ -199,8 +257,19 @@ else
   fi
 fi
 
-git -C "$root" worktree add -b "$slug" "$path" "$base" >>"$log_file" 2>&1 \
-  || die "git worktree add failed; see $log_file"
+# The branch, and the base where there is no branch to adopt. An existing
+# branch is checked out as it stands, and origin's copy becomes the local
+# branch and its upstream when only origin has it.
+if [ "$existing" = "local" ]; then
+  git -C "$root" worktree add "$path" "$slug" >>"$log_file" 2>&1 \
+    || die "git worktree add failed; see $log_file"
+elif [ "$existing" = "origin" ]; then
+  git -C "$root" worktree add --track -b "$slug" "$path" "origin/$slug" >>"$log_file" 2>&1 \
+    || die "git worktree add failed; see $log_file"
+else
+  git -C "$root" worktree add -b "$slug" "$path" "$base" >>"$log_file" 2>&1 \
+    || die "git worktree add failed; see $log_file"
+fi
 
 # An unadopted repository is finished here: a worktree in Claude Code's own
 # location, made the way Claude Code would have made it. The one thing said

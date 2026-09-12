@@ -281,8 +281,12 @@ configuration; neither binary branches on repo identity.
   plus a sentence naming the worktree-onboarding skill. The name Claude
   Code generates is normalised rather than refused — refusing costs a
   person their worktree over a name nobody typed — and a branch of that
-  name already existing locally, as a remote-tracking ref or on origin
-  stops the creation rather than being checked out. `WT_HOOK_NO_ENV=1`
+  name that already exists is checked out rather than refused: a branch
+  only origin has is fetched first, so the local branch starts at origin's
+  tip and the push that follows is a fast-forward. The two refusals that
+  remain are a branch checked out in another worktree, which git will not
+  check out twice, and a branch origin has whose commits cannot be
+  fetched. `WT_HOOK_NO_ENV=1`
   makes the worktree and skips `wt init`, for a change that does not need
   the repository's stack up; the remove script reports `wt rm`'s exit 3
   and exit 4 as the different things they are. Nothing here is rendered from a
