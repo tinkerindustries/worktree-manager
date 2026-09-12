@@ -155,9 +155,18 @@ func schtasks(args ...string) error {
 
 // installWindowsTask writes the task XML and, outside a test prefix,
 // registers and starts the task: schtasks /Create overwrites or creates
-// the task from the XML, /Run starts it now (the mirror of launchctl
-// kickstart). No elevation: a task in the user's own context registers
-// without one — one of the two reasons the logon task is the default.
+// the task from the XML, /End stops whatever instance is already running,
+// and /Run starts it (the mirror of launchctl kickstart). No elevation: a
+// task in the user's own context registers without one — one of the two
+// reasons the logon task is the default.
+//
+// The /End is why an upgrade takes effect. This task carries
+// MultipleInstancesPolicy=IgnoreNew, so /Run against a running task is a
+// no-op: the installer replaces wtd.exe on disk, /Create rewrites the XML,
+// /Run does nothing, and the coordinator serving the machine is still the
+// old binary — with every surface reporting success. /End on a task that
+// is not running fails harmlessly and is ignored, the same way the launchd
+// path ignores a bootout of an unloaded agent.
 func installWindowsTask(prefix, wtdPath, addr, containerToken string, allowedHosts []string) (InstallSupervisorResult, error) {
 	dir, err := windowsTaskDir(prefix)
 	if err != nil {
@@ -184,6 +193,10 @@ func installWindowsTask(prefix, wtdPath, addr, containerToken string, allowedHos
 		return InstallSupervisorResult{RegistrationPath: xmlPath, Label: WindowsTaskName},
 			fmt.Errorf("registering the coordinator's logon task: %w", err)
 	}
+	// Stop any instance still running the previous binary before starting
+	// the new one; /Run would otherwise be ignored under IgnoreNew. A task
+	// that is not running makes this fail, which is expected and ignored.
+	_ = schtasks("/End", "/TN", WindowsTaskName)
 	if err := schtasks("/Run", "/TN", WindowsTaskName); err != nil {
 		return InstallSupervisorResult{RegistrationPath: xmlPath, Label: WindowsTaskName},
 			fmt.Errorf("starting the coordinator's logon task: %w", err)
