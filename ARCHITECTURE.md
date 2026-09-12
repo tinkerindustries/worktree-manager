@@ -1006,9 +1006,13 @@ The six rules of `docs/ARCHITECTURE.md` §8.6, stated as invariants:
   - Linux: a systemd user unit with its paired `.socket` unit under
     `~/.config/systemd/user` — and socket activation IS used there,
     because systemd's LISTEN_FDS/LISTEN_PID handoff is pure-Go readable:
-    the socket unit owns the listener (SocketMode 0700), wtd consumes
-    the descriptor with `--activate`, and the socket survives coordinator
-    crashes so clients queue while systemd restarts the service.
+    the socket unit owns the listener — a loopback TCP `ListenStream`
+    naming the address the registration pinned, because the transport is
+    HTTP over TCP and the activated socket has to be the one the client
+    dials — wtd consumes the descriptor with `--activate` and so is passed
+    no `--addr` of its own (it refuses the two together: the address is the
+    socket unit's to declare), and the socket survives coordinator crashes
+    so clients queue while systemd restarts the service.
   - Windows: a logon scheduled task (the R2 answer) registered from a
     UTF-16 task XML under `%LOCALAPPDATA%\wt` via `schtasks /Create` and
     started with `schtasks /Run` — the user's interactive session, no

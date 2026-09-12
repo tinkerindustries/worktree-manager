@@ -434,3 +434,20 @@ func readRegistration(t *testing.T, path string) string {
 	}
 	return string(data)
 }
+
+// readWholeRegistration reads every file the platform's registration
+// comprises, as one text. On launchd and the Task Scheduler that is the one
+// registration file; on systemd it is the service unit *and* its paired
+// socket unit, because the two together are the registration and which of
+// them carries a given setting is systemd's business, not a caller's. The
+// listen address is exactly such a setting: under socket activation the
+// listener belongs to the socket unit, so a test asking "does the
+// registration name this address" has to look at both.
+func readWholeRegistration(t *testing.T, prefix string) string {
+	t.Helper()
+	whole := readRegistration(t, filepath.Join(prefix, registrationFilenameForThisPlatform()))
+	if runtime.GOOS == "linux" {
+		whole += readRegistration(t, filepath.Join(prefix, platform.SystemdSocketFilename))
+	}
+	return whole
+}

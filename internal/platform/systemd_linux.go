@@ -15,12 +15,13 @@ package platform
 // CGO_ENABLED=0 throughout. systemd passes file descriptors through the
 // LISTEN_FDS/LISTEN_PID environment variables, which pure Go reads, so
 // the design of record's "paired .socket unit" is implementable here
-// without that obstacle. The .socket unit owns the listener — SocketMode
-// 0700 makes the socket's permission model declarative — and the service
-// consumes the descriptor with --activate (ActivatedListener). The
+// without that obstacle. The .socket unit owns the listener — a loopback
+// TCP ListenStream, the socket the client actually dials, since the
+// transport is HTTP — and the service consumes the descriptor with
+// --activate (ActivatedListener) and so passes no --addr of its own. The
 // socket survives a coordinator crash, so clients' connections queue in
-// the kernel while systemd restarts wtd instead of hitting a stale-file
-// race; wtd stays resident once activated (the sweeper timers need a
+// the kernel while systemd restarts wtd instead of being refused;
+// wtd stays resident once activated (the sweeper timers need a
 // resident process), so on-demand start is a lazy first start, not a
 // stop-when-idle regime.
 
@@ -67,16 +68,18 @@ func systemctl(args ...string) error {
 // Restart=always is the systemd analogue of launchd's KeepAlive. The
 // Requires/After pair ties the service to its socket unit, so the socket
 // exists whenever the service starts — including the login-time start.
-// With the container token configured, ExecStart also carries
-// --addr and --container-token; each argument is quoted under systemd's
+//
+// ExecStart deliberately carries no --addr. Under socket activation the
+// listener is the .socket unit's, so the address is declared there and
+// only there; wtd refuses --activate and --addr together precisely
+// because two things cannot both decide where it listens. Everything that
+// is not about the listener — the container token, the extra allowed Host
+// values — stays on ExecStart. Each argument is quoted under systemd's
 // rules, and a unit that carries the token is written 0600 (systemd
 // accepts it, and a machine's other users cannot read the token out of
 // the unit file — the security pass, phase 9).
-func systemdServiceUnit(wtdPath, addr, containerToken string, allowedHosts []string) []byte {
+func systemdServiceUnit(wtdPath, containerToken string, allowedHosts []string) []byte {
 	exec := systemdEscapeExec(wtdPath) + " --activate"
-	if addr != "" {
-		exec += " --addr " + systemdEscapeExec(addr)
-	}
 	if containerToken != "" {
 		exec += " --container-token " + systemdEscapeExec(containerToken)
 	}
@@ -97,23 +100,31 @@ WantedBy=default.target
 `, SystemdSocketFilename, SystemdSocketFilename, exec))
 }
 
-// systemdSocketUnit is the paired .socket unit. ListenStream uses %t, the
-// systemd specifier for the user runtime directory — the same
-// $XDG_RUNTIME_DIR/wt/sock the platform's default socket path resolves to
-// — so the unit and the binaries cannot drift apart. SocketMode 0700 makes
-// the socket's restriction to the owning user declarative
-// (docs/ARCHITECTURE.md §12.2).
-func systemdSocketUnit() []byte {
+// systemdSocketUnit is the paired .socket unit. ListenStream is the
+// coordinator's loopback TCP address — the transport is HTTP over TCP, so
+// the activated listener has to be the socket the client dials. It names
+// the address the registration pinned, and the compiled-in default when it
+// pinned none, so the unit and the endpoint file cannot disagree about
+// where the coordinator is.
+//
+// There is no SocketMode: it sets the permission bits of an AF_UNIX socket
+// or a FIFO and means nothing for a TCP listener. What restricts this
+// surface is the bind address — loopback, which ValidateCoordinatorConfig
+// holds it to unless --allow-remote is given — plus the container token
+// and the Host guard for anything that is not a host client.
+func systemdSocketUnit(addr string) []byte {
+	if addr == "" {
+		addr = DefaultCoordinatorAddr
+	}
 	return []byte(fmt.Sprintf(`[Unit]
 Description=Worktree Manager coordinator socket
 
 [Socket]
-ListenStream=%%t/wt/sock
-SocketMode=0700
+ListenStream=%s
 
 [Install]
 WantedBy=sockets.target
-`))
+`, addr))
 }
 
 // systemdEscapeExec quotes one ExecStart argument under systemd's quoting
@@ -148,10 +159,10 @@ func installSystemdUnits(prefix, wtdPath, addr, containerToken string, allowedHo
 		// accepts non-world-readable unit files.
 		mode = 0o600
 	}
-	if err := os.WriteFile(svc, systemdServiceUnit(wtdPath, addr, containerToken, allowedHosts), mode); err != nil {
+	if err := os.WriteFile(svc, systemdServiceUnit(wtdPath, containerToken, allowedHosts), mode); err != nil {
 		return InstallSupervisorResult{}, fmt.Errorf("writing %s: %w", svc, err)
 	}
-	if err := os.WriteFile(sock, systemdSocketUnit(), 0o644); err != nil {
+	if err := os.WriteFile(sock, systemdSocketUnit(addr), 0o644); err != nil {
 		return InstallSupervisorResult{}, fmt.Errorf("writing %s: %w", sock, err)
 	}
 	if prefix != "" {

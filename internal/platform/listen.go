@@ -21,6 +21,15 @@ import (
 	"strings"
 )
 
+// DefaultCoordinatorAddr is the compiled-in loopback address the
+// coordinator listens on when nothing says otherwise. It lives here rather
+// than beside the endpoint file because a supervisor registration needs it
+// too — the systemd socket unit declares the listener itself, so it must
+// name an address even when the registration pinned none — and
+// internal/api imports this package, so api.DefaultAddr is defined from
+// this constant rather than repeating it.
+const DefaultCoordinatorAddr = "127.0.0.1:7833"
+
 // MinContainerTokenLength is the minimum length of the token that admits
 // container clients. The token is the whole of a container's identity —
 // there are no peer credentials over TCP — and the listener is reachable
