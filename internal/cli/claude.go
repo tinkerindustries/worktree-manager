@@ -20,7 +20,7 @@ import (
 	"path/filepath"
 	"text/tabwriter"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/claudehook"
+	"github.com/tinkerindustries/worktree-manager/internal/claudehook"
 )
 
 // claudeResult is the one JSON object `wt claude install --json` and

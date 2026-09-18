@@ -16,8 +16,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/platform"
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/platform"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // Write marshals d in the given format — yaml or json, selected by

@@ -15,8 +15,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/descriptor"
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/descriptor"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // showVerdict is the shape of `wt show --json` the briefing reads: the

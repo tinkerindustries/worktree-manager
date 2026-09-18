@@ -8,8 +8,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/identity"
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/identity"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // SpecPathResult is what `wt spec path --json` prints: everything the

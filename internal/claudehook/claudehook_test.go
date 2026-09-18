@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/managed"
+	"github.com/tinkerindustries/worktree-manager/internal/managed"
 )
 
 // layoutIn is a Layout over a fresh temp directory.

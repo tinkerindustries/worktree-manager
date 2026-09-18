@@ -13,7 +13,7 @@ import (
 
 	"github.com/goccy/go-yaml"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
 )
 
 // OpenAPI renders api/openapi.yaml. The returned bytes are the whole

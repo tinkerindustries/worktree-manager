@@ -21,7 +21,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
 )
 
 // Error is one failed request: a response error mapped verbatim from

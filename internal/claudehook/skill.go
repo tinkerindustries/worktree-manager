@@ -47,7 +47,7 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/platform"
+	"github.com/tinkerindustries/worktree-manager/internal/platform"
 )
 
 //go:embed skill

@@ -36,8 +36,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/platform"
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/platform"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // healthPollInterval is how often the health hook is retried, and how

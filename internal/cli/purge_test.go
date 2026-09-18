@@ -21,7 +21,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // purgeSpecRepo writes a one-file repository whose wt.yaml is the

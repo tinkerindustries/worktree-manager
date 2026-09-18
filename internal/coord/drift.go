@@ -22,11 +22,11 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
-	"github.com/mrgeoffrich/worktree-manager/internal/artefact"
-	"github.com/mrgeoffrich/worktree-manager/internal/managed"
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
-	"github.com/mrgeoffrich/worktree-manager/internal/store"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
+	"github.com/tinkerindustries/worktree-manager/internal/artefact"
+	"github.com/tinkerindustries/worktree-manager/internal/managed"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/store"
 )
 
 // Drift scan bounds, stated when tripped: how many tracked files are

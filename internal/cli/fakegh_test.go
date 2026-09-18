@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/platform"
+	"github.com/tinkerindustries/worktree-manager/internal/platform"
 )
 
 // ghNoPRScript is gh's no-pull-request contract: the message on stderr and

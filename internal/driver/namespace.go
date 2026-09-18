@@ -51,8 +51,8 @@ import (
 
 	yaml "github.com/goccy/go-yaml"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/platform"
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/platform"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // Namespace is the namespace driver.

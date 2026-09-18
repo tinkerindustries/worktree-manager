@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
-	"github.com/mrgeoffrich/worktree-manager/internal/store"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
+	"github.com/tinkerindustries/worktree-manager/internal/store"
 )
 
 // Harness is the in-process coordinator of ARCHITECTURE.md §13.3: a full

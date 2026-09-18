@@ -14,7 +14,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
 )
 
 // redactKey renders an identity key for a reader that is not the identity:

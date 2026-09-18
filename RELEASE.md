@@ -343,7 +343,7 @@ architecture, which on an Apple Silicon machine is `linux-arm64`:
 FROM debian:bookworm-slim
 ARG WT_VERSION=0.2.0
 ARG TARGETARCH
-ADD https://github.com/mrgeoffrich/worktree-manager/releases/download/v${WT_VERSION}/wt-${WT_VERSION}-linux-${TARGETARCH}.tar.gz /tmp/wt.tar.gz
+ADD https://github.com/tinkerindustries/worktree-manager/releases/download/v${WT_VERSION}/wt-${WT_VERSION}-linux-${TARGETARCH}.tar.gz /tmp/wt.tar.gz
 RUN set -eu; \
     mkdir -p /tmp/wt && tar xzf /tmp/wt.tar.gz -C /tmp/wt; \
     /tmp/wt/install.sh --client-only --prefix /usr/local; \

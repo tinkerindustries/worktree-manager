@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
-	"github.com/mrgeoffrich/worktree-manager/internal/platform"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
+	"github.com/tinkerindustries/worktree-manager/internal/platform"
 )
 
 // Server is the resident coordinator: the loopback HTTP listener and the

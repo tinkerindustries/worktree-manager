@@ -7,7 +7,7 @@ package main
 import (
 	"os"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/cli"
+	"github.com/tinkerindustries/worktree-manager/internal/cli"
 )
 
 func main() {

@@ -27,10 +27,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
-	"github.com/mrgeoffrich/worktree-manager/internal/store"
-	"github.com/mrgeoffrich/worktree-manager/internal/treecheck"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/store"
+	"github.com/tinkerindustries/worktree-manager/internal/treecheck"
 )
 
 // SweepIntervalDefault is how often the coordinator's own cleanup sweep

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
 )
 
 // TestRunPortsScanJSON: `wt ports scan --json` prints exactly one JSON

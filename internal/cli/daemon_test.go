@@ -12,8 +12,8 @@ import (
 	"testing"
 	"unicode/utf16"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
-	"github.com/mrgeoffrich/worktree-manager/internal/platform"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
+	"github.com/tinkerindustries/worktree-manager/internal/platform"
 )
 
 // shortSock is a socket path short enough to bind. sun_path holds 104 bytes

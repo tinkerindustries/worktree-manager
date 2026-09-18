@@ -32,8 +32,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
-	"github.com/mrgeoffrich/worktree-manager/internal/treecheck"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
+	"github.com/tinkerindustries/worktree-manager/internal/treecheck"
 )
 
 // cleanupRow is one entry's outcome; text and JSON share the same shape.

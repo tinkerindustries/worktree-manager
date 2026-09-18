@@ -18,8 +18,8 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
-	apiclient "github.com/mrgeoffrich/worktree-manager/internal/api/client"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
+	apiclient "github.com/tinkerindustries/worktree-manager/internal/api/client"
 )
 
 // runList implements `wt list [--json] [--wide]`: the whole registry

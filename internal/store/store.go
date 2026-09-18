@@ -32,7 +32,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/platform"
+	"github.com/tinkerindustries/worktree-manager/internal/platform"
 	_ "modernc.org/sqlite"
 )
 

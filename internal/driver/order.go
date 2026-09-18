@@ -6,7 +6,7 @@ package driver
 // The phase-8 forcing rule ("machine first among its dependents, when it
 // arrives") slots into the same keep predicate the ordering functions use.
 
-import "github.com/mrgeoffrich/worktree-manager/internal/spec"
+import "github.com/tinkerindustries/worktree-manager/internal/spec"
 
 // DependencyOrder returns the resource names in dependency order — every
 // resource after everything its template references — restricted to the

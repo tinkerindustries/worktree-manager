@@ -20,7 +20,7 @@ import (
 	"net"
 	"strconv"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/store"
+	"github.com/tinkerindustries/worktree-manager/internal/store"
 )
 
 // OwnPortNote is the note the coordinator's own reservation carries. It is

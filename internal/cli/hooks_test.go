@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // hookTestSpec is a spec whose hooks are trivial shell commands, so the

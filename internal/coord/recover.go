@@ -39,7 +39,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/store"
+	"github.com/tinkerindustries/worktree-manager/internal/store"
 )
 
 // RecoverInterrupted resolves every reserving entry the registry holds.

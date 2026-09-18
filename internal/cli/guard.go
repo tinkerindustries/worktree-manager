@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/identity"
+	"github.com/tinkerindustries/worktree-manager/internal/identity"
 )
 
 // guardStdin is where the PreToolUse payload is read from. It is a variable

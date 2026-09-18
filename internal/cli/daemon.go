@@ -9,8 +9,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
-	"github.com/mrgeoffrich/worktree-manager/internal/platform"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
+	"github.com/tinkerindustries/worktree-manager/internal/platform"
 )
 
 // runDaemon implements the three daemon verbs: `wt daemon status`, `wt

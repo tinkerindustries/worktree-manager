@@ -1,8 +1,8 @@
 package coord
 
 import (
-	"github.com/mrgeoffrich/worktree-manager/internal/driver"
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/driver"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // ProbeFromRegistry builds the allocation probe from the driver registry: a

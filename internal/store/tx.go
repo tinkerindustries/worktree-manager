@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // Tx is one store transaction. The coordinator composes a sequence of

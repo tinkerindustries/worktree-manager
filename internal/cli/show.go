@@ -11,9 +11,9 @@ import (
 	"slices"
 	"text/tabwriter"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/descriptor"
-	"github.com/mrgeoffrich/worktree-manager/internal/identity"
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/descriptor"
+	"github.com/tinkerindustries/worktree-manager/internal/identity"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // runShow implements `wt show [--json | --brief] [--cwd <dir>]`: it reads

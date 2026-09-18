@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // Entry states, per ARCHITECTURE.md §11.2.

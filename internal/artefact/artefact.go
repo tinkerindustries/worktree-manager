@@ -34,8 +34,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/managed"
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/managed"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // The embedded templates: the stable bodies of the generated files. The
