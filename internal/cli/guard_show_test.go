@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/platform"
+	"github.com/tinkerindustries/worktree-manager/internal/platform"
 )
 
 // adoptedTestRepo is a two-worktree repository that has adopted the tooling:

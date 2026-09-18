@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // cidrFixture builds the vm-app-shaped cidr resource: a /22 per slot out

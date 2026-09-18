@@ -28,8 +28,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // rm implements the rm verb: reap, then teardown, then the entry drop. A

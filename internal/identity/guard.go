@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/descriptor"
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/descriptor"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // GuardRequest is the enforcement hook's input: the tool name and its input

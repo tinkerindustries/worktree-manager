@@ -15,8 +15,8 @@ import (
 	"io"
 	"text/tabwriter"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
-	apiclient "github.com/mrgeoffrich/worktree-manager/internal/api/client"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
+	apiclient "github.com/tinkerindustries/worktree-manager/internal/api/client"
 )
 
 // runPorts implements `wt ports scan [--json]`.

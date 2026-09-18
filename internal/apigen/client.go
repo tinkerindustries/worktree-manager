@@ -13,7 +13,7 @@ import (
 	"go/format"
 	"strings"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
 )
 
 // Client renders internal/api/client/client.go. The returned bytes are
@@ -100,7 +100,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
 )
 
 // Error is one failed request: a response error mapped verbatim from

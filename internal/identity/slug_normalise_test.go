@@ -3,7 +3,7 @@ package identity
 import (
 	"testing"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // TestNormaliseSlug covers the mapping the WorktreeCreate hook depends on:

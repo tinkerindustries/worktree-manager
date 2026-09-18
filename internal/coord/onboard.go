@@ -21,9 +21,9 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
-	"github.com/mrgeoffrich/worktree-manager/internal/platform"
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
+	"github.com/tinkerindustries/worktree-manager/internal/platform"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // verbPortsScan is the wire name of the ports.scan verb.

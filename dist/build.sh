@@ -73,8 +73,8 @@ fi
 # whose symbols the linker knows as main.version/main.commit. Each keeps
 # its default as the fallback when the flag is not set.
 COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
-LDFLAGS="-X github.com/mrgeoffrich/worktree-manager/internal/cli.version=$VERSION \
--X github.com/mrgeoffrich/worktree-manager/internal/cli.commit=$COMMIT \
+LDFLAGS="-X github.com/tinkerindustries/worktree-manager/internal/cli.version=$VERSION \
+-X github.com/tinkerindustries/worktree-manager/internal/cli.commit=$COMMIT \
 -X main.version=$VERSION -X main.commit=$COMMIT"
 
 # The numeric MAJOR.MINOR.PATCH out of VERSION, with any -prerelease and

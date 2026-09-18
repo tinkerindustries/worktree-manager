@@ -27,7 +27,7 @@ package coord
 import (
 	"fmt"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
 )
 
 // entryKey identifies one registry entry.

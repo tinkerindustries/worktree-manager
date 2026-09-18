@@ -28,9 +28,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/managed"
-	"github.com/mrgeoffrich/worktree-manager/internal/platform"
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/managed"
+	"github.com/tinkerindustries/worktree-manager/internal/platform"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // StartMarker and EndMarker delimit the wt-managed block. The block is the

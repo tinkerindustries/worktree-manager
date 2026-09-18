@@ -27,7 +27,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/platform"
+	"github.com/tinkerindustries/worktree-manager/internal/platform"
 )
 
 // cacheVersion is the cache entry schema. Bumping it invalidates every

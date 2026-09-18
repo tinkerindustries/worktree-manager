@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/platform"
+	"github.com/tinkerindustries/worktree-manager/internal/platform"
 )
 
 // Contains reports whether path lies inside root, with the two rails of

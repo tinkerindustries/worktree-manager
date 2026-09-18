@@ -47,12 +47,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
-	"github.com/mrgeoffrich/worktree-manager/internal/descriptor"
-	"github.com/mrgeoffrich/worktree-manager/internal/envfile"
-	"github.com/mrgeoffrich/worktree-manager/internal/identity"
-	"github.com/mrgeoffrich/worktree-manager/internal/platform"
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
+	"github.com/tinkerindustries/worktree-manager/internal/descriptor"
+	"github.com/tinkerindustries/worktree-manager/internal/envfile"
+	"github.com/tinkerindustries/worktree-manager/internal/identity"
+	"github.com/tinkerindustries/worktree-manager/internal/platform"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // initHookPhases are the two hook phases of the sequence: the build phase

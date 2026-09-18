@@ -20,7 +20,7 @@ import (
 
 	"github.com/goccy/go-yaml"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // Version is the only descriptor schema version this binary understands.

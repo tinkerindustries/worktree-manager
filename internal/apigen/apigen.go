@@ -38,7 +38,7 @@ import (
 
 	"github.com/goccy/go-yaml"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
 )
 
 // verbType is one route's Go types: the wire verb and the request and
@@ -127,8 +127,8 @@ func loadDocs() (*docIndex, error) {
 		fields: map[string]map[string]string{},
 	}
 	for _, p := range []struct{ importPath, pkg string }{
-		{"github.com/mrgeoffrich/worktree-manager/internal/api", "api"},
-		{"github.com/mrgeoffrich/worktree-manager/internal/spec", "spec"},
+		{"github.com/tinkerindustries/worktree-manager/internal/api", "api"},
+		{"github.com/tinkerindustries/worktree-manager/internal/spec", "spec"},
 	} {
 		dir, err := pkgDir(p.importPath)
 		if err != nil {

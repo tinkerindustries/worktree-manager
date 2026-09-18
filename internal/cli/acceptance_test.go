@@ -34,11 +34,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
-	"github.com/mrgeoffrich/worktree-manager/internal/coord"
-	"github.com/mrgeoffrich/worktree-manager/internal/descriptor"
-	"github.com/mrgeoffrich/worktree-manager/internal/driver"
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
+	"github.com/tinkerindustries/worktree-manager/internal/coord"
+	"github.com/tinkerindustries/worktree-manager/internal/descriptor"
+	"github.com/tinkerindustries/worktree-manager/internal/driver"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // gateBase is the band base the gate's band registration uses: far from

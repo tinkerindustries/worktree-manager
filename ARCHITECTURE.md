@@ -7,7 +7,7 @@ deliberately both named `ARCHITECTURE.md` (plan.md §7).
 
 ## Packages
 
-One module, `github.com/mrgeoffrich/worktree-manager`, two binaries, thirteen
+One module, `github.com/tinkerindustries/worktree-manager`, two binaries, thirteen
 internal packages:
 
 ```

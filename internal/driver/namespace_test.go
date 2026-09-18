@@ -16,8 +16,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/platform"
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/platform"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // fakeDocker is the test seam: objects keyed by project, optional failures

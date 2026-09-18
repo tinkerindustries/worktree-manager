@@ -13,10 +13,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
-	"github.com/mrgeoffrich/worktree-manager/internal/descriptor"
-	"github.com/mrgeoffrich/worktree-manager/internal/envfile"
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
+	"github.com/tinkerindustries/worktree-manager/internal/descriptor"
+	"github.com/tinkerindustries/worktree-manager/internal/envfile"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // lifecycleFixture builds a git repository with one linked worktree and a

@@ -32,7 +32,7 @@ import (
 	"go/format"
 	"strings"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // Reader renders the Go source for the spec's emit.reader section. The

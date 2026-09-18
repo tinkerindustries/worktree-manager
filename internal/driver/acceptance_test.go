@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // freePort finds a port nothing is bound to right now.

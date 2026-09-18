@@ -28,7 +28,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/platform"
+	"github.com/tinkerindustries/worktree-manager/internal/platform"
 )
 
 // execDocker runs the docker CLI, optionally against a specific endpoint.

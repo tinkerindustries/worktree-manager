@@ -39,8 +39,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/managed"
-	"github.com/mrgeoffrich/worktree-manager/internal/platform"
+	"github.com/tinkerindustries/worktree-manager/internal/managed"
+	"github.com/tinkerindustries/worktree-manager/internal/platform"
 )
 
 //go:embed templates/worktree-create.sh

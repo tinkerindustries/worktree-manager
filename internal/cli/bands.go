@@ -11,9 +11,9 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
-	apiclient "github.com/mrgeoffrich/worktree-manager/internal/api/client"
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
+	apiclient "github.com/tinkerindustries/worktree-manager/internal/api/client"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // runBands implements the two bands verbs: `wt bands list` and

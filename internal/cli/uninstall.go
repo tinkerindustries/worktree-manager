@@ -20,8 +20,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
-	"github.com/mrgeoffrich/worktree-manager/internal/platform"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
+	"github.com/tinkerindustries/worktree-manager/internal/platform"
 )
 
 // countRegistryEntries reports how many entries the registry holds, by

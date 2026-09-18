@@ -25,9 +25,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
-	"github.com/mrgeoffrich/worktree-manager/internal/descriptor"
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
+	"github.com/tinkerindustries/worktree-manager/internal/descriptor"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // tcpTestToken is the token the test's coordinator is configured with.

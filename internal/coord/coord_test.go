@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
-	"github.com/mrgeoffrich/worktree-manager/internal/store"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
+	"github.com/tinkerindustries/worktree-manager/internal/store"
 )
 
 // tempRoot is t.TempDir() with symlinks resolved (on macOS the temp root

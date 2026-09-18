@@ -3,7 +3,7 @@ package identity
 import (
 	"path/filepath"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // DescriptorPath is where the descriptor lives for this tree: a fixed

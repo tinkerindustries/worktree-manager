@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/descriptor"
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/descriptor"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // startFixture builds an adopted repo with one worktree and writes a

@@ -1,7 +1,7 @@
 package api
 
 import (
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // Phase-3 verbs, carried by the generic Request/Response envelope of

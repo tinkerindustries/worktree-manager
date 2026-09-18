@@ -36,11 +36,11 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
-	"github.com/mrgeoffrich/worktree-manager/internal/coord"
-	"github.com/mrgeoffrich/worktree-manager/internal/driver"
-	"github.com/mrgeoffrich/worktree-manager/internal/platform"
-	"github.com/mrgeoffrich/worktree-manager/internal/store"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
+	"github.com/tinkerindustries/worktree-manager/internal/coord"
+	"github.com/tinkerindustries/worktree-manager/internal/driver"
+	"github.com/tinkerindustries/worktree-manager/internal/platform"
+	"github.com/tinkerindustries/worktree-manager/internal/store"
 )
 
 // logsDirName and logFileName name wtd's own log, under the store root

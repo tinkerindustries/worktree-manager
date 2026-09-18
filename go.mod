@@ -1,4 +1,4 @@
-module github.com/mrgeoffrich/worktree-manager
+module github.com/tinkerindustries/worktree-manager
 
 go 1.26.0
 

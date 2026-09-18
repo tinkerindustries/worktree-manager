@@ -14,17 +14,17 @@ import (
 // binaries"). The check runs `go list -deps` over the real dependency
 // graph, so a transitive import is caught too, not only a direct one.
 func TestWtNeverImportsCoordinatorPackages(t *testing.T) {
-	cmd := exec.Command("go", "list", "-deps", "github.com/mrgeoffrich/worktree-manager/cmd/wt")
+	cmd := exec.Command("go", "list", "-deps", "github.com/tinkerindustries/worktree-manager/cmd/wt")
 	cmd.Dir = "../.." // the module root
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("go list -deps cmd/wt: %v", err)
 	}
 	forbidden := []string{
-		"github.com/mrgeoffrich/worktree-manager/internal/store",
-		"github.com/mrgeoffrich/worktree-manager/internal/coord",
-		"github.com/mrgeoffrich/worktree-manager/internal/driver",
-		"github.com/mrgeoffrich/worktree-manager/internal/fleet",
+		"github.com/tinkerindustries/worktree-manager/internal/store",
+		"github.com/tinkerindustries/worktree-manager/internal/coord",
+		"github.com/tinkerindustries/worktree-manager/internal/driver",
+		"github.com/tinkerindustries/worktree-manager/internal/fleet",
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		line = strings.TrimSpace(line)

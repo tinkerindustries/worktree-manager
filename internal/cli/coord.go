@@ -5,9 +5,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
-	apiclient "github.com/mrgeoffrich/worktree-manager/internal/api/client"
-	"github.com/mrgeoffrich/worktree-manager/internal/platform"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
+	apiclient "github.com/tinkerindustries/worktree-manager/internal/api/client"
+	"github.com/tinkerindustries/worktree-manager/internal/platform"
 )
 
 // coordClient is the client's handle on the coordinator: the resolved

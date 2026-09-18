@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"io"
 
-	apiclient "github.com/mrgeoffrich/worktree-manager/internal/api/client"
+	apiclient "github.com/tinkerindustries/worktree-manager/internal/api/client"
 )
 
 // coordVerb runs one coordinator-backed verb whose result is T — the

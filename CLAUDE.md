@@ -31,7 +31,7 @@ go run ./cmd/wtgen               # regenerate the OpenAPI doc and the client; CI
 go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate   # regenerate the store queries; CI fails on drift
 ```
 
-The module is `github.com/mrgeoffrich/worktree-manager` and requires
+The module is `github.com/tinkerindustries/worktree-manager` and requires
 Go 1.26. There are two runtime dependencies — the YAML package the spec
 needs and `modernc.org/sqlite`, which is pure Go precisely so that
 `CGO_ENABLED=0` cross-compilation keeps working. Everything else is the

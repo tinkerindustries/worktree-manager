@@ -12,9 +12,9 @@ import (
 	"io"
 	"os"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/descriptor"
-	"github.com/mrgeoffrich/worktree-manager/internal/identity"
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/descriptor"
+	"github.com/tinkerindustries/worktree-manager/internal/identity"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // lifecycleClassify classifies cwd for the lifecycle verbs and maps the

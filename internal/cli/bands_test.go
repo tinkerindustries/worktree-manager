@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
 )
 
 // fakeCoordServer is a stand-in for the coordinator: it answers GET

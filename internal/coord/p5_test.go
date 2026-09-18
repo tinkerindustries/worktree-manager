@@ -15,10 +15,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
-	"github.com/mrgeoffrich/worktree-manager/internal/driver"
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
-	"github.com/mrgeoffrich/worktree-manager/internal/store"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
+	"github.com/tinkerindustries/worktree-manager/internal/driver"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/store"
 )
 
 // applyStub is an apply-capable stub driver whose apply fails on demand.

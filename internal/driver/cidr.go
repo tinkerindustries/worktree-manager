@@ -25,7 +25,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // CIDR is the cidr driver.

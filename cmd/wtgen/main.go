@@ -16,7 +16,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/apigen"
+	"github.com/tinkerindustries/worktree-manager/internal/apigen"
 )
 
 func main() {

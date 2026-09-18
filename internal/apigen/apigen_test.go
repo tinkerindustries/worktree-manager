@@ -18,7 +18,7 @@ import (
 
 	"github.com/goccy/go-yaml"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/api"
+	"github.com/tinkerindustries/worktree-manager/internal/api"
 )
 
 // TestRouteTableAndVerbTypesAgree: every route in api.Routes has exactly

@@ -18,8 +18,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mrgeoffrich/worktree-manager/internal/identity"
-	"github.com/mrgeoffrich/worktree-manager/internal/spec"
+	"github.com/tinkerindustries/worktree-manager/internal/identity"
+	"github.com/tinkerindustries/worktree-manager/internal/spec"
 )
 
 // startResult is the one JSON object `wt start --json` prints.
