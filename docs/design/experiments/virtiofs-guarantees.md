@@ -8,8 +8,8 @@
 
 | | |
 |---|---|
-| Host | macOS, Darwin 25.5.0, Apple Silicon |
-| Docker | Docker Desktop 4.86.0, containerd snapshotter enabled |
+| Host | macOS, Apple Silicon |
+| Docker | Docker Desktop, containerd snapshotter enabled |
 | Mount | `virtiofs2 on /mnt type virtiofs (rw,nosuid,nodev,relatime,ignore_atime,no_xattr)` |
 | Container | `python:3.12-alpine`, linux/arm64 |
 | Shared directory | under `/private/tmp`, bind-mounted at `/mnt` |

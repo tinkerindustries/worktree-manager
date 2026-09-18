@@ -151,11 +151,11 @@ func TestCaseSensitiveProbeNonexistentDir(t *testing.T) {
 // leaves it in place and canonical strips it; on every other platform the
 // prefix is an ordinary path component and must survive untouched.
 func TestCanonical(t *testing.T) {
-	const firmlinked = "/System/Volumes/Data/Users/geoff"
+	const firmlinked = "/System/Volumes/Data/Users/alex"
 	got := canonical(firmlinked)
 	want := firmlinked
 	if runtime.GOOS == "darwin" {
-		want = "/Users/geoff"
+		want = "/Users/alex"
 	}
 	if got != want {
 		t.Errorf("canonical(%s) = %s, want %s", firmlinked, got, want)

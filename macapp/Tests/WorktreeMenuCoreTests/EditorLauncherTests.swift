@@ -9,26 +9,26 @@ final class EditorLauncherTests: XCTestCase {
     // MARK: template substitution, one per built-in scheme
 
     func testVSCodeTemplateSubstitutesThePath() {
-        let url = EditorLauncher.url(forTemplate: "vscode://file{path}", path: "/Users/geoff/repo")
-        XCTAssertEqual(url?.absoluteString, "vscode://file/Users/geoff/repo")
+        let url = EditorLauncher.url(forTemplate: "vscode://file{path}", path: "/Users/alex/repo")
+        XCTAssertEqual(url?.absoluteString, "vscode://file/Users/alex/repo")
     }
 
     func testCursorTemplateSubstitutesThePath() {
-        let url = EditorLauncher.url(forTemplate: "cursor://file{path}", path: "/Users/geoff/repo")
-        XCTAssertEqual(url?.absoluteString, "cursor://file/Users/geoff/repo")
+        let url = EditorLauncher.url(forTemplate: "cursor://file{path}", path: "/Users/alex/repo")
+        XCTAssertEqual(url?.absoluteString, "cursor://file/Users/alex/repo")
     }
 
     func testZedTemplateSubstitutesThePath() {
-        let url = EditorLauncher.url(forTemplate: "zed://file{path}", path: "/Users/geoff/repo")
-        XCTAssertEqual(url?.absoluteString, "zed://file/Users/geoff/repo")
+        let url = EditorLauncher.url(forTemplate: "zed://file{path}", path: "/Users/alex/repo")
+        XCTAssertEqual(url?.absoluteString, "zed://file/Users/alex/repo")
     }
 
     func testJetBrainsTemplateSubstitutesThePath() {
         let url = EditorLauncher.url(
             forTemplate: "jetbrains://idea/navigate/reference?path={path}",
-            path: "/Users/geoff/repo"
+            path: "/Users/alex/repo"
         )
-        XCTAssertEqual(url?.absoluteString, "jetbrains://idea/navigate/reference?path=/Users/geoff/repo")
+        XCTAssertEqual(url?.absoluteString, "jetbrains://idea/navigate/reference?path=/Users/alex/repo")
     }
 
     func testBuiltInsListsExactlyTheFourDocumentedSchemes() {
@@ -44,13 +44,13 @@ final class EditorLauncherTests: XCTestCase {
     // MARK: percent-encoding
 
     func testPercentEncodesSpacesInThePath() {
-        let url = EditorLauncher.url(forTemplate: "vscode://file{path}", path: "/Users/geoff/My Worktrees/app")
-        XCTAssertEqual(url?.absoluteString, "vscode://file/Users/geoff/My%20Worktrees/app")
+        let url = EditorLauncher.url(forTemplate: "vscode://file{path}", path: "/Users/alex/My Worktrees/app")
+        XCTAssertEqual(url?.absoluteString, "vscode://file/Users/alex/My%20Worktrees/app")
     }
 
     func testPercentEncodesNonASCIICharactersInThePath() {
-        let url = EditorLauncher.url(forTemplate: "vscode://file{path}", path: "/Users/geoff/café")
-        XCTAssertEqual(url?.absoluteString, "vscode://file/Users/geoff/caf%C3%A9")
+        let url = EditorLauncher.url(forTemplate: "vscode://file{path}", path: "/Users/alex/café")
+        XCTAssertEqual(url?.absoluteString, "vscode://file/Users/alex/caf%C3%A9")
     }
 
     func testEncodesQueryDelimitersSoAQueryTemplateSurvives() {
@@ -59,11 +59,11 @@ final class EditorLauncherTests: XCTestCase {
         // hand the editor a truncated path.
         let url = EditorLauncher.url(
             forTemplate: "jetbrains://idea/navigate/reference?path={path}",
-            path: "/Users/geoff/foo & bar/app"
+            path: "/Users/alex/foo & bar/app"
         )
         XCTAssertEqual(
             url?.absoluteString,
-            "jetbrains://idea/navigate/reference?path=/Users/geoff/foo%20%26%20bar/app"
+            "jetbrains://idea/navigate/reference?path=/Users/alex/foo%20%26%20bar/app"
         )
     }
 
@@ -72,11 +72,11 @@ final class EditorLauncherTests: XCTestCase {
         // as the start of a value.
         let url = EditorLauncher.url(
             forTemplate: "jetbrains://idea/navigate/reference?path={path}",
-            path: "/Users/geoff/c++/a=b"
+            path: "/Users/alex/c++/a=b"
         )
         XCTAssertEqual(
             url?.absoluteString,
-            "jetbrains://idea/navigate/reference?path=/Users/geoff/c%2B%2B/a%3Db"
+            "jetbrains://idea/navigate/reference?path=/Users/alex/c%2B%2B/a%3Db"
         )
     }
 
@@ -90,19 +90,19 @@ final class EditorLauncherTests: XCTestCase {
     // MARK: malformed and empty templates
 
     func testEmptyTemplateProducesNoURL() {
-        XCTAssertNil(EditorLauncher.url(forTemplate: "", path: "/Users/geoff/repo"))
+        XCTAssertNil(EditorLauncher.url(forTemplate: "", path: "/Users/alex/repo"))
     }
 
     func testTemplateWithoutAPlaceholderProducesNoURL() {
         // A template with nothing to substitute into is not usable —
         // it would open the same location for every worktree.
-        XCTAssertNil(EditorLauncher.url(forTemplate: "vscode://file", path: "/Users/geoff/repo"))
+        XCTAssertNil(EditorLauncher.url(forTemplate: "vscode://file", path: "/Users/alex/repo"))
     }
 
     func testTemplateWithNoSchemeProducesNoURL() {
         // A bare path with a placeholder but no "scheme:" prefix is not
         // something NSWorkspace could open as an application URL.
-        XCTAssertNil(EditorLauncher.url(forTemplate: "{path}", path: "/Users/geoff/repo"))
+        XCTAssertNil(EditorLauncher.url(forTemplate: "{path}", path: "/Users/alex/repo"))
     }
 
     // MARK: modifier routing

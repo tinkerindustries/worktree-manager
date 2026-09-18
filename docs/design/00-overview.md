@@ -147,7 +147,7 @@ What survives is exclusive creation of a lock file (`O_CREAT|O_EXCL`) holding th
 
 ### 6.3 A path that is not visible is not a path that is gone
 
-The registry records absolute worktree paths. `/Users/geoff/Repos/bacio/.claude/worktrees/foo` on the host is a different path, or no path, inside a container. A6 makes the registry global and A9 already says the recorded path is informational — but `doctor` and `cleanup` decide what to destroy by asking whether a directory still exists.
+The registry records absolute worktree paths. `/Users/alex/Repos/bacio/.claude/worktrees/foo` on the host is a different path, or no path, inside a container. A6 makes the registry global and A9 already says the recorded path is informational — but `doctor` and `cleanup` decide what to destroy by asking whether a directory still exists.
 
 Run `wt doctor` in a container against a shared registry under that logic and every host worktree reports as stale. Run `wt cleanup` and it acts on the report.
 

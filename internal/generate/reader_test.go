@@ -523,11 +523,11 @@ func TestGeneratedReaderParsesTheEmittedDescriptor(t *testing.T) {
 			"api":          {Type: "port", Value: 4203},
 			"compose":      {Type: "namespace", Value: "compose-app-no-1"},
 			"compose_test": {Type: "namespace", Value: "compose-app-no-1-test"},
-			"db":           {Type: "state-path", Value: "/Users/geoff/.compose-app/worktrees/no-1/db.sqlite"},
+			"db":           {Type: "state-path", Value: "/Users/alex/.compose-app/worktrees/no-1/db.sqlite"},
 		},
 		State: map[string]*descriptor.Isolation{"db": {}},
 		Shared: []descriptor.Shared{{
-			Name:   "/Users/geoff/.compose-app/db.sqlite",
+			Name:   "/Users/alex/.compose-app/db.sqlite",
 			Impact: "writes are visible to every worktree and the main checkout",
 		}},
 		Extras: map[string]any{"harness.notes": "seeded from prod snapshot", "count": 3},

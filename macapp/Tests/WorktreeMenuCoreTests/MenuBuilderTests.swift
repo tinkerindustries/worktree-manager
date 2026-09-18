@@ -13,7 +13,7 @@ final class MenuBuilderTests: XCTestCase {
         pathVisible: Bool = true,
         resources: [String: Resolved] = [:],
         flags: [String]? = nil,
-        owner: String = "geoff",
+        owner: String = "alex",
         description: String? = nil
     ) -> ListEntry {
         ListEntry(

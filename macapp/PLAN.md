@@ -85,7 +85,7 @@ a drawn asset. A custom mark can replace it whenever one exists.
 {"entries": [{
   "app": "worktree-manager", "slug": "macapp", "slot": 3,
   "description": "...", "state": "active",
-  "path": "/Users/geoff/...", "path_visible": true,
+  "path": "/Users/alex/...", "path_visible": true,
   "owner": "...", "owner_kind": "host", "ephemeral": false,
   "created_at": "...", "last_seen": "...",
   "resources": {"web": {"type": "port", "value": 7843}},

@@ -49,7 +49,7 @@ app: bacio
 slug: brisk-otter
 slot: 7
 view: 2f9c...                    # M1 §5
-path: /Users/geoff/Repos/bacio/.claude/worktrees/brisk-otter
+path: /Users/alex/Repos/bacio/.claude/worktrees/brisk-otter
 standalone: false                # M1 §2.1 — declared once, read back thereafter
 description: "fix dispatch lease race"    # B11.16
 
@@ -57,14 +57,14 @@ resources:
   api: 5407
   proxy: 5406
   compose: bacio-brisk-otter
-  db: /Users/geoff/.bacio/db.sqlite
+  db: /Users/alex/.bacio/db.sqlite
 
 state:
   db: { isolated: false }
   seeded: null
 
 shared:                          # B11.4 — half generated (M3 §6), half from the spec
-  - name: /Users/geoff/.bacio/db.sqlite
+  - name: /Users/alex/.bacio/db.sqlite
     impact: writes are visible to every worktree and the main checkout
 
 extras: {}                       # B17.5

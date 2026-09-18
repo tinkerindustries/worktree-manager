@@ -59,7 +59,7 @@ func TestValidateSlugAgreesWithSpec(t *testing.T) {
 // TestDefaultSlug: the slug defaults to the worktree directory basename,
 // never the branch (01-identity.md §4.1).
 func TestDefaultSlug(t *testing.T) {
-	if got := DefaultSlug("/Users/geoff/Repos/bacio/.claude/worktrees/brisk-otter"); got != "brisk-otter" {
+	if got := DefaultSlug("/Users/alex/Repos/bacio/.claude/worktrees/brisk-otter"); got != "brisk-otter" {
 		t.Errorf("DefaultSlug = %q, want brisk-otter", got)
 	}
 	if got := DefaultSlug(filepath.Join(t.TempDir(), "alpha")); got != "alpha" {

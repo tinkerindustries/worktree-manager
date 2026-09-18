@@ -30,8 +30,8 @@ forced first, teardown in reverse, the reverse-order rollback),
 overlap probe against the fake docker, the loud shared-pool fallback and
 the fail mode) and `machine_test.go` — the phase-8 capacity guard,
 ordering, keep flag and bypass command, proved against a fake
-`platform.MachineRunner` (the live Colima path cannot run on this Linux
-machine and is reported not_run; the seam's parsing half is pinned in
+`platform.MachineRunner` (the live Colima path cannot run on
+Linux and is reported not_run; the seam's parsing half is pinned in
 `internal/platform/machine_test.go`).
 
 Run one test:

@@ -15,7 +15,7 @@ final class WtClientTests: XCTestCase {
         {"entries": [{
           "app": "worktree-manager", "slug": "macapp", "slot": 3,
           "state": "active", "path": "/tmp/macapp", "path_visible": true,
-          "owner": "geoff", "owner_kind": "host", "ephemeral": false,
+          "owner": "alex", "owner_kind": "host", "ephemeral": false,
           "created_at": "2026-08-01T00:00:00Z", "last_seen": "2026-08-27T00:00:00Z",
           "resources": {}
         }]}

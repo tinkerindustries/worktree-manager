@@ -60,7 +60,7 @@ So the probe sets `SO_REUSEADDR` on unix and leaves it unset on Windows. This is
 
 ### 4.2 Containment must match the filesystem's casing
 
-M1 §3.1's containment test decides whether an agent's write lands inside its worktree. A case-sensitive comparison on a case-insensitive filesystem can be walked straight past, because `/Users/geoff/repos/...` and `/Users/geoff/Repos/...` are the same directory on APFS and on NTFS and differ as strings.
+M1 §3.1's containment test decides whether an agent's write lands inside its worktree. A case-sensitive comparison on a case-insensitive filesystem can be walked straight past, because `/Users/alex/repos/...` and `/Users/alex/Repos/...` are the same directory on APFS and on NTFS and differ as strings.
 
 The comparison follows the filesystem, not the operating system, since a case-sensitive volume on macOS is a supported configuration. That means probing the actual mount rather than assuming from `GOOS`.
 

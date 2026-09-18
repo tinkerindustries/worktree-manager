@@ -167,7 +167,7 @@ func runScript(t *testing.T, body []byte, wt string, env []string, stdin string)
 // silently drops every backslash before the hook script ever runs.
 func TestRegisteredCommandSurvivesShellParsing(t *testing.T) {
 	sh := shellForHook(t)
-	path := `C:\Users\geoff\.claude\hooks\wt-worktree-create.sh`
+	path := `C:\Users\alex\.claude\hooks\wt-worktree-create.sh`
 	cmd := exec.Command(sh, "-c", "printf '%s' "+shellQuote(path))
 	out, err := cmd.Output()
 	if err != nil {

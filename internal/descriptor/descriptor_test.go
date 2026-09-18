@@ -16,7 +16,7 @@ const sampleYAML = `version: 1
 app: bacio
 slug: brisk-otter
 slot: 7
-path: /Users/geoff/Repos/bacio/.claude/worktrees/brisk-otter
+path: /Users/alex/Repos/bacio/.claude/worktrees/brisk-otter
 standalone: false
 description: fix dispatch lease race
 resources:
@@ -28,13 +28,13 @@ resources:
     value: bacio-brisk-otter
   db:
     type: state-path
-    value: /Users/geoff/.bacio/db.sqlite
+    value: /Users/alex/.bacio/db.sqlite
 state:
   db:
     isolated: false
   seeded: null
 shared:
-  - name: /Users/geoff/.bacio/db.sqlite
+  - name: /Users/alex/.bacio/db.sqlite
     impact: writes are visible to every worktree and the main checkout
 extras:
   harness.notes: seeded from prod snapshot
@@ -45,16 +45,16 @@ const sampleJSON = `{
   "app": "bacio",
   "slug": "brisk-otter",
   "slot": 7,
-  "path": "/Users/geoff/Repos/bacio/.claude/worktrees/brisk-otter",
+  "path": "/Users/alex/Repos/bacio/.claude/worktrees/brisk-otter",
   "standalone": false,
   "description": "fix dispatch lease race",
   "resources": {
     "api": {"type": "port", "value": 5407},
     "compose": {"type": "namespace", "value": "bacio-brisk-otter"},
-    "db": {"type": "state-path", "value": "/Users/geoff/.bacio/db.sqlite"}
+    "db": {"type": "state-path", "value": "/Users/alex/.bacio/db.sqlite"}
   },
   "state": {"db": {"isolated": false}, "seeded": null},
-  "shared": [{"name": "/Users/geoff/.bacio/db.sqlite", "impact": "writes are visible to every worktree and the main checkout"}],
+  "shared": [{"name": "/Users/alex/.bacio/db.sqlite", "impact": "writes are visible to every worktree and the main checkout"}],
   "extras": {"harness.notes": "seeded from prod snapshot"}
 }
 `
@@ -73,7 +73,7 @@ func checkSample(t *testing.T, d *Descriptor) {
 	if d.Version != 1 || d.App != "bacio" || d.Slug != "brisk-otter" || d.Slot != 7 {
 		t.Errorf("header = %+v", d)
 	}
-	if d.Path != "/Users/geoff/Repos/bacio/.claude/worktrees/brisk-otter" || d.Standalone || d.Description != "fix dispatch lease race" {
+	if d.Path != "/Users/alex/Repos/bacio/.claude/worktrees/brisk-otter" || d.Standalone || d.Description != "fix dispatch lease race" {
 		t.Errorf("identity fields = %+v", d)
 	}
 	if d.Resources["api"].Value != 5407 {
@@ -88,7 +88,7 @@ func checkSample(t *testing.T, d *Descriptor) {
 	if d.State["seeded"] != nil {
 		t.Errorf("state.seeded = %+v, want null", d.State["seeded"])
 	}
-	if len(d.Shared) != 1 || d.Shared[0].Name != "/Users/geoff/.bacio/db.sqlite" || !strings.Contains(d.Shared[0].Impact, "every worktree") {
+	if len(d.Shared) != 1 || d.Shared[0].Name != "/Users/alex/.bacio/db.sqlite" || !strings.Contains(d.Shared[0].Impact, "every worktree") {
 		t.Errorf("shared = %+v", d.Shared)
 	}
 	if d.Extras["harness.notes"] != "seeded from prod snapshot" {

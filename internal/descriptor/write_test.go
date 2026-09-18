@@ -20,20 +20,20 @@ func fullDescriptor() *Descriptor {
 		App:         "compose-app",
 		Slug:        "no",
 		Slot:        7,
-		Path:        "/Users/geoff/Repos/compose-app/.claude/worktrees/no",
+		Path:        "/Users/alex/Repos/compose-app/.claude/worktrees/no",
 		Standalone:  false,
 		Description: "fix dispatch lease race",
 		Resources: map[string]spec.Resolved{
 			"api":          {Type: "port", Value: 5407},
 			"compose":      {Type: "namespace", Value: "compose-app-no-7"},
-			"db":           {Type: "state-path", Value: "/Users/geoff/.compose-app/worktrees/no-7/db.sqlite"},
+			"db":           {Type: "state-path", Value: "/Users/alex/.compose-app/worktrees/no-7/db.sqlite"},
 			"compose_test": {Type: "namespace", Value: "compose-app-no-7-test"},
 		},
 		State: map[string]*Isolation{
 			"db": {Isolated: &isolated},
 		},
 		Shared: []Shared{{
-			Name:   "/Users/geoff/.compose-app/db.sqlite",
+			Name:   "/Users/alex/.compose-app/db.sqlite",
 			Impact: "writes are visible to every worktree and the main checkout",
 		}},
 		Extras: map[string]any{
@@ -97,7 +97,7 @@ func TestWriteRoundTrip(t *testing.T) {
 			if back.State["db"] == nil || back.State["db"].Isolated == nil || *back.State["db"].Isolated {
 				t.Errorf("state.db = %+v, want isolated: false", back.State["db"])
 			}
-			if len(back.Shared) != 1 || back.Shared[0].Name != "/Users/geoff/.compose-app/db.sqlite" {
+			if len(back.Shared) != 1 || back.Shared[0].Name != "/Users/alex/.compose-app/db.sqlite" {
 				t.Errorf("shared = %+v", back.Shared)
 			}
 			if back.Extras["harness.notes"] != "seeded from prod snapshot" {
@@ -196,7 +196,7 @@ func TestBuildSharedCarriesBothHalves(t *testing.T) {
 	if err := spec.Validate(s); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
-	ctx := spec.Context{Slug: "brisk-otter", Slot: 3, Home: "/Users/geoff", Worktree: "/Users/geoff/wt/brisk-otter"}
+	ctx := spec.Context{Slug: "brisk-otter", Slot: 3, Home: "/Users/alex", Worktree: "/Users/alex/wt/brisk-otter"}
 	resolved, err := spec.Resolve(s, spec.Context{
 		App: s.App, Slug: ctx.Slug, Slot: ctx.Slot, Home: ctx.Home, Worktree: ctx.Worktree,
 		Bases: map[string]int{"api": 4200},
@@ -221,7 +221,7 @@ func TestBuildSharedCarriesBothHalves(t *testing.T) {
 		t.Fatalf("block has %d entries, want 2 (one generated, one hand-authored): %+v", len(block), block)
 	}
 	// The generated half: the resolved path and the impact text.
-	if block[0].Name != "/Users/geoff/.plain-app/shared/db.sqlite" {
+	if block[0].Name != "/Users/alex/.plain-app/shared/db.sqlite" {
 		t.Errorf("generated entry name = %q", block[0].Name)
 	}
 	if !strings.Contains(block[0].Impact, "not isolated") {
@@ -245,7 +245,7 @@ func TestBuildSharedRefusesSilentOmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := spec.Context{Slug: "brisk-otter", Slot: 3, Home: "/Users/geoff", Worktree: "/Users/geoff/wt/brisk-otter"}
+	ctx := spec.Context{Slug: "brisk-otter", Slot: 3, Home: "/Users/alex", Worktree: "/Users/alex/wt/brisk-otter"}
 	resolved, err := spec.Resolve(s, spec.Context{
 		App: s.App, Slug: ctx.Slug, Slot: ctx.Slot, Home: ctx.Home, Worktree: ctx.Worktree,
 		Bases: map[string]int{"api": 4200},

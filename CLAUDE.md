@@ -127,7 +127,7 @@ configuration; neither binary branches on repo identity.
   never mistaken for a boot in progress, with the child's output kept in
   `<store root>/logs/machine-<instance>.log`), `--keep-vm`, and the
   documented bypass — are proved against a fake `platform.MachineRunner`;
-  the live Colima path is reported not_run on this machine. A namespace
+  the live Colima path is reported not_run. A namespace
   resource may declare `machine:`, naming the machine resource its
   compose project lives inside; every docker call the namespace driver
   makes on that resource's behalf runs against the bound machine's own
