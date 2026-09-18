@@ -566,7 +566,7 @@ Every request carries `Authorization: Bearer`, compared in constant time, with o
 
 The client never retries. A retried `allocate` would double-allocate, and the socket's unambiguous failure is a property worth keeping.
 
-Path-containment casing is the one platform detail carrying a security property, and it sits in the client. A case-sensitive comparison on a case-insensitive filesystem can be walked straight past, because `/Users/geoff/repos/…` and `/Users/geoff/Repos/…` name the same directory on APFS and NTFS while differing as strings. The comparison follows the filesystem, probed at the mount, since a case-sensitive volume on macOS is a supported configuration.
+Path-containment casing is the one platform detail carrying a security property, and it sits in the client. A case-sensitive comparison on a case-insensitive filesystem can be walked straight past, because `/Users/alex/repos/…` and `/Users/alex/Repos/…` name the same directory on APFS and NTFS while differing as strings. The comparison follows the filesystem, probed at the mount, since a case-sensitive volume on macOS is a supported configuration.
 
 ### 12.3 Which environment variables may be ambient
 

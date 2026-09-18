@@ -32,10 +32,10 @@ func plainEnv() *spec.EnvEmit {
 }
 
 func plainCtx() (spec.Context, map[string]spec.Resolved) {
-	ctx := spec.Context{App: "plain-app", Slug: "brisk-otter", Slot: 3, Home: "/Users/geoff", Worktree: "/Users/geoff/wt/brisk-otter"}
+	ctx := spec.Context{App: "plain-app", Slug: "brisk-otter", Slot: 3, Home: "/Users/alex", Worktree: "/Users/alex/wt/brisk-otter"}
 	resolved := map[string]spec.Resolved{
 		"api": {Type: "port", Value: 4203},
-		"db":  {Type: "state-path", Value: "/Users/geoff/.plain-app/worktrees/brisk-otter-3/db.sqlite"},
+		"db":  {Type: "state-path", Value: "/Users/alex/.plain-app/worktrees/brisk-otter-3/db.sqlite"},
 	}
 	return ctx, resolved
 }
@@ -66,7 +66,7 @@ func TestManagedKeyAboveBlockIsStripped(t *testing.T) {
 API_PORT=9999
 # --- managed by wt; edits below are overwritten ---
 API_PORT=4203
-DB_PATH=/Users/geoff/.plain-app/worktrees/brisk-otter-3/db.sqlite
+DB_PATH=/Users/alex/.plain-app/worktrees/brisk-otter-3/db.sqlite
 # --- end ---
 DB_PATH=/stale
 FOO=bar

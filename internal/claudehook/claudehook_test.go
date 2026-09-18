@@ -576,7 +576,7 @@ func TestInstallMigratesAnUnquotedRegistrationToShellQuoted(t *testing.T) {
 // shellQuote and shellUnquote unchanged, because those backslashes are
 // exactly what an unquoted registration loses to sh's escape processing.
 func TestShellQuoteSurvivesAWindowsPath(t *testing.T) {
-	path := `C:\Users\geoff\.claude\hooks\wt-worktree-create.sh`
+	path := `C:\Users\alex\.claude\hooks\wt-worktree-create.sh`
 	quoted := shellQuote(path)
 	got, ok := shellUnquote(quoted)
 	if !ok {

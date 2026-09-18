@@ -16,9 +16,9 @@ final class ModelsTests: XCTestCase {
         {"entries": [{
           "app": "worktree-manager", "slug": "macapp", "slot": 3,
           "description": "the menu bar app", "state": "active",
-          "path": "/Users/geoff/Repos/worktree-manager/.claude/worktrees/macapp",
+          "path": "/Users/alex/Repos/worktree-manager/.claude/worktrees/macapp",
           "path_visible": true,
-          "owner": "geoff", "owner_kind": "host", "ephemeral": false,
+          "owner": "alex", "owner_kind": "host", "ephemeral": false,
           "created_at": "2026-08-01T00:00:00Z", "last_seen": "2026-08-27T00:00:00Z",
           "resources": {
             "web": {"type": "port", "value": 7843},
@@ -56,9 +56,9 @@ final class ModelsTests: XCTestCase {
         {"entries": [{
           "app": "worktree-manager", "slug": "old-experiment", "slot": 1,
           "state": "active",
-          "path": "/Users/geoff/Repos/worktree-manager/.claude/worktrees/old-experiment",
+          "path": "/Users/alex/Repos/worktree-manager/.claude/worktrees/old-experiment",
           "path_visible": true,
-          "owner": "geoff", "owner_kind": "host", "ephemeral": false,
+          "owner": "alex", "owner_kind": "host", "ephemeral": false,
           "created_at": "2026-01-01T00:00:00Z", "last_seen": "2026-01-02T00:00:00Z",
           "resources": {},
           "flags": ["stale"]

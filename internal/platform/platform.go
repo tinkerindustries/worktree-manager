@@ -88,8 +88,8 @@ func SamePath(a, b string) (bool, error) {
 
 // canonical applies the platform's path canonicalisation on top of symlink
 // resolution. On macOS, /System/Volumes/Data is a firmlink rather than a
-// symlink — EvalSymlinks does not resolve it — so /Users/geoff and
-// /System/Volumes/Data/Users/geoff name the same directory while differing as
+// symlink — EvalSymlinks does not resolve it — so /Users/alex and
+// /System/Volumes/Data/Users/alex name the same directory while differing as
 // strings. Stripping the prefix is the platform's own canonical form
 // (08-platform.md §3, "Path realisation": resolve /tmp, /System/Volumes/Data).
 // This is the only GOOS branch in the package.
@@ -111,7 +111,7 @@ func canonical(p string) string {
 //
 // Containment must follow the filesystem, not the operating system: a
 // case-sensitive comparison on a case-insensitive mount can be walked straight
-// past, because /Users/geoff/repos/x and /Users/geoff/Repos/x are the same
+// past, because /Users/alex/repos/x and /Users/alex/Repos/x are the same
 // directory on APFS and NTFS and differ as strings (08-platform.md §4.2). A
 // case-sensitive volume on macOS is supported, so the probe runs against the
 // actual mount rather than assuming from GOOS. Windows is the one platform
