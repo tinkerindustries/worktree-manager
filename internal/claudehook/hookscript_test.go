@@ -308,42 +308,147 @@ func TestCreateRefusesAnUnresolvableNamedBase(t *testing.T) {
 	}
 }
 
-// TestCreateRefusesAnExistingBranch: the hook creates branches and never
-// checks out an existing one. Adopting silently is not what the caller
-// asked for, and the collision surfaces much later as a rejected push.
-func TestCreateRefusesAnExistingBranch(t *testing.T) {
+// TestCreateChecksOutAnExistingBranch: a branch of the name asked for is
+// adopted rather than refused. Refusing cost the caller a worktree over a
+// name it did not choose, and a worktree removed earlier leaves its branch
+// behind — the case this exists for.
+func TestCreateChecksOutAnExistingBranch(t *testing.T) {
 	wt := wtBinary(t)
 	root := repo(t, adoptedSpec+"worktrees:\n  base: main\n")
-	git(t, root, "branch", "taken")
+	// A commit that exists only on the branch, so the worktree arriving on
+	// the branch's tip is observed rather than assumed.
+	tree := git(t, root, "rev-parse", "HEAD^{tree}")
+	tip := git(t, root, "commit-tree", tree, "-p", "HEAD", "-m", "work on the branch")
+	git(t, root, "update-ref", "refs/heads/taken", tip)
+
+	code, stdout, stderr := runCreate(t, wt, "taken", root, "WT_HOOK_NO_ENV=1")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr:\n%s", code, stderr)
+	}
+	path := strings.TrimSpace(stdout)
+	want := filepath.Join(root, ".claude", "worktrees", "taken")
+	if path != want {
+		t.Errorf("path = %q, want %q", path, want)
+	}
+	if got := git(t, path, "rev-parse", "HEAD"); got != tip {
+		t.Errorf("the worktree is at %s, want the branch's tip %s", got, tip)
+	}
+	if got := git(t, path, "rev-parse", "--abbrev-ref", "HEAD"); got != "taken" {
+		t.Errorf("branch = %q, want taken", got)
+	}
+	if !strings.Contains(stderr, "already exists in this repository") {
+		t.Errorf("adopting the branch was not stated: %q", stderr)
+	}
+}
+
+// TestCreateChecksOutABranchThatExistsOnOrigin: a branch of this name on
+// origin passes every local check, and the hook used to refuse it because
+// committing onto somebody else's branch surfaces later as a rejected push.
+// It is fetched and adopted now, so the local branch starts at origin's tip
+// and the push that follows is a fast-forward.
+func TestCreateChecksOutABranchThatExistsOnOrigin(t *testing.T) {
+	wt := wtBinary(t)
+	origin := repo(t, "")
+	git(t, origin, "branch", "theirs")
+	originTip := git(t, origin, "rev-parse", "theirs")
+	root := repo(t, adoptedSpec+"worktrees:\n  base: main\n")
+	git(t, root, "remote", "add", "origin", origin)
+
+	code, stdout, stderr := runCreate(t, wt, "theirs", root, "WT_HOOK_NO_ENV=1")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr:\n%s", code, stderr)
+	}
+	path := strings.TrimSpace(stdout)
+	if got := git(t, path, "rev-parse", "HEAD"); got != originTip {
+		t.Errorf("the worktree is at %s, want origin's theirs at %s", got, originTip)
+	}
+	if got := git(t, path, "rev-parse", "--abbrev-ref", "theirs@{upstream}"); got != "origin/theirs" {
+		t.Errorf("upstream = %q, want origin/theirs, so a push from here goes to origin's branch", got)
+	}
+	if !strings.Contains(stderr, "exists on origin") {
+		t.Errorf("the remote adopt was not stated: %q", stderr)
+	}
+}
+
+// A branch already fetched but not checked out here is adopted from the
+// remote-tracking ref, the case ls-remote does not have to answer.
+func TestCreateAdoptsAFetchedRemoteBranch(t *testing.T) {
+	wt := wtBinary(t)
+	origin := repo(t, "")
+	git(t, origin, "branch", "theirs")
+	originTip := git(t, origin, "rev-parse", "theirs")
+	root := repo(t, adoptedSpec+"worktrees:\n  base: main\n")
+	git(t, root, "remote", "add", "origin", origin)
+	git(t, root, "fetch", "--quiet", "origin", "theirs")
+
+	code, stdout, stderr := runCreate(t, wt, "theirs", root, "WT_HOOK_NO_ENV=1")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr:\n%s", code, stderr)
+	}
+	path := strings.TrimSpace(stdout)
+	if got := git(t, path, "rev-parse", "HEAD"); got != originTip {
+		t.Errorf("the worktree is at %s, want origin's theirs at %s", got, originTip)
+	}
+	if got := git(t, path, "rev-parse", "--abbrev-ref", "theirs@{upstream}"); got != "origin/theirs" {
+		t.Errorf("upstream = %q, want origin/theirs", got)
+	}
+}
+
+// An existing branch that is behind its upstream is checked out where it
+// stands — the hook does not move somebody's branch — and the position is
+// stated, because that is the state a push is rejected from.
+func TestCreateSaysWhenTheAdoptedBranchIsBehind(t *testing.T) {
+	wt := wtBinary(t)
+	origin := repo(t, "")
+	git(t, origin, "branch", "taken")
+	root := repo(t, adoptedSpec+"worktrees:\n  base: main\n")
+	git(t, root, "remote", "add", "origin", origin)
+	git(t, root, "fetch", "--quiet", "origin", "taken")
+	git(t, root, "branch", "taken", "origin/taken")
+	local := git(t, root, "rev-parse", "taken")
+
+	// Origin moves on, and this repository fetches the movement without
+	// merging it into the branch the worktree is about to check out.
+	tree := git(t, origin, "rev-parse", "taken^{tree}")
+	ahead := git(t, origin, "commit-tree", tree, "-p", "taken", "-m", "ahead")
+	git(t, origin, "update-ref", "refs/heads/taken", ahead)
+	git(t, root, "fetch", "--quiet", "origin", "taken")
+
+	code, stdout, stderr := runCreate(t, wt, "taken", root, "WT_HOOK_NO_ENV=1")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr:\n%s", code, stderr)
+	}
+	if got := git(t, strings.TrimSpace(stdout), "rev-parse", "HEAD"); got != local {
+		t.Errorf("the worktree is at %s, want the local branch %s, which the hook does not move", got, local)
+	}
+	if !strings.Contains(stderr, "behind origin/taken") {
+		t.Errorf("the branch's position was not stated: %q", stderr)
+	}
+}
+
+// One branch cannot be checked out in two worktrees, and git's own refusal
+// names neither the worktree holding it nor the way out. The hook names both.
+func TestCreateRefusesABranchCheckedOutElsewhere(t *testing.T) {
+	wt := wtBinary(t)
+	root := repo(t, adoptedSpec+"worktrees:\n  base: main\n")
+	held := filepath.Join(root, "elsewhere")
+	git(t, root, "worktree", "add", "-b", "taken", held)
 
 	code, stdout, stderr := runCreate(t, wt, "taken", root, "WT_HOOK_NO_ENV=1")
 	if code == 0 {
 		t.Fatalf("exit = 0, want a refusal; stdout %q", stdout)
 	}
-	if !strings.Contains(stderr, "already exists") {
-		t.Errorf("stderr = %q, want the collision named", stderr)
+	// Compared with the separators normalised: the path comes back from git's
+	// porcelain listing, which spells it with forward slashes on Windows while
+	// this process spelled the same directory with backslashes.
+	if !strings.Contains(filepath.ToSlash(stderr), "already checked out at "+filepath.ToSlash(held)) {
+		t.Errorf("stderr = %q, want the worktree holding the branch named", stderr)
+	}
+	if !strings.Contains(stderr, "wt rm") {
+		t.Errorf("the way out was not named: %q", stderr)
 	}
 	if _, err := os.Stat(filepath.Join(root, ".claude", "worktrees", "taken")); err == nil {
-		t.Error("a worktree was created onto an existing branch")
-	}
-}
-
-// The remote is consulted too. A branch of this name on origin passes every
-// local check and collides later; here origin is a real repository on disk,
-// so ls-remote answers for real.
-func TestCreateRefusesABranchThatExistsOnOrigin(t *testing.T) {
-	wt := wtBinary(t)
-	origin := repo(t, "")
-	git(t, origin, "branch", "theirs")
-	root := repo(t, adoptedSpec+"worktrees:\n  base: main\n")
-	git(t, root, "remote", "add", "origin", origin)
-
-	code, stdout, stderr := runCreate(t, wt, "theirs", root, "WT_HOOK_NO_ENV=1")
-	if code == 0 {
-		t.Fatalf("exit = 0, want a refusal; stdout %q", stdout)
-	}
-	if !strings.Contains(stderr, "already exists on origin") {
-		t.Errorf("stderr = %q, want the remote collision named", stderr)
+		t.Error("a worktree was created onto a branch another worktree holds")
 	}
 }
 
