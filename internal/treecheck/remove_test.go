@@ -60,8 +60,8 @@ func removeFixture(t *testing.T) (main, worktree string) {
 // wrong with it.
 func TestWorktreeRemoveRemovesTheTree(t *testing.T) {
 	main, worktree := removeFixture(t)
-	if err := WorktreeRemove(worktree, Git); err != nil {
-		t.Fatalf("WorktreeRemove(%s): %v", worktree, err)
+	if leftover, err := WorktreeRemove(worktree, Git); err != nil || leftover != "" {
+		t.Fatalf("WorktreeRemove(%s) = %q, %v", worktree, leftover, err)
 	}
 	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
 		t.Errorf("%s still exists after WorktreeRemove (stat err %v)", worktree, err)
@@ -84,7 +84,7 @@ func TestWorktreeRemoveIsNeverForced(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(worktree, "dirty.txt"), []byte("x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := WorktreeRemove(worktree, Git)
+	_, err := WorktreeRemove(worktree, Git)
 	if err == nil {
 		t.Fatal("WorktreeRemove removed a tree with an untracked file; it must never force")
 	}

@@ -84,8 +84,15 @@ configuration; neither binary branches on repo identity.
   its own answer), what gh reports about the branch's pull request, and
   the never-forced `git worktree remove` (run from the repository's main
   checkout, never from the tree it deletes — Windows will not remove a
-  directory a process is standing in). `wt rm`, `wt cleanup` and the
-  coordinator's sweep each keep their own policy over this one mechanism.
+  directory a process is standing in). Before git runs, the tree's
+  ignored files are moved into a `.wt-trash-<tree>-*` directory beside it;
+  git refusing moves them back, and git succeeding deletes them with
+  sixteen workers, which took a node_modules-heavy removal on Windows
+  from 29s to 14s. The deletion never descends through a symlink or a
+  junction. A trash directory that could not be fully deleted is reported
+  beside the success, not as a failure — the worktree is already gone.
+  `wt rm`, `wt cleanup` and the coordinator's sweep each keep their own
+  policy over this one mechanism.
   rm's policy is the repository's, from the spec's `removal:` block: each
   check either refuses (exit 3, or 4 when it could not run) or warns and
   lets rm continue, defaulting to refuse on uncommitted changes and warn

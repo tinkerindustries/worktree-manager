@@ -261,16 +261,27 @@ func isAuthFailure(lower string) bool {
 // working tree". platform.ExternalPath is the documented conversion out
 // (it is the identity on unix), applied once here so the three callers
 // cannot disagree about it.
-func WorktreeRemove(dir string, git Runner) error {
+//
+// The tree's ignored files are moved aside before git runs and deleted in
+// parallel after it succeeds (setaside.go), which is most of the time a
+// removal takes on Windows. When git refuses they are moved back. leftover
+// is the trash directory a successful removal could not finish deleting,
+// with the reason, or "": the worktree is gone either way, so it is
+// reported beside the success rather than as a failure.
+func WorktreeRemove(dir string, git Runner) (leftover string, err error) {
 	dir = platform.ExternalPath(dir)
+	aside := setAsideIgnored(dir, git)
 	if out, err := git(removeFrom(dir, git), "worktree", "remove", dir); err != nil {
 		text := strings.TrimSpace(string(out))
 		if text == "" {
 			text = err.Error()
 		}
-		return errors.New(text)
+		if rerr := aside.restore(); rerr != nil {
+			text += "; " + rerr.Error()
+		}
+		return "", errors.New(text)
 	}
-	return nil
+	return aside.discard(), nil
 }
 
 // removeFrom is the directory `git worktree remove` is run from, which

@@ -911,15 +911,20 @@ func ghRemedy(code int, detail string) string {
 
 // gitWorktreeRemove runs `git worktree remove <root>`, never with --force:
 // git refusing is signal that a check missed something (B11.11), and the
-// refusal is reported as itself.
+// refusal is reported as itself. A removal that succeeded but could not
+// finish deleting the tree's ignored files names what it left.
 func gitWorktreeRemove(root string, stderr io.Writer) int {
-	if err := treecheck.WorktreeRemove(root, treecheck.Git); err != nil {
+	leftover, err := treecheck.WorktreeRemove(root, treecheck.Git)
+	if err != nil {
 		e := New(ExitFailure,
 			fmt.Sprintf("git worktree remove refused to remove %s: %s — git refusing indicates a safety check missed something; nothing was forced",
 				root, err),
 			"resolve what git names, then re-run rm")
 		WriteError(stderr, e)
 		return e.Code
+	}
+	if leftover != "" {
+		fmt.Fprintf(stderr, "warning: the worktree is removed, but its ignored files could not all be deleted: %s — delete that directory yourself\n", leftover)
 	}
 	return ExitOK
 }

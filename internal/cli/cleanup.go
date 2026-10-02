@@ -292,8 +292,12 @@ func cleanupGitRemoveDetail(e api.ListEntry) string {
 	if isStandalone(e.Path) {
 		return "; the tree is a standalone clone, not a git worktree; its directory is left in place"
 	}
-	if err := treecheck.WorktreeRemove(e.Path, treecheck.Git); err != nil {
+	leftover, err := treecheck.WorktreeRemove(e.Path, treecheck.Git)
+	if err != nil {
 		return fmt.Sprintf("; the entry is gone but git refused to remove the tree (%s); nothing was forced", err)
+	}
+	if leftover != "" {
+		return fmt.Sprintf("; git worktree remove ran, but its ignored files could not all be deleted: %s", leftover)
 	}
 	return "; git worktree remove ran"
 }

@@ -158,10 +158,15 @@ func (h *Handler) SweepCleanup() (int, error) {
 		// The git half: `git worktree remove`, never --force — git
 		// refusing is signal that a check missed something, and the sweep
 		// reports it and leaves the tree alone.
-		if rerr := treecheck.WorktreeRemove(path, treecheck.Git); rerr != nil {
+		leftover, rerr := treecheck.WorktreeRemove(path, treecheck.Git)
+		if rerr != nil {
 			h.log.Warn("scheduled cleanup removed the entry but git refused to remove the worktree", "app", c.app, "slug", c.slug,
 				"git", rerr)
 			continue
+		}
+		if leftover != "" {
+			h.log.Warn("scheduled cleanup removed the worktree but not all of its ignored files", "app", c.app, "slug", c.slug,
+				"leftover", leftover)
 		}
 		h.log.Info("scheduled cleanup cleaned an entry", "app", c.app, "slug", c.slug, "worktree", path)
 	}

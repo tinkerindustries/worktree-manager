@@ -188,7 +188,13 @@ internal/treecheck  the checks that run before a worktree is
               requiring a merged pull request. The removal runs git from
               the repository's main checkout, never from the tree it is
               deleting: Windows will not remove a directory a process is
-              standing in. Both binaries link it
+              standing in. The tree's ignored files are moved into a
+              trash directory beside it before git runs, moved back if
+              git refuses, and deleted by sixteen workers if it
+              succeeds, because git deletes one file at a time and an
+              installed node_modules made that most of a removal's cost
+              on Windows. A directory link is only ever removed as a
+              link. Both binaries link it
 ```
 
 Import rules, fixed for the whole plan:
