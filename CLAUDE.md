@@ -240,7 +240,15 @@ configuration; neither binary branches on repo identity.
   call site that runs a helper goes through it, so what `wt doctor` reports
   reachable and what the drivers can actually run are the same binary.
   `HelperError` carries the child's stderr into the failure, because a
-  helper that fails from the inside puts the whole diagnosis there), `FileIdentity` (the dev/inode/mtime
+  helper that fails from the inside puts the whole diagnosis there),
+  `Command` and `CommandContext` (the one constructor every child process
+  goes through — `HelperCommand` and `ShellCommand` included — because a
+  `-H=windowsgui` `wtd` has no console, and Windows gives each console
+  child of such a process a visible window of its own; with no console
+  in the parent the child starts `CREATE_NO_WINDOW`, never
+  `DETACHED_PROCESS`, whose grandchildren would raise one again, and a
+  parent with a console is left alone so its children keep sharing it.
+  A test fails on a bare `exec.Command` anywhere else), `FileIdentity` (the dev/inode/mtime
   the guard cache validates against, from stat on unix and
   GetFileInformationByHandle on Windows), the
   listen-address and container-token rails (`ValidateListenAddr`,
@@ -430,7 +438,8 @@ configuration; neither binary branches on repo identity.
   binary, and `wtd`'s own account of itself moves to
   `<store root>/logs/wtd.log` accordingly (`cmd/wtd/main.go`), since a
   GUI-subsystem process started with no inherited console has no stderr to
-  reach),
+  reach, and its children are started through `platform.Command` so they
+  raise no window either),
   `install.sh`/`install.ps1` (verify the binaries against the archive's
   `SHA256SUMS` before copying — a missing manifest or a mismatched
   digest refuses, naming `--skip-verify`/`-SkipVerify` as the deliberate

@@ -1051,7 +1051,11 @@ The six rules of `docs/ARCHITECTURE.md` §8.6, stated as invariants:
   Doctor asks the same question the drivers do: every call site that runs
   a helper goes through `platform.HelperCommand`, which resolves the
   binary and prepends its own directory to the child's PATH, so a helper
-  doctor reports reachable is one the drivers can run.
+  doctor reports reachable is one the drivers can run. Every child
+  process, helper or not, is built by `platform.Command`: on Windows a
+  `wtd` without a console starts each child `CREATE_NO_WINDOW`, because
+  a console child of a console-less process otherwise opens a window of
+  its own.
 - The five environment variables read anywhere are `WT_ENDPOINT` (the
   coordinator's base URL), `WT_HOME`, `WT_STANDALONE`,
   `WT_CLIENT_EPHEMERAL` (`=1`) and `WT_CLIENT_TOKEN` (the container

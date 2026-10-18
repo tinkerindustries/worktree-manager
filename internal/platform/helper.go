@@ -75,7 +75,7 @@ func (e *HelperNotFoundError) Error() string {
 
 // LookHelper resolves a helper binary to an absolute path: the process
 // PATH first, then the platform's known install directories. The returned
-// path is absolute, so callers pass it to exec.Command directly rather
+// path is absolute, so callers pass it to Command directly rather
 // than re-resolving the bare name against the child's PATH.
 func LookHelper(name string) (string, error) {
 	return lookHelper(name, HelperDirs())
@@ -116,7 +116,7 @@ func lookHelper(name string, dirs []string) (string, error) {
 
 // HelperCommand resolves a helper binary and builds the command to run
 // it, with the helper's own directory prepended to the child's PATH. Every
-// call site that runs a helper uses this rather than exec.Command, because
+// call site that runs a helper uses this rather than Command, because
 // resolving the binary and giving it an environment it can work in are one
 // decision.
 //
@@ -136,7 +136,7 @@ func HelperCommand(name string, args ...string) (*exec.Cmd, error) {
 // HelperCommandAt is HelperCommand for a binary the caller has already
 // resolved, for a call site that runs several commands from one lookup.
 func HelperCommandAt(bin string, args ...string) *exec.Cmd {
-	cmd := exec.Command(bin, args...)
+	cmd := Command(bin, args...)
 	cmd.Env = helperEnv(os.Environ(), os.Getenv("PATH"), filepath.Dir(bin))
 	return cmd
 }

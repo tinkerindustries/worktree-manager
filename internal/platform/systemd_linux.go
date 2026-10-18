@@ -30,7 +30,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strconv"
@@ -55,7 +54,7 @@ func systemdUserDir(prefix string) (string, error) {
 
 // systemctl runs one systemctl --user invocation.
 func systemctl(args ...string) error {
-	cmd := exec.Command("systemctl", append([]string{"--user"}, args...)...)
+	cmd := Command("systemctl", append([]string{"--user"}, args...)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("systemctl --user %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
@@ -293,7 +292,7 @@ func systemdLinger() (bool, error) {
 		}
 		name = u.Username
 	}
-	out, err := exec.Command("loginctl", "show-user", name, "--property=Linger", "--value").Output()
+	out, err := Command("loginctl", "show-user", name, "--property=Linger", "--value").Output()
 	if err != nil {
 		return false, fmt.Errorf("loginctl show-user %s: %w", name, err)
 	}

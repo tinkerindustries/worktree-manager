@@ -35,7 +35,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"unicode/utf16"
@@ -145,7 +144,7 @@ func encodeUTF16LE(s string) []byte {
 
 // schtasks runs one schtasks invocation.
 func schtasks(args ...string) error {
-	cmd := exec.Command("schtasks", args...)
+	cmd := Command("schtasks", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("schtasks %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
@@ -221,7 +220,7 @@ func taskSchedulerRunning(prefix string) (bool, error) {
 	if prefix != "" {
 		return false, nil
 	}
-	out, err := exec.Command("schtasks", "/Query", "/TN", WindowsTaskName, "/FO", "LIST").Output()
+	out, err := Command("schtasks", "/Query", "/TN", WindowsTaskName, "/FO", "LIST").Output()
 	if err != nil {
 		// A task that does not exist makes schtasks exit non-zero: not
 		// running. Any other failure is treated the same way (false), the

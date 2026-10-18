@@ -7,9 +7,13 @@ import (
 	"syscall"
 )
 
-// startInOwnGroup makes the command a process-group leader.
+// startInOwnGroup makes the command a process-group leader, keeping
+// whatever else the caller already set in SysProcAttr.
 func startInOwnGroup(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Setpgid = true
 }
 
 // killGroup kills the whole process group: the negative pid form targets
