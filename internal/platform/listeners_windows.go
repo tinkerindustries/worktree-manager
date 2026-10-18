@@ -31,7 +31,7 @@ func listeners(ports []int) ([]Holder, error) {
 	for _, p := range ports {
 		want[p] = true
 	}
-	out, err := exec.Command(netstat, "-ano").Output()
+	out, err := Command(netstat, "-ano").Output()
 	if err != nil {
 		return nil, unavailableError("netstat", "it failed: "+strings.TrimSpace(string(errOutput(err))))
 	}
@@ -64,7 +64,7 @@ func listeners(ports []int) ([]Holder, error) {
 	}
 	var holders []Holder
 	for port, pid := range pidByPort {
-		cmd := exec.Command(tasklist, "/FO", "CSV", "/NH", "/FI", "PID eq "+strconv.Itoa(pid))
+		cmd := Command(tasklist, "/FO", "CSV", "/NH", "/FI", "PID eq "+strconv.Itoa(pid))
 		tout, terr := cmd.Output()
 		if terr != nil {
 			// The pid may have exited between netstat and tasklist; the
@@ -84,7 +84,7 @@ func allListeners() ([]Holder, error) {
 	if err != nil {
 		return nil, unavailableError("netstat", "it is not on PATH (netstat ships with Windows); install it, then re-run")
 	}
-	out, err := exec.Command(netstat, "-ano").Output()
+	out, err := Command(netstat, "-ano").Output()
 	if err != nil {
 		return nil, unavailableError("netstat", "it failed: "+strings.TrimSpace(string(errOutput(err))))
 	}
@@ -116,7 +116,7 @@ func allListeners() ([]Holder, error) {
 	}
 	var holders []Holder
 	for pid, ports := range portsByPid {
-		cmd := exec.Command(tasklist, "/FO", "CSV", "/NH", "/FI", "PID eq "+strconv.Itoa(pid))
+		cmd := Command(tasklist, "/FO", "CSV", "/NH", "/FI", "PID eq "+strconv.Itoa(pid))
 		tout, terr := cmd.Output()
 		if terr != nil {
 			continue // the pid exited between the two runs
@@ -147,12 +147,12 @@ func parseTasklistName(out string) string {
 // console applications do not receive and GUI applications may ignore
 // (08-platform.md §3). The coordinator reports which path it took.
 func signalTerm(pid int) error {
-	return exec.Command("taskkill", "/PID", strconv.Itoa(pid)).Run()
+	return Command("taskkill", "/PID", strconv.Itoa(pid)).Run()
 }
 
 // signalKill force-terminates with /F — the escalation after the wait.
 func signalKill(pid int) error {
-	return exec.Command("taskkill", "/F", "/PID", strconv.Itoa(pid)).Run()
+	return Command("taskkill", "/F", "/PID", strconv.Itoa(pid)).Run()
 }
 
 // alive reports whether the pid still has a tasklist entry.
@@ -165,7 +165,7 @@ func signalKill(pid int) error {
 // must not get wrong.
 func alive(pid int) bool {
 	want := strconv.Itoa(pid)
-	out, err := exec.Command("tasklist", "/FO", "CSV", "/NH", "/FI", "PID eq "+want).Output()
+	out, err := Command("tasklist", "/FO", "CSV", "/NH", "/FI", "PID eq "+want).Output()
 	if err != nil {
 		return false
 	}

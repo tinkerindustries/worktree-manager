@@ -5,7 +5,6 @@ package platform
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 )
@@ -17,7 +16,7 @@ func launchdDomain() string {
 }
 
 func launchctl(args ...string) error {
-	cmd := exec.Command("launchctl", args...)
+	cmd := Command("launchctl", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("launchctl %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
@@ -38,7 +37,7 @@ func launchctl(args ...string) error {
 // blaming the registration path. So bootout is followed by a poll until the
 // label is genuinely gone.
 func loadLaunchAgent(plistPath string) error {
-	exec.Command("launchctl", "bootout", launchdDomain()+"/"+LaunchAgentLabel).Run()
+	Command("launchctl", "bootout", launchdDomain()+"/"+LaunchAgentLabel).Run()
 	waitForLaunchdUnload()
 	if err := launchctl("bootstrap", launchdDomain(), plistPath); err != nil {
 		return fmt.Errorf("%w — if it reports \"Bootstrap failed: 5\", the agent is still loaded: run 'launchctl bootout %s/%s', then re-run",
@@ -70,14 +69,14 @@ func waitForLaunchdUnload() {
 // user's GUI domain, loaded in any state. `launchctl print` failing is the
 // signal that it is gone.
 func launchdKnowsLabel() bool {
-	return exec.Command("launchctl", "print", launchdDomain()+"/"+LaunchAgentLabel).Run() == nil
+	return Command("launchctl", "print", launchdDomain()+"/"+LaunchAgentLabel).Run() == nil
 }
 
 // launchdRunning asks launchd whether the agent is running, independent of
 // whether the socket answers — the observation daemon status needs in order
 // to distinguish "registered but stopped" from "running but unreachable".
 func launchdRunning() (bool, error) {
-	out, err := exec.Command("launchctl", "print", launchdDomain()+"/"+LaunchAgentLabel).Output()
+	out, err := Command("launchctl", "print", launchdDomain()+"/"+LaunchAgentLabel).Output()
 	if err != nil {
 		return false, nil // not loaded, or not in this domain: not running
 	}
@@ -103,7 +102,7 @@ func uninstallLaunchAgent(prefix string) (UninstallSupervisorResult, error) {
 		res.Removed, err = removeRegistrationFile(path)
 		return res, err
 	}
-	exec.Command("launchctl", "bootout", launchdDomain()+"/"+LaunchAgentLabel).Run()
+	Command("launchctl", "bootout", launchdDomain()+"/"+LaunchAgentLabel).Run()
 	waitForLaunchdUnload()
 	if launchdKnowsLabel() {
 		res.Note = fmt.Sprintf("launchd still reports the agent loaded; run 'launchctl bootout %s/%s' and check 'launchctl print %s/%s'",

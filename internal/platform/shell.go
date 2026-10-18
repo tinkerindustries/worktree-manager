@@ -36,5 +36,5 @@ func ShellCommand(ctx context.Context, cmdline string) (*exec.Cmd, error) {
 	if err != nil {
 		return nil, err
 	}
-	return exec.CommandContext(ctx, sh, "-c", cmdline), nil
+	return CommandContext(ctx, sh, "-c", cmdline), nil
 }
