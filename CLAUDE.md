@@ -242,7 +242,7 @@ configuration; neither binary branches on repo identity.
   `HelperError` carries the child's stderr into the failure, because a
   helper that fails from the inside puts the whole diagnosis there),
   `Command` and `CommandContext` (the one constructor every child process
-  goes through — `HelperCommand` and `ShellCommand` included — because a
+  goes through â€” `HelperCommand` and `ShellCommand` included â€” because a
   `-H=windowsgui` `wtd` has no console, and Windows gives each console
   child of such a process a visible window of its own; with no console
   in the parent the child starts `CREATE_NO_WINDOW`, never
