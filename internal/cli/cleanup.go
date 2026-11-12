@@ -281,9 +281,9 @@ func cleanupDecision(e api.ListEntry) cleanupRow {
 			pr.Describe(), strings.Join(slices.Sorted(maps.Keys(e.Resources)), ", "), e.Path)}
 }
 
-// cleanupGitRemoveDetail runs the git half of a cleaned entry — `git
-// worktree remove`, never --force (git refusing is signal that a check
-// missed something) — and returns the bounded-coverage statement the
+// cleanupGitRemoveDetail runs the git half of a cleaned entry —
+// treecheck.WorktreeRemove (git refusing is signal that a check missed
+// something) — and returns the bounded-coverage statement the
 // cleaned row carries.
 func cleanupGitRemoveDetail(e api.ListEntry) string {
 	if _, err := os.Stat(e.Path); err != nil {
