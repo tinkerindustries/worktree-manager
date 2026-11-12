@@ -2,9 +2,9 @@
 # WorktreeRemove hook, written by `wt claude install`. The mirror of
 # wt-worktree-create.sh: an adopted repository's worktree is torn down by
 # `wt rm`, which releases the allocated resources and then removes the
-# worktree, and every other repository's is removed by git. Neither is
-# forced, so uncommitted work in the worktree stops the removal and Claude
-# Code shows why.
+# worktree, and every other repository's by `wt claude remove-worktree`, or
+# by git where no wt is found. Uncommitted work in the worktree stops the
+# removal either way, and Claude Code shows why.
 #
 # Set WT_HOOK_RM_FLAGS=--force to downgrade wt rm's safety checks to
 # warnings for these hook-driven removals.
@@ -72,6 +72,23 @@ if [ -f "$root/wt.yaml" ] && [ -n "$wt" ] && [ -x "$wt" ]; then
     ;;
   *)
     die "wt rm failed to remove $path (exit $code); see the error above and $log_file"
+    ;;
+  esac
+elif [ -n "$wt" ] && [ -x "$wt" ]; then
+  # git refuses any worktree with an initialised submodule unless forced,
+  # however clean it is. wt checks the tree and the submodule clones the
+  # removal deletes, and forces only when both are clean.
+  code=0
+  "$wt" claude remove-worktree --path "$path" >&2 || code=$?
+  case "$code" in
+  0) ;;
+  2)
+    # A wt older than this hook has no remove-worktree verb.
+    git -C "$root" worktree remove "$path" >&2 \
+      || die "git worktree remove refused to remove $path"
+    ;;
+  *)
+    die "wt could not remove $path (exit $code); see the error above and $log_file"
     ;;
   esac
 else

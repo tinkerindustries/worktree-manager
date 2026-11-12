@@ -136,6 +136,12 @@ usage:
   wt claude uninstall [--json]       take the registration back out. The
       [--dry-run] [--force]          store, the registry and every
       [--skill=false] [--prefix <d>] allocated worktree are left alone
+  wt claude remove-worktree          the WorktreeRemove hook's removal for
+      --path <worktree> [--json]     a repository with no wt.yaml: git
+                                     worktree remove, forced only for a
+                                     clean tree with submodules whose
+                                     clones hold no commit off a remote.
+                                     No spec and no coordinator
   wt --version                      print the version and the commit, then
                                      exit (what an installer reports when
                                      it replaces an older wt)

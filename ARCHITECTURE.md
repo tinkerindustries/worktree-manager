@@ -893,6 +893,12 @@ The six rules of `docs/ARCHITECTURE.md` §8.6, stated as invariants:
   that does not parse refuses the write, and an event registered to
   somebody else's script is exit 3 naming `--force`. Neither touches the
   store, the registry or any allocated worktree.
+- `claude remove-worktree --path <dir>` is the remove script's removal for
+  a repository with no `wt.yaml`. It runs `treecheck.WorktreeRemove` on
+  the path, so a clean tree with submodules is removed there the same way
+  `wt rm` removes one. It needs no spec and no coordinator. The script
+  falls back to a plain `git worktree remove` when no `wt` is found, or
+  when the `wt` it finds answers exit 2 because it predates the verb.
 - Both answer one question about every file they find: is this wt's own to
   replace, or the user's to leave alone? Neither answers it by comparing
   content. A file that differs from what this build would write is *either*

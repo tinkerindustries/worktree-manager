@@ -544,3 +544,73 @@ func TestRemoveDistinguishesRefusedFromUnavailable(t *testing.T) {
 		t.Errorf("exit 4 was reported as a refusal: %q", stderr)
 	}
 }
+
+// unadoptedTreeWithSubmodule makes a repository with no wt.yaml, one
+// submodule, and a linked worktree whose submodule is initialised, and
+// returns the worktree. git refuses an unforced removal of that tree
+// however clean it is.
+func unadoptedTreeWithSubmodule(t *testing.T) string {
+	t.Helper()
+	sub := repo(t, "")
+	root := repo(t, "")
+	git(t, root, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "sub")
+	git(t, root, "commit", "-q", "-m", "add submodule")
+	tree := filepath.Join(t.TempDir(), "with-sub")
+	git(t, root, "worktree", "add", "-q", "-b", "with-sub", tree)
+	git(t, tree, "-c", "protocol.file.allow=always", "submodule", "update", "-q", "--init")
+	return tree
+}
+
+// TestRemoveUnadoptedTreeWithSubmodule: the hook's plain-repository path
+// goes through wt, which removes a clean tree with a submodule that a bare
+// `git worktree remove` refuses.
+func TestRemoveUnadoptedTreeWithSubmodule(t *testing.T) {
+	tree := unadoptedTreeWithSubmodule(t)
+	code, _, stderr := runRemove(t, wtBinary(t), tree)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0\n%s", code, stderr)
+	}
+	if _, err := os.Stat(tree); !os.IsNotExist(err) {
+		t.Errorf("%s still exists after the hook (stat err %v)", tree, err)
+	}
+}
+
+// TestRemoveUnadoptedRefusesADirtySubmodule: the forced path is gated on
+// the tree being clean, submodules included, and the refusal reaches
+// Claude Code.
+func TestRemoveUnadoptedRefusesADirtySubmodule(t *testing.T) {
+	tree := unadoptedTreeWithSubmodule(t)
+	if err := os.WriteFile(filepath.Join(tree, "sub", "dirty.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := runRemove(t, wtBinary(t), tree)
+	if code == 0 {
+		t.Fatal("exit = 0, want a refusal")
+	}
+	if _, err := os.Stat(filepath.Join(tree, "sub", "dirty.txt")); err != nil {
+		t.Errorf("the refused tree was removed anyway: %v", err)
+	}
+	if !strings.Contains(stderr, "modified or untracked files") {
+		t.Errorf("the refusal did not reach the hook's stderr: %q", stderr)
+	}
+}
+
+// TestRemoveUnadoptedFallsBackToGitForAnOlderWt: a wt that predates
+// remove-worktree answers the unknown verb with exit 2, and the hook then
+// removes the tree with git as it did before.
+func TestRemoveUnadoptedFallsBackToGitForAnOlderWt(t *testing.T) {
+	root := repo(t, "")
+	tree := filepath.Join(t.TempDir(), "plain")
+	git(t, root, "worktree", "add", "-q", "-b", "plain", tree)
+	old := filepath.Join(t.TempDir(), "wt")
+	if err := os.WriteFile(old, []byte("#!/bin/sh\necho 'unknown claude verb' >&2\nexit 2\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := runRemove(t, old, tree)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0\n%s", code, stderr)
+	}
+	if _, err := os.Stat(tree); !os.IsNotExist(err) {
+		t.Errorf("%s still exists after the fallback (stat err %v)", tree, err)
+	}
+}
