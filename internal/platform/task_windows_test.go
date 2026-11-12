@@ -24,7 +24,7 @@ import (
 // TCP surface configured, the Arguments carry --tcp and --tcp-token.
 func TestWindowsTaskXMLShape(t *testing.T) {
 	wtd := `C:\Program Files\wt\wtd.exe`
-	raw := windowsTaskXML(wtd, "", "", nil)
+	raw := windowsTaskXML(wtd, `EXAMPLE\person`, "", "", nil)
 	if len(raw) < 2 || raw[0] != 0xFF || raw[1] != 0xFE {
 		t.Error("task XML lacks the UTF-16LE byte-order mark")
 	}
@@ -39,6 +39,9 @@ func TestWindowsTaskXMLShape(t *testing.T) {
 	for _, want := range []string{
 		`encoding="UTF-16"`,
 		"<LogonTrigger>",
+		// A trigger naming no user is "any user's logon", which the Task
+		// Scheduler refuses to register without elevation.
+		`<UserId>EXAMPLE\person</UserId>`,
 		"<LogonType>InteractiveToken</LogonType>",
 		"<RunLevel>LeastPrivilege</RunLevel>",
 		"<Command>" + wtd + "</Command>",
@@ -57,7 +60,7 @@ func TestWindowsTaskXMLShape(t *testing.T) {
 	// The TCP variant carries the surface's configuration in the action's
 	// Arguments — the token is validated whitespace-free so it stays one
 	// argument in the task's command line.
-	raw2 := windowsTaskXML(wtd, "127.0.0.1:7331", "tcp-token-0123456789abcdef", []string{"host.docker.internal"})
+	raw2 := windowsTaskXML(wtd, `EXAMPLE\person`, "127.0.0.1:7331", "tcp-token-0123456789abcdef", []string{"host.docker.internal"})
 	u2 := make([]uint16, len(raw2)/2)
 	for i := range u2 {
 		u2[i] = uint16(raw2[2*i]) | uint16(raw2[2*i+1])<<8

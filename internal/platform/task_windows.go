@@ -32,11 +32,15 @@ package platform
 // exactly as the plist does on macOS.
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf16"
 )
 
@@ -66,7 +70,15 @@ func windowsTaskDir(prefix string) (string, error) {
 // admits no container while looking like it does. The token is validated
 // to contain no whitespace, which is what keeps it one argument in the
 // task's command line.
-func windowsTaskXML(wtdPath, addr, containerToken string, allowedHosts []string) []byte {
+//
+// The LogonTrigger names the user it fires for. A trigger with no UserId
+// means "at logon of any user", and the Task Scheduler refuses to register
+// that without elevation — schtasks /Create answers "Access is denied" —
+// which is what made an unelevated `wt daemon install` fail while an
+// elevated one succeeded and left an administrator-owned task behind.
+// Scoped to the installing user, the task registers unelevated, which is
+// the logon task's whole case over a service.
+func windowsTaskXML(wtdPath, logonUser, addr, containerToken string, allowedHosts []string) []byte {
 	var flags []string
 	if addr != "" {
 		flags = append(flags, "--addr", xmlEscape(addr))
@@ -89,6 +101,7 @@ func windowsTaskXML(wtdPath, addr, containerToken string, allowedHosts []string)
   <Triggers>
     <LogonTrigger>
       <Enabled>true</Enabled>
+      <UserId>%s</UserId>
     </LogonTrigger>
   </Triggers>
   <Principals>
@@ -127,7 +140,7 @@ func windowsTaskXML(wtdPath, addr, containerToken string, allowedHosts []string)
     </Exec>
   </Actions>
 </Task>
-`, xmlEscape(wtdPath), args)
+`, xmlEscape(logonUser), xmlEscape(wtdPath), args)
 	return encodeUTF16LE(xml)
 }
 
@@ -174,8 +187,14 @@ func installWindowsTask(prefix, wtdPath, addr, containerToken string, allowedHos
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return InstallSupervisorResult{}, fmt.Errorf("creating the task registration directory %s: %w", dir, err)
 	}
+	// The account running the install, as DOMAIN\user: the form the
+	// trigger's UserId takes.
+	u, err := user.Current()
+	if err != nil {
+		return InstallSupervisorResult{}, fmt.Errorf("resolving the user the logon task starts for: %w", err)
+	}
 	xmlPath := filepath.Join(dir, WindowsTaskFilename)
-	if err := os.WriteFile(xmlPath, windowsTaskXML(wtdPath, addr, containerToken, allowedHosts), 0o600); err != nil {
+	if err := os.WriteFile(xmlPath, windowsTaskXML(wtdPath, u.Username, addr, containerToken, allowedHosts), 0o600); err != nil {
 		return InstallSupervisorResult{}, fmt.Errorf("writing %s: %w", xmlPath, err)
 	}
 	if prefix != "" {
@@ -196,6 +215,7 @@ func installWindowsTask(prefix, wtdPath, addr, containerToken string, allowedHos
 	// the new one; /Run would otherwise be ignored under IgnoreNew. A task
 	// that is not running makes this fail, which is expected and ignored.
 	_ = schtasks("/End", "/TN", WindowsTaskName)
+	waitAddrReleased(addr)
 	if err := schtasks("/Run", "/TN", WindowsTaskName); err != nil {
 		return InstallSupervisorResult{RegistrationPath: xmlPath, Label: WindowsTaskName},
 			fmt.Errorf("starting the coordinator's logon task: %w", err)
@@ -204,6 +224,34 @@ func installWindowsTask(prefix, wtdPath, addr, containerToken string, allowedHos
 		RegistrationPath: xmlPath, Label: WindowsTaskName, Loaded: true,
 		Note: "registered as a logon scheduled task (runs in your interactive session, where Docker Desktop and WSL2 live); the service-under-the-user-account alternative would buy the SCM's restart handling at the cost of an elevated install and session-0 reachability workarounds",
 	}, nil
+}
+
+// waitAddrReleased waits, bounded, until the coordinator's listen address
+// can be bound. schtasks /End returns — and the task stops reporting
+// Running — before the ended wtd has let go of its listener, so a /Run
+// issued straight after it starts a coordinator that finds the port taken
+// and exits, while schtasks reports SUCCESS and the install reports the
+// task loaded. The address, not the task state, is what the new instance
+// needs, so the address is what is waited on. The probe binds it exactly
+// as wtd will (the same listener control ProbeBind uses) and closes it at
+// once. An empty address (none pinned) or a bind failing for any other
+// reason ends the wait: the wait only removes the race, it never refuses.
+func waitAddrReleased(addr string) {
+	if addr == "" {
+		return
+	}
+	lc := net.ListenConfig{Control: probeControl()}
+	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); {
+		l, err := lc.Listen(context.Background(), "tcp", addr)
+		if err == nil {
+			_ = l.Close()
+			return
+		}
+		if !isAddrInUse(err) {
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 }
 
 // taskSchedulerRunning asks the Task Scheduler whether the task is
