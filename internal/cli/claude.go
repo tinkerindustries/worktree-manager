@@ -42,7 +42,7 @@ type claudeResult struct {
 func runClaude(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		WriteError(stderr, UsageError(
-			"run 'wt claude install' or 'wt claude uninstall'",
+			"run 'wt claude install', 'wt claude uninstall' or 'wt claude remove-worktree --path <worktree>'",
 			"claude needs a verb"))
 		return ExitUsage
 	}
@@ -51,12 +51,14 @@ func runClaude(args []string, stdout, stderr io.Writer) int {
 		return runClaudeInstall(args[1:], stdout, stderr)
 	case "uninstall":
 		return runClaudeUninstall(args[1:], stdout, stderr)
+	case "remove-worktree":
+		return runClaudeRemoveWorktree(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usageText)
 		return ExitOK
 	default:
 		WriteError(stderr, UsageError(
-			"run 'wt claude install' or 'wt claude uninstall'",
+			"run 'wt claude install', 'wt claude uninstall' or 'wt claude remove-worktree --path <worktree>'",
 			"unknown claude verb %q", args[0]))
 		return ExitUsage
 	}

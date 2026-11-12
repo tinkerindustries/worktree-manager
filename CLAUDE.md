@@ -174,8 +174,10 @@ configuration; neither binary branches on repo identity.
   `daemon status`, `daemon install`, `daemon uninstall`, `bands list`,
   `bands suggest`,
   `bands reserve`, `ports scan`, `init`, `start`, `rm`, `list`, `doctor`,
-  `reconcile`, `clients`, `claude install`, `claude uninstall` and
-  `cleanup` (gated on gh: missing or
+  `reconcile`, `clients`, `claude install`, `claude uninstall`,
+  `claude remove-worktree` (the remove hook's removal for a repository
+  with no `wt.yaml`: `treecheck.WorktreeRemove` on one path, with no spec
+  and no coordinator) and `cleanup` (gated on gh: missing or
   unauthenticated gh cleans nothing and exits 4; the full rm safety
   checks apply even when the PR is merged; unverifiable entries are never
   touched). `daemon status` reports the systemd lingering caveat on Linux,
@@ -311,7 +313,10 @@ configuration; neither binary branches on repo identity.
   fetched. `WT_HOOK_NO_ENV=1`
   makes the worktree and skips `wt init`, for a change that does not need
   the repository's stack up; the remove script reports `wt rm`'s exit 3
-  and exit 4 as the different things they are. Nothing here is rendered from a
+  and exit 4 as the different things they are, and removes every other
+  repository's worktree through `wt claude remove-worktree`, falling back
+  to a plain `git worktree remove` when no `wt` is found or the one found
+  answers exit 2 for a verb it predates. Nothing here is rendered from a
   spec — which is why this is linked by `cmd/wt` and `internal/artefact`
   is not — and nothing here touches the store, the registry or an
   allocated worktree. The merge preserves the user's other hooks and
