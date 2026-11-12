@@ -202,9 +202,16 @@ needs no custom address, and either can be given alone.
 
 Every install prints what it replaces and with what, from the binaries'
 own `--version` lines. Binaries are replaced copy-to-temp-then-rename, so a
-running coordinator keeps executing the old image until it exits; Windows
-ends the logon task first, because it cannot rename over a running
-executable.
+running coordinator keeps executing the old image until it exits. Windows
+cannot overwrite or delete a running executable, so `install.ps1` ends the
+logon task and waits (up to 15s) for `wtd.exe` to exit before replacing
+anything — `schtasks /End` returns before the process is gone — and
+refuses, naming the PID, if a `wtd.exe` from the install directory is
+still running. A binary already in place is renamed aside to
+`<name>.old` (Windows allows renaming a running image) and the new one
+renamed into its name, so a `wt.exe` busy in another terminal or a hook
+does not fail the install; the aside copy is deleted when nothing holds
+it and swept by the next install otherwise.
 
 An install then runs `wt claude install --refresh-only`, which brings an
 existing Claude Code integration up to date. The two hook scripts and the
