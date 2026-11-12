@@ -82,9 +82,15 @@ configuration; neither binary branches on repo identity.
 - `internal/treecheck` — the checks that run before a worktree is
   destroyed: uncommitted changes, unpushed commits (an absent upstream is
   its own answer), what gh reports about the branch's pull request, and
-  the never-forced `git worktree remove` (run from the repository's main
+  `git worktree remove` (run from the repository's main
   checkout, never from the tree it deletes — Windows will not remove a
-  directory a process is standing in). Before git runs, the tree's
+  directory a process is standing in). It is never forced except for a
+  tree with submodules, which git refuses unforced however clean it is:
+  wt runs git's own cleanliness check with `--ignore-submodules=none`,
+  refuses when a clone under the tree's `modules` git dir holds a commit
+  on no remote (the removal deletes the clone), and only then passes a
+  single `--force`, which still refuses a locked worktree. Before git
+  runs, the tree's
   ignored files are moved into a `.wt-trash-<tree>-*` directory beside it;
   git refusing moves them back, and git succeeding deletes them with
   sixteen workers, which took a node_modules-heavy removal on Windows
@@ -99,7 +105,8 @@ configuration; neither binary branches on repo identity.
   on the other two, so a personal project with local-only branches and no
   gh is removable out of the box. `wt rm --strict` and `wt rm --force`
   override the block for one run, in the two directions, and neither
-  reaches `git worktree remove`, which is still never forced. cleanup and
+  reaches `git worktree remove`, whose one forced case neither flag
+  changes. cleanup and
   the sweep ignore the block and require a merged PR. git and gh reach it
   through a runner function. Deleting a state store is separate from
   tearing one down, and which one a teardown does is the repository's

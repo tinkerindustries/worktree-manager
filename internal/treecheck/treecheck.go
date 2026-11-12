@@ -19,6 +19,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -249,9 +251,17 @@ func isAuthFailure(lower string) bool {
 	return false
 }
 
-// WorktreeRemove runs `git worktree remove <dir>` from inside the tree,
-// never with --force: git refusing is signal that a check missed something,
-// and the refusal is reported as itself. The error carries git's own words.
+// WorktreeRemove runs `git worktree remove <dir>` from the repository's
+// main checkout. git refusing is signal that a check missed something, and
+// the refusal is reported as itself. The error carries git's own words.
+//
+// The one exception is a tree with submodules. git refuses every such tree
+// unless forced, clean or not, because removing it deletes the submodule
+// clones kept under its git dir's modules directory. For that tree alone,
+// wt runs the check git skips when forced (status with
+// --ignore-submodules=none must be empty) and checks every clone under
+// modules for commits no remote holds. Only when both pass does it run the
+// removal with a single --force, which still refuses a locked worktree.
 //
 // This is the one check whose directory is also a command-line argument,
 // so it is the one that must convert. Every caller here holds a realised
@@ -271,17 +281,136 @@ func isAuthFailure(lower string) bool {
 func WorktreeRemove(dir string, git Runner) (leftover string, err error) {
 	dir = platform.ExternalPath(dir)
 	aside := setAsideIgnored(dir, git)
-	if out, err := git(removeFrom(dir, git), "worktree", "remove", dir); err != nil {
-		text := strings.TrimSpace(string(out))
-		if text == "" {
-			text = err.Error()
-		}
+	if err := removeTree(dir, git); err != nil {
+		text := err.Error()
 		if rerr := aside.restore(); rerr != nil {
 			text += "; " + rerr.Error()
 		}
 		return "", errors.New(text)
 	}
 	return aside.discard(), nil
+}
+
+// removeTree runs the removal itself: unforced, and forced only for a tree
+// with submodules that passes submodulesSafeToDelete.
+func removeTree(dir string, git Runner) error {
+	from := removeFrom(dir, git)
+	out, err := git(from, "worktree", "remove", dir)
+	if err == nil {
+		return nil
+	}
+	refusal := gitWords(out, err)
+	modules, ok := submoduleStore(dir, git)
+	if !ok {
+		return errors.New(refusal)
+	}
+	if err := submodulesSafeToDelete(dir, modules, git); err != nil {
+		return err
+	}
+	if out, err := git(from, "worktree", "remove", "--force", dir); err != nil {
+		return errors.New(gitWords(out, err))
+	}
+	return nil
+}
+
+// gitWords is the text of a failed git command: its stderr, or the error
+// when git printed nothing.
+func gitWords(out []byte, err error) string {
+	if text := strings.TrimSpace(string(out)); text != "" {
+		return text
+	}
+	return err.Error()
+}
+
+// submoduleStore returns the worktree's own modules directory, where git
+// keeps the clones of the submodules initialised in this tree, and whether
+// it exists. Its presence is what makes git refuse an unforced removal.
+func submoduleStore(dir string, git Runner) (string, bool) {
+	out, err := git(dir, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return "", false
+	}
+	gitDir := strings.TrimSpace(string(out))
+	if gitDir == "" {
+		return "", false
+	}
+	modules := filepath.Join(filepath.FromSlash(gitDir), "modules")
+	info, err := os.Stat(modules)
+	if err != nil || !info.IsDir() {
+		return "", false
+	}
+	return modules, true
+}
+
+// submodulesSafeToDelete is the check a forced removal of a tree with
+// submodules must pass first. The tree must be clean by git's own measure
+// for an unforced removal, and no clone under modules may hold a commit
+// that is on no remote, because the removal deletes the clone.
+func submodulesSafeToDelete(dir, modules string, git Runner) error {
+	out, err := git(dir, "status", "--porcelain", "--ignore-submodules=none")
+	if err != nil {
+		return fmt.Errorf("it has submodules, and wt could not check it is clean: %w", err)
+	}
+	if dirty := (Result{Lines: nonEmptyLines(string(out))}); !dirty.OK() {
+		return fmt.Errorf("it has submodules, which git removes only with --force, and wt forces that only for a clean tree; this one contains modified or untracked files: %s", dirty.First(5))
+	}
+	repos, err := submoduleClones(modules)
+	if err != nil {
+		return fmt.Errorf("it has submodules, and wt could not list their clones under %s: %w", modules, err)
+	}
+	for _, repo := range repos {
+		name, _ := filepath.Rel(modules, repo)
+		name = filepath.ToSlash(name)
+		out, err := git(repo, "--git-dir="+repo, "log", "--oneline", "HEAD", "--branches", "--not", "--remotes")
+		if err != nil {
+			return fmt.Errorf("it has submodules, and wt could not check submodule %s for unpushed commits: %w", name, err)
+		}
+		if local := (Result{Lines: nonEmptyLines(string(out))}); !local.OK() {
+			return fmt.Errorf("submodule %s has %d commit(s) on no remote, and removing the worktree deletes its clone: %s; push them or remove the worktree by hand with git worktree remove --force", name, len(local.Lines), local.First(3))
+		}
+	}
+	return nil
+}
+
+// submoduleClones lists the git repositories under a modules directory.
+// A submodule's name may contain slashes, so a clone can sit at any depth,
+// and a nested submodule's clone sits under its parent clone's own modules
+// directory.
+func submoduleClones(modules string) ([]string, error) {
+	var repos []string
+	err := filepath.WalkDir(modules, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() || path == modules {
+			return nil
+		}
+		if isGitDir(path) {
+			repos = append(repos, path)
+			nested := filepath.Join(path, "modules")
+			if info, err := os.Stat(nested); err == nil && info.IsDir() {
+				more, err := submoduleClones(nested)
+				if err != nil {
+					return err
+				}
+				repos = append(repos, more...)
+			}
+			return fs.SkipDir
+		}
+		return nil
+	})
+	return repos, err
+}
+
+// isGitDir reports whether path is a git directory: a HEAD file beside an
+// objects directory.
+func isGitDir(path string) bool {
+	head, err := os.Stat(filepath.Join(path, "HEAD"))
+	if err != nil || head.IsDir() {
+		return false
+	}
+	objects, err := os.Stat(filepath.Join(path, "objects"))
+	return err == nil && objects.IsDir()
 }
 
 // removeFrom is the directory `git worktree remove` is run from, which

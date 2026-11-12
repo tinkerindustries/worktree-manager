@@ -21,15 +21,17 @@ package cli
 // `--force` makes every check warn for one run; they are the per-invocation
 // override of a committed spec, and they cannot be given together.
 //
-// Neither flag reaches `git worktree remove`, which is never passed
-// --force: the checks are advice about the tree, and git refusing is a fact
-// about it.
+// Neither flag reaches `git worktree remove`: the checks are advice about
+// the tree, and git refusing is a fact about it. The removal is forced only
+// for a clean tree with submodules, which git refuses unforced however
+// clean it is (treecheck.WorktreeRemove).
 //
 // rm accepts a slug rather than only inferring its target from cwd, because
 // the routine case is that the directory is already gone. It never picks a
 // target on its own — "the most recent worktree" is not an inference this
 // tool makes. The destruction rails: never --force a git worktree remove
-// (git refusing is signal that a check missed something); never delete the
+// beyond the submodule case treecheck.WorktreeRemove gates (git refusing is
+// signal that a check missed something); never delete the
 // worktree the caller is standing in; never delete the remote branch (the
 // PR points at it).
 //
@@ -109,7 +111,7 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 	slug := fs.String("slug", "", "the worktree's slug (default: the cwd's basename when cwd is a worktree)")
 	keepProcesses := fs.Bool("keep-processes", false, "do not signal processes bound to the worktree's ports")
 	strict := fs.Bool("strict", false, "run every safety check as a refusal for this run, whatever the spec says")
-	force := fs.Bool("force", false, "downgrade every safety check to a warning for this run; git worktree remove is still never forced")
+	force := fs.Bool("force", false, "downgrade every safety check to a warning for this run; git worktree remove is still never forced by this flag")
 	abandon := fs.Bool("abandon", false, "drop the registry entry and free the slot without tearing anything down, naming what is left behind; unrelated to --force, which still tears down through the drivers")
 	var purgeValues []string
 	fs.Var(stringList(&purgeValues), "purge", "purge this state-path resource's store on teardown, by resource name (repeatable)")
@@ -316,7 +318,7 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 	// is destructive-adjacent, so this is not optional: the whole point of
 	// the flag is that the operator finds out what it did.
 	notes = append(notes, res.Notes...)
-	// Teardown done: the git half — `git worktree remove`, never --force.
+	// Teardown done: the git half — treecheck.WorktreeRemove.
 	// A standalone clone is not a git worktree and has no registration to
 	// remove; its directory is left in place and the note says so.
 	worktreeRemoved := false
@@ -909,10 +911,10 @@ func ghRemedy(code int, detail string) string {
 	return ""
 }
 
-// gitWorktreeRemove runs `git worktree remove <root>`, never with --force:
-// git refusing is signal that a check missed something (B11.11), and the
-// refusal is reported as itself. A removal that succeeded but could not
-// finish deleting the tree's ignored files names what it left.
+// gitWorktreeRemove runs treecheck.WorktreeRemove on root. git refusing is
+// signal that a check missed something (B11.11), and the refusal is
+// reported as itself. A removal that succeeded but could not finish
+// deleting the tree's ignored files names what it left.
 func gitWorktreeRemove(root string, stderr io.Writer) int {
 	leftover, err := treecheck.WorktreeRemove(root, treecheck.Git)
 	if err != nil {

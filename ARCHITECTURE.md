@@ -175,8 +175,10 @@ internal/driver  M3: the six-operation driver contract, the port,
 internal/treecheck  the checks that run before a worktree is
               destroyed: uncommitted changes, unpushed commits (an
               absent upstream is its own answer), what gh reports about
-              the branch's pull request, and the never-forced `git
-              worktree remove`. Three callers run them — `wt rm`, `wt
+              the branch's pull request, and `git worktree remove`,
+              forced only for a clean tree with submodules (git refuses
+              those unforced however clean they are, and wt checks the
+              tree and the submodule clones first). Three callers run them — `wt rm`, `wt
               cleanup` and the coordinator's sweep — each keeping its own
               policy over one mechanism, so they cannot disagree about
               what git and gh said. rm's policy is the repository's, from

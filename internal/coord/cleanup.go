@@ -155,8 +155,8 @@ func (h *Handler) SweepCleanup() (int, error) {
 			continue
 		}
 		cleaned++
-		// The git half: `git worktree remove`, never --force — git
-		// refusing is signal that a check missed something, and the sweep
+		// The git half: treecheck.WorktreeRemove — git refusing is
+		// signal that a check missed something, and the sweep
 		// reports it and leaves the tree alone.
 		leftover, rerr := treecheck.WorktreeRemove(path, treecheck.Git)
 		if rerr != nil {
