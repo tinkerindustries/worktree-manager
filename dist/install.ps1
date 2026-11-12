@@ -150,6 +150,61 @@ function Get-StorePath {
     return Join-Path $env:USERPROFILE ".wt"
 }
 
+# Wait-CoordinatorExit waits for every wtd.exe running from $BinDir to
+# exit. schtasks /End returns once it has asked the task to stop, not once
+# the process is gone, and a replace or a removal issued straight after it
+# races the exit — and loses, with "Cannot create a file when that file
+# already exists". Waiting is also what makes an upgrade an upgrade: the
+# new task must not start while the old image still holds the port. The
+# wait is bounded. A wtd.exe from $BinDir still running past it — one
+# started by hand, outside the task, which /End never reaches — is a
+# refusal naming its PID, before anything is copied or removed.
+function Wait-CoordinatorExit {
+    $target = [IO.Path]::GetFullPath((Join-Path $BinDir "wtd.exe"))
+    $deadline = (Get-Date).AddSeconds(15)
+    while ($true) {
+        $running = @(Get-Process -Name wtd -ErrorAction SilentlyContinue |
+            Where-Object { $_.Path -and ([IO.Path]::GetFullPath($_.Path) -eq $target) })
+        if ($running.Count -eq 0) { return }
+        if ((Get-Date) -ge $deadline) {
+            $ids = ($running | ForEach-Object { $_.Id }) -join ", "
+            Write-Error "$target is still running (PID $ids) 15s after the coordinator's task was ended; stop it with Stop-Process -Id $ids, then re-run"
+        }
+        Start-Sleep -Milliseconds 250
+    }
+}
+
+# Install-Binary puts $Source in place as $Dest. Windows refuses to
+# overwrite or delete a running executable but does let it be renamed, so
+# a binary already in place is renamed aside to "<name>.old" first and the
+# new one is renamed into the freed name. That covers what the coordinator
+# wait cannot: a wt.exe some other terminal or a Claude Code hook is
+# running at that moment. The aside copy is deleted at once when nothing
+# holds it, and otherwise left for the next install to sweep — it is never
+# the reason an install fails.
+function Install-Binary([string]$Source, [string]$Dest) {
+    $old = "$Dest.old"
+    # Sweep what earlier installs left aside (wt.exe.old, wt.exe.<id>.old).
+    Get-ChildItem -Force -Path (Split-Path -Parent $Dest) -Filter "$(Split-Path -Leaf $Dest)*.old" -ErrorAction SilentlyContinue |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+    if (Test-Path $old) {
+        # Still held by a process from an earlier install: rename it aside
+        # under a unique name so this install's rename has a free slot.
+        Move-Item -Force $old "$Dest.$([guid]::NewGuid().ToString('N')).old"
+    }
+    if (Test-Path $Dest) {
+        Move-Item -Force $Dest $old
+    }
+    try {
+        Move-Item -Force $Source $Dest
+    } catch {
+        # Put the previous binary back rather than leave no binary at all.
+        if ((Test-Path $old) -and -not (Test-Path $Dest)) { Move-Item -Force $old $Dest }
+        throw
+    }
+    Remove-Item -Force $old -ErrorAction SilentlyContinue
+}
+
 # Get-WtIdentity prints a wt binary's identity as "VERSION (COMMIT)" — the
 # parenthesised tail of its `wt --version` line — or "" when the binary is
 # missing or its version line is unreadable. That is what lets the
@@ -258,7 +313,22 @@ if ($Uninstall) {
         Write-Host "wt.exe is not installed in $BinDir; nothing to uninstall"
         Write-Host "store: $(Get-StorePath) - left alone (it is the only record of what is allocated on this machine)"
     }
-    Remove-Item -Force (Join-Path $BinDir "wt.exe"), (Join-Path $BinDir "wtd.exe") -ErrorAction SilentlyContinue
+    # The verb ended the task, but the coordinator may still be exiting;
+    # a running image cannot be deleted, so wait it out first.
+    Wait-CoordinatorExit
+    $left = @()
+    foreach ($bin in @("wt.exe", "wtd.exe")) {
+        $path = Join-Path $BinDir $bin
+        Get-ChildItem -Force -Path $BinDir -Filter "$bin*.old" -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+        if (Test-Path $path) {
+            Remove-Item -Force $path -ErrorAction SilentlyContinue
+            if (Test-Path $path) { $left += $path }
+        }
+    }
+    if ($left.Count -gt 0) {
+        Write-Error "could not remove $($left -join ' and ') (still in use by a running process); close it and re-run with -Uninstall"
+    }
     Write-Host "removed wt.exe and wtd.exe from $BinDir"
     exit 0
 }
@@ -306,21 +376,21 @@ if ($DryRun) {
     exit 0
 }
 
-# Copy to a temporary name in the same directory, then rename into place.
-# Unlike unix, Windows genuinely cannot rename over a running executable —
-# the open file image makes Move-Item fail with a sharing violation — so
-# the coordinator's task is ended first; the `wt daemon install` below
-# re-registers and restarts it. A task that does not exist or is not
+# Copy to a temporary name in the same directory, then rename into place
+# (Install-Binary). The coordinator's task is ended first, and its process
+# waited out, so the old coordinator is gone before the `wt daemon install`
+# below re-registers and restarts it. A task that does not exist or is not
 # running makes schtasks fail, which is expected and ignored. A
 # client-only install replaces no coordinator image, so it ends no task.
 if (-not $ClientOnly) {
     & schtasks /End /TN "com.mrgeoffrich.wtd" 2>$null | Out-Null
+    Wait-CoordinatorExit
 }
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 foreach ($bin in $Bins) {
     $tmp = Join-Path $BinDir ".$bin.tmp"
     Copy-Item (Join-Path $ScriptDir $bin) $tmp -Force
-    Move-Item -Force $tmp (Join-Path $BinDir $bin)
+    Install-Binary $tmp (Join-Path $BinDir $bin)
 }
 Write-Host "installed $($Bins -join ' and ') into $BinDir"
 
